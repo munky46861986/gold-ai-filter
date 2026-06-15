@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from flask import Flask, request, jsonify
 
@@ -12,6 +13,15 @@ NEWS_BIAS = os.getenv("NEWS_BIAS", "NEUTRAL").upper()
 EVENT_RISK = os.getenv("EVENT_RISK", "NORMAL").upper()
 MIN_SCORE = int(os.getenv("MIN_SCORE", "6"))
 
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+AUTO_NEWS = os.getenv("AUTO_NEWS", "FALSE").upper() == "TRUE"
+
+NEWS_CACHE = {
+    "time": 0,
+    "bias": "NEUTRAL",
+    "reasons": []
+}
+
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -22,7 +32,7 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v3 Livello 4 attivo ✅"
+    return "Gold AI Filter Bot v5 News AI attivo ✅"
 
 
 @app.route("/health")
@@ -31,6 +41,7 @@ def health():
         "status": "ok",
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
+        "auto_news": AUTO_NEWS,
         "event_risk": EVENT_RISK,
         "min_score": MIN_SCORE
     })
@@ -38,7 +49,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v3")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v5 NEWS AI")
     return "OK"
 
 
@@ -58,6 +69,85 @@ def to_float(value, default=50.0):
         return default
 
 
+def get_auto_news_bias():
+    if not AUTO_NEWS or not NEWS_API_KEY:
+        return NEWS_BIAS, ["Auto news non attiva"]
+
+    now = time.time()
+
+    if now - NEWS_CACHE["time"] < 900:
+        return NEWS_CACHE["bias"], NEWS_CACHE["reasons"]
+
+    query = (
+        "gold OR XAUUSD OR dollar OR Federal Reserve OR Fed OR inflation OR CPI "
+        "OR NFP OR Iran OR Israel OR Hormuz OR geopolitical"
+    )
+
+    url = "https://newsapi.org/v2/everything"
+
+    params = {
+        "q": query,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 20,
+        "apiKey": NEWS_API_KEY
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        articles = r.json().get("articles", [])
+    except Exception as e:
+        return NEWS_BIAS, [f"Errore news API: {e}"]
+
+    bullish_words = [
+        "war", "attack", "missile", "iran", "israel", "hormuz", "tension",
+        "geopolitical", "safe haven", "risk off", "dollar falls",
+        "dollar weak", "fed cut", "rate cut", "inflation rises"
+    ]
+
+    bearish_words = [
+        "ceasefire", "peace", "reopens", "reopened", "dollar rises",
+        "dollar strong", "fed hawkish", "rate hike", "yields rise",
+        "risk on", "de-escalation", "calm"
+    ]
+
+    bullish_score = 0
+    bearish_score = 0
+    reasons = []
+
+    for article in articles:
+        title = (article.get("title") or "").lower()
+        description = (article.get("description") or "").lower()
+        text = title + " " + description
+
+        for word in bullish_words:
+            if word in text:
+                bullish_score += 1
+
+        for word in bearish_words:
+            if word in text:
+                bearish_score += 1
+
+    if bullish_score >= bearish_score + 2:
+        bias = "BULLISH_GOLD"
+        reasons.append(f"News favorevoli all'oro: {bullish_score} vs {bearish_score}")
+
+    elif bearish_score >= bullish_score + 2:
+        bias = "BEARISH_GOLD"
+        reasons.append(f"News negative per oro: {bearish_score} vs {bullish_score}")
+
+    else:
+        bias = "NEUTRAL"
+        reasons.append(f"News neutre: bullish {bullish_score}, bearish {bearish_score}")
+
+    NEWS_CACHE["time"] = now
+    NEWS_CACHE["bias"] = bias
+    NEWS_CACHE["reasons"] = reasons
+
+    return bias, reasons
+
+
 def score_signal(data, signal):
     score = 0
     reasons = []
@@ -69,21 +159,21 @@ def score_signal(data, signal):
     rsi = to_float(data.get("rsi", 50))
     above_ema200 = str(data.get("close_above_ema200", "false")).lower() == "true"
 
-    # BIAS MANUALE
+    active_news_bias, news_reasons = get_auto_news_bias()
+
     if BIAS == "FORCE_SELL":
         if signal == "BUY":
-            return -999, ["Bloccato: FORCE_SELL attivo"]
+            return -999, ["Bloccato: FORCE_SELL attivo"], active_news_bias, news_reasons
         score += 4
         reasons.append("Bias manuale FORCE_SELL")
 
     if BIAS == "FORCE_BUY":
         if signal == "SELL":
-            return -999, ["Bloccato: FORCE_BUY attivo"]
+            return -999, ["Bloccato: FORCE_BUY attivo"], active_news_bias, news_reasons
         score += 4
         reasons.append("Bias manuale FORCE_BUY")
 
-    # NEWS BIAS
-    if NEWS_BIAS == "BEARISH_GOLD":
+    if active_news_bias == "BEARISH_GOLD":
         if signal == "SELL":
             score += 3
             reasons.append("News bias bearish gold")
@@ -91,7 +181,7 @@ def score_signal(data, signal):
             score -= 4
             reasons.append("BUY contro news bearish gold")
 
-    if NEWS_BIAS == "BULLISH_GOLD":
+    if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
             score += 3
             reasons.append("News bias bullish gold")
@@ -99,12 +189,10 @@ def score_signal(data, signal):
             score -= 4
             reasons.append("SELL contro news bullish gold")
 
-    # EVENT RISK
     if EVENT_RISK == "HIGH":
         score -= 2
         reasons.append("Evento macro ad alto rischio")
 
-    # SCORE TECNICO
     if signal == "BUY":
         if h1_bias == "BUY":
             score += 2
@@ -157,7 +245,7 @@ def score_signal(data, signal):
             score -= 2
             reasons.append("Contro Daily BUY")
 
-    return score, reasons
+    return score, reasons, active_news_bias, news_reasons
 
 
 @app.route("/webhook", methods=["POST"])
@@ -172,7 +260,7 @@ def webhook():
     if signal not in ["BUY", "SELL"]:
         return jsonify({"error": "invalid signal", "received": data}), 400
 
-    score, reasons = score_signal(data, signal)
+    score, reasons, active_news_bias, news_reasons = score_signal(data, signal)
 
     if score < MIN_SCORE:
         text = f"""🚫 SEGNALE BLOCCATO
@@ -186,12 +274,15 @@ Score minimo: {MIN_SCORE}
 Motivi:
 - """ + "\n- ".join(reasons) + f"""
 
+📰 News bias attivo: {active_news_bias}
+News:
+- """ + "\n- ".join(news_reasons) + f"""
+
 🤖 BIAS: {BIAS}
-📰 NEWS_BIAS: {NEWS_BIAS}
 ⚠️ EVENT_RISK: {EVENT_RISK}
 """
         send_telegram(text)
-        return jsonify({"status": "blocked", "score": score, "reasons": reasons})
+        return jsonify({"status": "blocked", "score": score})
 
     emoji = "🟢" if signal == "BUY" else "🔴"
 
@@ -200,7 +291,7 @@ Motivi:
     sl = data.get("sl", "")
 
     lines = [
-        f"{emoji} GOLD {signal} AI FILTER v3",
+        f"{emoji} GOLD {signal} AI FILTER v5 NEWS",
         "",
     ]
 
@@ -225,15 +316,23 @@ Motivi:
         "Conferme:",
         "- " + "\n- ".join(reasons),
         "",
+        f"📰 News bias attivo: {active_news_bias}",
+        "News:",
+        "- " + "\n- ".join(news_reasons),
+        "",
         f"🤖 BIAS: {BIAS}",
-        f"📰 NEWS_BIAS: {NEWS_BIAS}",
         f"⚠️ EVENT_RISK: {EVENT_RISK}",
         f"⏱ TF: {tf}"
     ])
 
     send_telegram("\n".join(lines))
 
-    return jsonify({"status": "sent", "signal": signal, "score": score})
+    return jsonify({
+        "status": "sent",
+        "signal": signal,
+        "score": score,
+        "news_bias": active_news_bias
+    })
 
 
 if __name__ == "__main__":
