@@ -9,19 +9,16 @@ CHAT_ID = os.getenv("CHAT_ID")
 BIAS = os.getenv("BIAS", "AUTO").upper()  # AUTO / FORCE_BUY / FORCE_SELL
 
 
-def send_telegram(text: str) -> None:
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        raise RuntimeError("Missing TELEGRAM_TOKEN or CHAT_ID environment variables")
-
+def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
-    response = requests.post(url, json=payload, timeout=10)
-    response.raise_for_status()
+    r = requests.post(url, json=payload, timeout=10)
+    r.raise_for_status()
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Gold AI Filter Bot attivo ✅"
+    return "Gold AI Filter Bot v2 attivo ✅"
 
 
 @app.route("/health", methods=["GET"])
@@ -29,68 +26,150 @@ def health():
     return jsonify({"status": "ok", "bias": BIAS})
 
 
+def normalize_signal(signal):
+    signal = str(signal).upper()
+    if signal == "LONG":
+        return "BUY"
+    if signal == "SHORT":
+        return "SELL"
+    return signal
+
+
+def score_signal(data, signal):
+    score = 0
+    reasons = []
+
+    h1_bias = str(data.get("h1_bias", "NEUTRAL")).upper()
+    h4_bias = str(data.get("h4_bias", "NEUTRAL")).upper()
+    day_bias = str(data.get("day_bias", "NEUTRAL")).upper()
+    structure = str(data.get("structure", "NEUTRAL")).upper()
+    rsi = float(data.get("rsi", 50))
+    close_above_ema200 = str(data.get("close_above_ema200", "false")).lower() == "true"
+
+    if BIAS == "FORCE_SELL":
+        if signal == "BUY":
+            return -999, ["Bloccato: giornata FORCE SELL"]
+        score += 3
+        reasons.append("Bias manuale FORCE SELL")
+
+    if BIAS == "FORCE_BUY":
+        if signal == "SELL":
+            return -999, ["Bloccato: giornata FORCE BUY"]
+        score += 3
+        reasons.append("Bias manuale FORCE BUY")
+
+    if signal == "BUY":
+        if h1_bias == "BUY":
+            score += 2
+            reasons.append("H1 rialzista")
+        if h4_bias == "BUY":
+            score += 2
+            reasons.append("H4 rialzista")
+        if day_bias == "BUY":
+            score += 1
+            reasons.append("Daily rialzista")
+        if structure in ["HL", "HH", "BULLISH"]:
+            score += 2
+            reasons.append("Struttura bullish")
+        if rsi > 50:
+            score += 1
+            reasons.append("RSI sopra 50")
+        if close_above_ema200:
+            score += 1
+            reasons.append("Prezzo sopra EMA200")
+
+        if h4_bias == "SELL":
+            score -= 3
+            reasons.append("Contro H4 ribassista")
+        if day_bias == "SELL":
+            score -= 2
+            reasons.append("Contro Daily ribassista")
+
+    if signal == "SELL":
+        if h1_bias == "SELL":
+            score += 2
+            reasons.append("H1 ribassista")
+        if h4_bias == "SELL":
+            score += 2
+            reasons.append("H4 ribassista")
+        if day_bias == "SELL":
+            score += 1
+            reasons.append("Daily ribassista")
+        if structure in ["LH", "LL", "BEARISH"]:
+            score += 2
+            reasons.append("Struttura bearish")
+        if rsi < 50:
+            score += 1
+            reasons.append("RSI sotto 50")
+        if not close_above_ema200:
+            score += 1
+            reasons.append("Prezzo sotto EMA200")
+
+        if h4_bias == "BUY":
+            score -= 3
+            reasons.append("Contro H4 rialzista")
+        if day_bias == "BUY":
+            score -= 2
+            reasons.append("Contro Daily rialzista")
+
+    return score, reasons
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
 
-    signal = str(data.get("signal", "")).upper()
+    signal = normalize_signal(data.get("signal", ""))
     symbol = data.get("symbol", "XAUUSD")
     price = data.get("price", "")
     tf = data.get("tf", "")
     message = data.get("message", "")
 
-    tp1 = data.get("tp1", "")
-    tp2 = data.get("tp2", "")
-    tp3 = data.get("tp3", "")
-    tp4 = data.get("tp4", "")
-    tp5 = data.get("tp5", "")
-    tp6 = data.get("tp6", "")
-    sl = data.get("sl", "")
-    entry_low = data.get("entry_low", "")
-    entry_high = data.get("entry_high", "")
+    if signal not in ["BUY", "SELL"]:
+        return jsonify({"error": "invalid signal", "received": data}), 400
 
-    if signal not in {"BUY", "SELL", "LONG", "SHORT"}:
-        return jsonify({"error": "missing or invalid signal", "received": data}), 400
+    score, reasons = score_signal(data, signal)
 
-    if signal == "LONG":
-        signal = "BUY"
-    if signal == "SHORT":
-        signal = "SELL"
+    if score < 4:
+        blocked_text = f"""🚫 SEGNALE BLOCCATO
 
-    if BIAS == "FORCE_SELL" and signal == "BUY":
-        return jsonify({"status": "blocked", "reason": "FORCE_SELL blocks BUY", "signal": signal})
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Score: {score}
 
-    if BIAS == "FORCE_BUY" and signal == "SELL":
-        return jsonify({"status": "blocked", "reason": "FORCE_BUY blocks SELL", "signal": signal})
+Motivi:
+- """ + "\n- ".join(reasons)
+
+        send_telegram(blocked_text)
+        return jsonify({"status": "blocked", "score": score, "reasons": reasons})
 
     emoji = "🟢" if signal == "BUY" else "🔴"
 
-    lines = [f"{emoji} GOLD {signal} AI FILTER", ""]
+    text = f"""{emoji} GOLD {signal} AI FILTER v2
 
-    if entry_low != "" and entry_high != "":
-        lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
-    elif price != "":
-        lines.append(f"💰 Entry: {price}")
+💰 Entry: {price}
+📊 Symbol: {symbol}
+⏱ TF: {tf}
 
-    if sl != "":
-        lines.append(f"🛑 SL: {sl}")
+🧠 Score AI: {score}
 
-    targets = [tp1, tp2, tp3, tp4, tp5, tp6]
-    for i, tp in enumerate(targets, start=1):
-        if tp != "":
-            lines.append(f"🎯 TP{i}: {tp}")
-
-    if tf != "":
-        lines.append(f"⏱ TF: {tf}")
+Conferme:
+- """ + "\n- ".join(reasons)
 
     if message:
-        lines.extend(["", str(message)])
+        text += f"\n\n{message}"
 
-    lines.extend(["", f"🤖 Bias attuale: {BIAS}"])
+    text += f"\n\n🤖 Bias manuale: {BIAS}"
 
-    send_telegram("\n".join(lines))
+    send_telegram(text)
 
-    return jsonify({"status": "sent", "signal": signal, "bias": BIAS})
+    return jsonify({
+        "status": "sent",
+        "signal": signal,
+        "score": score,
+        "reasons": reasons
+    })
 
 
 if __name__ == "__main__":
