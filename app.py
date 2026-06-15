@@ -171,6 +171,11 @@ Conferme:
         "reasons": reasons
     })
 
+@app.route("/test")
+def test():
+    send_telegram("✅ TEST TELEGRAM DA RENDER")
+    return "OK"
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
