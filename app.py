@@ -11,7 +11,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 BIAS = os.getenv("BIAS", "AUTO").upper()
 NEWS_BIAS = os.getenv("NEWS_BIAS", "NEUTRAL").upper()
 EVENT_RISK = os.getenv("EVENT_RISK", "NORMAL").upper()
-MIN_SCORE = int(os.getenv("MIN_SCORE", "8"))
+MIN_SCORE = int(os.getenv("MIN_SCORE", "6"))
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 AUTO_NEWS = os.getenv("AUTO_NEWS", "FALSE").upper() == "TRUE"
@@ -28,14 +28,14 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v5.1 anti-buy-alto attivo ✅"
+    return "Gold AI Filter Bot v5.2 attivo ✅"
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "v5.1",
+        "version": "v5.2",
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
         "auto_news": AUTO_NEWS,
@@ -46,7 +46,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v5.1")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v5.2")
     return "OK"
 
 
@@ -112,9 +112,7 @@ def get_auto_news_bias():
     bearish_score = 0
 
     for article in articles:
-        title = (article.get("title") or "").lower()
-        description = (article.get("description") or "").lower()
-        text = title + " " + description
+        text = ((article.get("title") or "") + " " + (article.get("description") or "")).lower()
 
         for word in bullish_words:
             if word in text:
@@ -166,7 +164,6 @@ def score_signal(data, signal):
         score += 4
         reasons.append("Bias manuale FORCE_BUY")
 
-    # NEWS: ora pesa meno, non deve comandare da sola
     if active_news_bias == "BEARISH_GOLD":
         if signal == "SELL":
             score += 1
@@ -198,8 +195,8 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Daily BUY")
         if day_bias == "SELL":
-            score -= 5
-            reasons.append("Contro Daily SELL forte")
+            score -= 2
+            reasons.append("Contro Daily SELL")
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
             reasons.append(f"Struttura {structure}")
@@ -230,8 +227,8 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Daily SELL")
         if day_bias == "BUY":
-            score -= 5
-            reasons.append("Contro Daily BUY forte")
+            score -= 2
+            reasons.append("Contro Daily BUY")
         if structure in ["LH", "BEARISH", "HH"]:
             score += 2
             reasons.append(f"Struttura {structure}")
@@ -296,7 +293,7 @@ News:
     entry_high = data.get("entry_high", "")
     sl = data.get("sl", "")
 
-    lines = [f"{emoji} GOLD {signal} AI FILTER v5.1", ""]
+    lines = [f"{emoji} GOLD {signal} AI FILTER v5.2", ""]
 
     if entry_low and entry_high:
         lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
@@ -330,12 +327,7 @@ News:
 
     send_telegram("\n".join(lines))
 
-    return jsonify({
-        "status": "sent",
-        "signal": signal,
-        "score": score,
-        "news_bias": active_news_bias
-    })
+    return jsonify({"status": "sent", "signal": signal, "score": score})
 
 
 if __name__ == "__main__":
