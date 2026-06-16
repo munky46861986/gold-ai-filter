@@ -11,16 +11,12 @@ CHAT_ID = os.getenv("CHAT_ID")
 BIAS = os.getenv("BIAS", "AUTO").upper()
 NEWS_BIAS = os.getenv("NEWS_BIAS", "NEUTRAL").upper()
 EVENT_RISK = os.getenv("EVENT_RISK", "NORMAL").upper()
-MIN_SCORE = int(os.getenv("MIN_SCORE", "6"))
+MIN_SCORE = int(os.getenv("MIN_SCORE", "8"))
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 AUTO_NEWS = os.getenv("AUTO_NEWS", "FALSE").upper() == "TRUE"
 
-NEWS_CACHE = {
-    "time": 0,
-    "bias": "NEUTRAL",
-    "reasons": []
-}
+NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 
 
 def send_telegram(text: str):
@@ -32,13 +28,14 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v5 News AI attivo ✅"
+    return "Gold AI Filter Bot v5.1 anti-buy-alto attivo ✅"
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
+        "version": "v5.1",
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
         "auto_news": AUTO_NEWS,
@@ -49,7 +46,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v5 NEWS AI")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v5.1")
     return "OK"
 
 
@@ -74,7 +71,6 @@ def get_auto_news_bias():
         return NEWS_BIAS, ["Auto news non attiva"]
 
     now = time.time()
-
     if now - NEWS_CACHE["time"] < 900:
         return NEWS_CACHE["bias"], NEWS_CACHE["reasons"]
 
@@ -83,18 +79,18 @@ def get_auto_news_bias():
         "OR NFP OR Iran OR Israel OR Hormuz OR geopolitical"
     )
 
-    url = "https://newsapi.org/v2/everything"
-
-    params = {
-        "q": query,
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": 20,
-        "apiKey": NEWS_API_KEY
-    }
-
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q": query,
+                "language": "en",
+                "sortBy": "publishedAt",
+                "pageSize": 20,
+                "apiKey": NEWS_API_KEY
+            },
+            timeout=10
+        )
         r.raise_for_status()
         articles = r.json().get("articles", [])
     except Exception as e:
@@ -114,7 +110,6 @@ def get_auto_news_bias():
 
     bullish_score = 0
     bearish_score = 0
-    reasons = []
 
     for article in articles:
         title = (article.get("title") or "").lower()
@@ -129,17 +124,15 @@ def get_auto_news_bias():
             if word in text:
                 bearish_score += 1
 
-    if bullish_score >= bearish_score + 2:
+    if bullish_score >= bearish_score + 3:
         bias = "BULLISH_GOLD"
-        reasons.append(f"News favorevoli all'oro: {bullish_score} vs {bearish_score}")
-
-    elif bearish_score >= bullish_score + 2:
+        reasons = [f"News favorevoli all'oro: {bullish_score} vs {bearish_score}"]
+    elif bearish_score >= bullish_score + 3:
         bias = "BEARISH_GOLD"
-        reasons.append(f"News negative per oro: {bearish_score} vs {bullish_score}")
-
+        reasons = [f"News negative per oro: {bearish_score} vs {bullish_score}"]
     else:
         bias = "NEUTRAL"
-        reasons.append(f"News neutre: bullish {bullish_score}, bearish {bearish_score}")
+        reasons = [f"News neutre: bullish {bullish_score}, bearish {bearish_score}"]
 
     NEWS_CACHE["time"] = now
     NEWS_CACHE["bias"] = bias
@@ -173,20 +166,21 @@ def score_signal(data, signal):
         score += 4
         reasons.append("Bias manuale FORCE_BUY")
 
+    # NEWS: ora pesa meno, non deve comandare da sola
     if active_news_bias == "BEARISH_GOLD":
         if signal == "SELL":
-            score += 3
-            reasons.append("News bias bearish gold")
+            score += 1
+            reasons.append("News bias bearish gold leggero")
         else:
-            score -= 4
+            score -= 3
             reasons.append("BUY contro news bearish gold")
 
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
-            score += 3
-            reasons.append("News bias bullish gold")
+            score += 1
+            reasons.append("News bias bullish gold leggero")
         else:
-            score -= 4
+            score -= 3
             reasons.append("SELL contro news bullish gold")
 
     if EVENT_RISK == "HIGH":
@@ -201,23 +195,29 @@ def score_signal(data, signal):
             score += 2
             reasons.append("H4 BUY")
         if day_bias == "BUY":
-            score += 1
+            score += 2
             reasons.append("Daily BUY")
-        if structure in ["HL", "HH", "BULLISH", "LL"]:
+        if day_bias == "SELL":
+            score -= 5
+            reasons.append("Contro Daily SELL forte")
+        if structure in ["HL", "BULLISH", "LL"]:
             score += 2
             reasons.append(f"Struttura {structure}")
+        if structure == "HH":
+            score -= 2
+            reasons.append("BUY dopo HH: rischio comprare in alto")
         if rsi > 50:
             score += 1
             reasons.append("RSI sopra 50")
+        if rsi > 68:
+            score -= 2
+            reasons.append("RSI alto: rischio buy in estensione")
         if above_ema200:
             score += 1
             reasons.append("Prezzo sopra EMA200")
         if h4_bias == "SELL":
-            score -= 3
-            reasons.append("Contro H4 SELL")
-        if day_bias == "SELL":
-            score -= 2
-            reasons.append("Contro Daily SELL")
+            score -= 4
+            reasons.append("Contro H4 SELL forte")
 
     if signal == "SELL":
         if h1_bias == "SELL":
@@ -227,23 +227,29 @@ def score_signal(data, signal):
             score += 2
             reasons.append("H4 SELL")
         if day_bias == "SELL":
-            score += 1
+            score += 2
             reasons.append("Daily SELL")
-        if structure in ["LH", "LL", "BEARISH", "HH"]:
+        if day_bias == "BUY":
+            score -= 5
+            reasons.append("Contro Daily BUY forte")
+        if structure in ["LH", "BEARISH", "HH"]:
             score += 2
             reasons.append(f"Struttura {structure}")
+        if structure == "LL":
+            score -= 2
+            reasons.append("SELL dopo LL: rischio vendere in basso")
         if rsi < 50:
             score += 1
             reasons.append("RSI sotto 50")
+        if rsi < 32:
+            score -= 2
+            reasons.append("RSI basso: rischio sell in estensione")
         if not above_ema200:
             score += 1
             reasons.append("Prezzo sotto EMA200")
         if h4_bias == "BUY":
-            score -= 3
-            reasons.append("Contro H4 BUY")
-        if day_bias == "BUY":
-            score -= 2
-            reasons.append("Contro Daily BUY")
+            score -= 4
+            reasons.append("Contro H4 BUY forte")
 
     return score, reasons, active_news_bias, news_reasons
 
@@ -290,10 +296,7 @@ News:
     entry_high = data.get("entry_high", "")
     sl = data.get("sl", "")
 
-    lines = [
-        f"{emoji} GOLD {signal} AI FILTER v5 NEWS",
-        "",
-    ]
+    lines = [f"{emoji} GOLD {signal} AI FILTER v5.1", ""]
 
     if entry_low and entry_high:
         lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
