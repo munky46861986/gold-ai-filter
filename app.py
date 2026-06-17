@@ -28,14 +28,14 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v5.2 attivo ✅"
+    return "Gold AI Filter Bot v6 Max Candle Intelligence attivo ✅"
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "v5.2",
+        "version": "v6",
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
         "auto_news": AUTO_NEWS,
@@ -46,7 +46,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v5.2")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v6")
     return "OK"
 
 
@@ -59,7 +59,7 @@ def normalize_signal(signal):
     return signal
 
 
-def to_float(value, default=50.0):
+def to_float(value, default=0.0):
     try:
         return float(value)
     except Exception:
@@ -89,12 +89,12 @@ def get_auto_news_bias():
                 "pageSize": 20,
                 "apiKey": NEWS_API_KEY
             },
-            timeout=10
+            timeout=8
         )
         r.raise_for_status()
         articles = r.json().get("articles", [])
     except Exception as e:
-        return NEWS_BIAS, [f"Errore news API: {e}"]
+        return NEWS_BIAS, [f"Errore NewsAPI: {e}"]
 
     bullish_words = [
         "war", "attack", "missile", "iran", "israel", "hormuz", "tension",
@@ -122,10 +122,10 @@ def get_auto_news_bias():
             if word in text:
                 bearish_score += 1
 
-    if bullish_score >= bearish_score + 3:
+    if bullish_score >= bearish_score + 4:
         bias = "BULLISH_GOLD"
         reasons = [f"News favorevoli all'oro: {bullish_score} vs {bearish_score}"]
-    elif bearish_score >= bullish_score + 3:
+    elif bearish_score >= bullish_score + 4:
         bias = "BEARISH_GOLD"
         reasons = [f"News negative per oro: {bearish_score} vs {bullish_score}"]
     else:
@@ -147,8 +147,15 @@ def score_signal(data, signal):
     h4_bias = str(data.get("h4_bias", "NEUTRAL")).upper()
     day_bias = str(data.get("day_bias", "NEUTRAL")).upper()
     structure = str(data.get("structure", "NEUTRAL")).upper()
-    rsi = to_float(data.get("rsi", 50))
+
+    rsi = to_float(data.get("rsi", 50), 50)
     above_ema200 = str(data.get("close_above_ema200", "false")).lower() == "true"
+
+    candle_dir = str(data.get("candle_dir", "NEUTRAL")).upper()
+    rejection = str(data.get("rejection", "NONE")).upper()
+    ema20_slope = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50_slope = str(data.get("ema50_slope", "FLAT")).upper()
+    volume_spike = str(data.get("volume_spike", "false")).lower() == "true"
 
     active_news_bias, news_reasons = get_auto_news_bias()
 
@@ -164,21 +171,21 @@ def score_signal(data, signal):
         score += 4
         reasons.append("Bias manuale FORCE_BUY")
 
-    if active_news_bias == "BEARISH_GOLD":
-        if signal == "SELL":
-            score += 1
-            reasons.append("News bias bearish gold leggero")
-        else:
-            score -= 3
-            reasons.append("BUY contro news bearish gold")
-
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
             score += 1
-            reasons.append("News bias bullish gold leggero")
+            reasons.append("News bullish gold leggera")
         else:
-            score -= 3
+            score -= 2
             reasons.append("SELL contro news bullish gold")
+
+    if active_news_bias == "BEARISH_GOLD":
+        if signal == "SELL":
+            score += 1
+            reasons.append("News bearish gold leggera")
+        else:
+            score -= 2
+            reasons.append("BUY contro news bearish gold")
 
     if EVENT_RISK == "HIGH":
         score -= 2
@@ -195,26 +202,57 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Daily BUY")
         if day_bias == "SELL":
-            score -= 2
+            score -= 3
             reasons.append("Contro Daily SELL")
+
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
             reasons.append(f"Struttura {structure}")
         if structure == "HH":
-            score -= 2
+            score -= 3
             reasons.append("BUY dopo HH: rischio comprare in alto")
+
         if rsi > 50:
             score += 1
             reasons.append("RSI sopra 50")
         if rsi > 68:
             score -= 2
-            reasons.append("RSI alto: rischio buy in estensione")
+            reasons.append("RSI alto: buy in estensione")
+
         if above_ema200:
             score += 1
             reasons.append("Prezzo sopra EMA200")
-        if h4_bias == "SELL":
-            score -= 4
-            reasons.append("Contro H4 SELL forte")
+
+        if candle_dir == "BULL":
+            score += 1
+            reasons.append("Candela bullish")
+        if candle_dir == "BEAR":
+            score -= 2
+            reasons.append("Candela rossa contro BUY")
+
+        if rejection == "LOWER_WICK":
+            score += 2
+            reasons.append("Rejection bullish con wick bassa")
+        if rejection == "UPPER_WICK":
+            score -= 3
+            reasons.append("Wick alta: rischio rigetto BUY")
+
+        if ema20_slope == "UP":
+            score += 1
+            reasons.append("EMA20 in salita")
+        if ema50_slope == "UP":
+            score += 1
+            reasons.append("EMA50 in salita")
+        if ema20_slope == "DOWN":
+            score -= 2
+            reasons.append("EMA20 in discesa")
+        if ema50_slope == "DOWN":
+            score -= 2
+            reasons.append("EMA50 in discesa")
+
+        if volume_spike and candle_dir == "BEAR":
+            score -= 3
+            reasons.append("Volume spike su candela rossa")
 
     if signal == "SELL":
         if h1_bias == "SELL":
@@ -227,26 +265,57 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Daily SELL")
         if day_bias == "BUY":
-            score -= 2
+            score -= 3
             reasons.append("Contro Daily BUY")
+
         if structure in ["LH", "BEARISH", "HH"]:
             score += 2
             reasons.append(f"Struttura {structure}")
         if structure == "LL":
-            score -= 2
+            score -= 3
             reasons.append("SELL dopo LL: rischio vendere in basso")
+
         if rsi < 50:
             score += 1
             reasons.append("RSI sotto 50")
         if rsi < 32:
             score -= 2
-            reasons.append("RSI basso: rischio sell in estensione")
+            reasons.append("RSI basso: sell in estensione")
+
         if not above_ema200:
             score += 1
             reasons.append("Prezzo sotto EMA200")
-        if h4_bias == "BUY":
-            score -= 4
-            reasons.append("Contro H4 BUY forte")
+
+        if candle_dir == "BEAR":
+            score += 1
+            reasons.append("Candela bearish")
+        if candle_dir == "BULL":
+            score -= 2
+            reasons.append("Candela verde contro SELL")
+
+        if rejection == "UPPER_WICK":
+            score += 2
+            reasons.append("Rejection bearish con wick alta")
+        if rejection == "LOWER_WICK":
+            score -= 3
+            reasons.append("Wick bassa: rischio rigetto SELL")
+
+        if ema20_slope == "DOWN":
+            score += 1
+            reasons.append("EMA20 in discesa")
+        if ema50_slope == "DOWN":
+            score += 1
+            reasons.append("EMA50 in discesa")
+        if ema20_slope == "UP":
+            score -= 2
+            reasons.append("EMA20 in salita")
+        if ema50_slope == "UP":
+            score -= 2
+            reasons.append("EMA50 in salita")
+
+        if volume_spike and candle_dir == "BULL":
+            score -= 3
+            reasons.append("Volume spike su candela verde")
 
     return score, reasons, active_news_bias, news_reasons
 
@@ -266,7 +335,7 @@ def webhook():
     score, reasons, active_news_bias, news_reasons = score_signal(data, signal)
 
     if score < MIN_SCORE:
-        text = f"""🚫 SEGNALE BLOCCATO
+        text = f"""🚫 SEGNALE BLOCCATO v6
 
 Segnale: {signal}
 Symbol: {symbol}
@@ -293,7 +362,7 @@ News:
     entry_high = data.get("entry_high", "")
     sl = data.get("sl", "")
 
-    lines = [f"{emoji} GOLD {signal} AI FILTER v5.2", ""]
+    lines = [f"{emoji} GOLD {signal} AI FILTER v6", ""]
 
     if entry_low and entry_high:
         lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
@@ -327,7 +396,12 @@ News:
 
     send_telegram("\n".join(lines))
 
-    return jsonify({"status": "sent", "signal": signal, "score": score})
+    return jsonify({
+        "status": "sent",
+        "signal": signal,
+        "score": score,
+        "news_bias": active_news_bias
+    })
 
 
 if __name__ == "__main__":
