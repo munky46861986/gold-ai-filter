@@ -17,6 +17,7 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 AUTO_NEWS = os.getenv("AUTO_NEWS", "FALSE").upper() == "TRUE"
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
+OPEN_TRADES = []
 
 
 def send_telegram(text: str):
@@ -28,14 +29,15 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v6 Max Candle Intelligence attivo ✅"
+    return "Gold AI Filter Bot v7 Trade Tracker attivo ✅"
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "v6",
+        "version": "v7",
+        "open_trades": len(OPEN_TRADES),
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
         "auto_news": AUTO_NEWS,
@@ -46,7 +48,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v6")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v7")
     return "OK"
 
 
@@ -113,11 +115,9 @@ def get_auto_news_bias():
 
     for article in articles:
         text = ((article.get("title") or "") + " " + (article.get("description") or "")).lower()
-
         for word in bullish_words:
             if word in text:
                 bullish_score += 1
-
         for word in bearish_words:
             if word in text:
                 bearish_score += 1
@@ -202,8 +202,8 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Daily BUY")
         if day_bias == "SELL":
-            score -= 3
-            reasons.append("Contro Daily SELL")
+            score -= 4
+            reasons.append("Contro Daily SELL forte")
 
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
@@ -244,8 +244,8 @@ def score_signal(data, signal):
             score += 1
             reasons.append("EMA50 in salita")
         if ema20_slope == "DOWN":
-            score -= 2
-            reasons.append("EMA20 in discesa")
+            score -= 4
+            reasons.append("EMA20 in discesa forte contro BUY")
         if ema50_slope == "DOWN":
             score -= 2
             reasons.append("EMA50 in discesa")
@@ -262,7 +262,7 @@ def score_signal(data, signal):
             score += 2
             reasons.append("H4 SELL")
         if day_bias == "SELL":
-            score += 2
+            score += 3
             reasons.append("Daily SELL")
         if day_bias == "BUY":
             score -= 3
@@ -320,9 +320,100 @@ def score_signal(data, signal):
     return score, reasons, active_news_bias, news_reasons
 
 
+def save_trade(data, signal, score):
+    trade_id = str(int(time.time()))
+
+    trade = {
+        "id": trade_id,
+        "signal": signal,
+        "symbol": data.get("symbol", "XAUUSD"),
+        "entry_low": to_float(data.get("entry_low")),
+        "entry_high": to_float(data.get("entry_high")),
+        "sl": to_float(data.get("sl")),
+        "tp1": to_float(data.get("tp1")),
+        "tp2": to_float(data.get("tp2")),
+        "tp3": to_float(data.get("tp3")),
+        "tp4": to_float(data.get("tp4")),
+        "tp5": to_float(data.get("tp5")),
+        "tp6": to_float(data.get("tp6")),
+        "score": score,
+        "status": "OPEN",
+        "be": False,
+        "highest_tp": 0,
+        "created": time.time()
+    }
+
+    OPEN_TRADES.append(trade)
+    return trade
+
+
+def handle_price_update(data):
+    high = to_float(data.get("high"))
+    low = to_float(data.get("low"))
+    close = to_float(data.get("close"))
+
+    updates = []
+
+    for trade in OPEN_TRADES:
+        if trade["status"] != "OPEN":
+            continue
+
+        signal = trade["signal"]
+        trade_id = trade["id"]
+
+        if signal == "BUY":
+            if not trade["be"] and low <= trade["sl"]:
+                trade["status"] = "LOSS"
+                updates.append(f"❌ Trade #{trade_id} BUY chiuso in SL\nSL: {trade['sl']}")
+                continue
+
+            for i in range(1, 7):
+                tp = trade.get(f"tp{i}", 0)
+                if tp and high >= tp and trade["highest_tp"] < i:
+                    trade["highest_tp"] = i
+                    if i == 1:
+                        trade["be"] = True
+                        updates.append(f"✅ Trade #{trade_id} BUY TP1 preso\n🎯 TP1: {tp}\n🛡 SL spostato a BE")
+                    else:
+                        updates.append(f"✅ Trade #{trade_id} BUY TP{i} preso\n🎯 TP{i}: {tp}")
+
+            if trade["be"] and low <= trade["entry_low"]:
+                trade["status"] = "BE"
+                updates.append(f"🟡 Trade #{trade_id} BUY chiuso a BE dopo TP{trade['highest_tp']}")
+
+        if signal == "SELL":
+            if not trade["be"] and high >= trade["sl"]:
+                trade["status"] = "LOSS"
+                updates.append(f"❌ Trade #{trade_id} SELL chiuso in SL\nSL: {trade['sl']}")
+                continue
+
+            for i in range(1, 7):
+                tp = trade.get(f"tp{i}", 0)
+                if tp and low <= tp and trade["highest_tp"] < i:
+                    trade["highest_tp"] = i
+                    if i == 1:
+                        trade["be"] = True
+                        updates.append(f"✅ Trade #{trade_id} SELL TP1 preso\n🎯 TP1: {tp}\n🛡 SL spostato a BE")
+                    else:
+                        updates.append(f"✅ Trade #{trade_id} SELL TP{i} preso\n🎯 TP{i}: {tp}")
+
+            if trade["be"] and high >= trade["entry_high"]:
+                trade["status"] = "BE"
+                updates.append(f"🟡 Trade #{trade_id} SELL chiuso a BE dopo TP{trade['highest_tp']}")
+
+    for msg in updates:
+        send_telegram(msg)
+
+    return updates
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
+
+    if str(data.get("type", "")).upper() == "PRICE_UPDATE":
+        updates = handle_price_update(data)
+        return jsonify({"status": "price_checked", "updates": len(updates), "open_trades": len(OPEN_TRADES)})
 
     signal = normalize_signal(data.get("signal", ""))
     symbol = data.get("symbol", "XAUUSD")
@@ -335,7 +426,7 @@ def webhook():
     score, reasons, active_news_bias, news_reasons = score_signal(data, signal)
 
     if score < MIN_SCORE:
-        text = f"""🚫 SEGNALE BLOCCATO v6
+        text = f"""🚫 SEGNALE BLOCCATO v7
 
 Segnale: {signal}
 Symbol: {symbol}
@@ -356,13 +447,16 @@ News:
         send_telegram(text)
         return jsonify({"status": "blocked", "score": score})
 
+    trade = save_trade(data, signal, score)
     emoji = "🟢" if signal == "BUY" else "🔴"
 
     entry_low = data.get("entry_low", "")
     entry_high = data.get("entry_high", "")
     sl = data.get("sl", "")
 
-    lines = [f"{emoji} GOLD {signal} AI FILTER v6", ""]
+    lines = [f"{emoji} GOLD {signal} AI FILTER v7", ""]
+
+    lines.append(f"🆔 Trade ID: {trade['id']}")
 
     if entry_low and entry_high:
         lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
@@ -396,12 +490,7 @@ News:
 
     send_telegram("\n".join(lines))
 
-    return jsonify({
-        "status": "sent",
-        "signal": signal,
-        "score": score,
-        "news_bias": active_news_bias
-    })
+    return jsonify({"status": "sent", "signal": signal, "score": score, "trade_id": trade["id"]})
 
 
 if __name__ == "__main__":
