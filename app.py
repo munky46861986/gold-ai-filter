@@ -347,7 +347,6 @@ def save_trade(data, signal, score):
     OPEN_TRADES.append(trade)
     return trade
 
-
 def handle_price_update(data):
     high = to_float(data.get("high"))
     low = to_float(data.get("low"))
@@ -356,48 +355,37 @@ def handle_price_update(data):
     updates = []
 
     for trade in OPEN_TRADES:
-    if trade["status"] not in ["OPEN", "PENDING"]:
-        continue
+        if trade["status"] not in ["OPEN", "PENDING"]:
+            continue
 
         signal = trade["signal"]
         trade_id = trade["id"]
+
         # PENDING ENTRY SYSTEM
+        if trade["status"] == "PENDING":
+            if signal == "BUY":
+                entered = low <= trade["entry_high"] and high >= trade["entry_low"]
 
-if trade["status"] == "PENDING":
+                if entered:
+                    trade["status"] = "OPEN"
+                    trade["entered"] = True
+                    updates.append(
+                        f"🎯 Trade #{trade_id} BUY ATTIVATO\n"
+                        f"Zona: {trade['entry_low']} - {trade['entry_high']}"
+                    )
 
-    if signal == "BUY":
+            if signal == "SELL":
+                entered = high >= trade["entry_low"] and low <= trade["entry_high"]
 
-        entered = (
-            low <= trade["entry_high"]
-            and high >= trade["entry_low"]
-        )
+                if entered:
+                    trade["status"] = "OPEN"
+                    trade["entered"] = True
+                    updates.append(
+                        f"🎯 Trade #{trade_id} SELL ATTIVATO\n"
+                        f"Zona: {trade['entry_low']} - {trade['entry_high']}"
+                    )
 
-        if entered:
-            trade["status"] = "OPEN"
-            trade["entered"] = True
-
-            updates.append(
-                f"🎯 Trade #{trade_id} BUY ATTIVATO\n"
-                f"Zona: {trade['entry_low']} - {trade['entry_high']}"
-            )
-
-    if signal == "SELL":
-
-        entered = (
-            high >= trade["entry_low"]
-            and low <= trade["entry_high"]
-        )
-
-        if entered:
-            trade["status"] = "OPEN"
-            trade["entered"] = True
-
-            updates.append(
-                f"🎯 Trade #{trade_id} SELL ATTIVATO\n"
-                f"Zona: {trade['entry_low']} - {trade['entry_high']}"
-            )
-
-    continue
+            continue
 
         if signal == "BUY":
             if not trade["be"] and low <= trade["sl"]:
@@ -443,8 +431,6 @@ if trade["status"] == "PENDING":
         send_telegram(msg)
 
     return updates
-
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
