@@ -224,9 +224,13 @@ def score_signal(data, signal):
         if day_bias == "BUY":
             score += 2
             reasons.append("Daily BUY")
-        if day_bias == "SELL":
-            score -= 4
-            reasons.append("Contro Daily SELL forte")
+       if day_bias == "SELL":
+    if reversal_buy:
+        score -= 1
+        reasons.append("BUY reversal contro Daily SELL")
+    else:
+        score -= 4
+        reasons.append("Contro Daily SELL forte")
 
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
