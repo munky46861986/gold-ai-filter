@@ -271,8 +271,12 @@ def score_signal(data, signal):
             score += 1
             reasons.append("EMA50 in salita")
         if ema20_slope == "DOWN":
-            score -= 4
-            reasons.append("EMA20 in discesa forte contro BUY")
+    if reversal_buy:
+        score -= 1
+        reasons.append("EMA20 DOWN ma setup reversal BUY")
+    else:
+        score -= 4
+        reasons.append("EMA20 in discesa forte contro BUY")
         if ema50_slope == "DOWN":
             score -= 2
             reasons.append("EMA50 in discesa")
