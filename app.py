@@ -139,7 +139,7 @@ def get_auto_news_bias():
     return bias, reasons
 
 
-    def score_signal(data, signal):
+   def score_signal(data, signal):
     score = 0
     reasons = []
 
@@ -158,7 +158,8 @@ def get_auto_news_bias():
     volume_spike = str(data.get("volume_spike", "false")).lower() == "true"
 
     active_news_bias, news_reasons = get_auto_news_bias()
-        reversal_buy = (
+
+    reversal_buy = (
         signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
         and structure in ["LL", "BULLISH"]
@@ -224,13 +225,13 @@ def get_auto_news_bias():
         if day_bias == "BUY":
             score += 2
             reasons.append("Daily BUY")
-       if day_bias == "SELL":
-    if reversal_buy:
-        score -= 1
-        reasons.append("BUY reversal contro Daily SELL")
-    else:
-        score -= 4
-        reasons.append("Contro Daily SELL forte")
+        if day_bias == "SELL":
+            if reversal_buy:
+                score -= 1
+                reasons.append("BUY reversal contro Daily SELL")
+            else:
+                score -= 4
+                reasons.append("Contro Daily SELL forte")
 
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
@@ -271,19 +272,19 @@ def get_auto_news_bias():
             score += 1
             reasons.append("EMA50 in salita")
         if ema20_slope == "DOWN":
-        if reversal_buy:
-        score -= 1
-        reasons.append("EMA20 DOWN ma setup reversal BUY")
-        else:
-        score -= 4
-        reasons.append("EMA20 in discesa forte contro BUY")
+            if reversal_buy:
+                score -= 1
+                reasons.append("EMA20 DOWN ma setup reversal BUY")
+            else:
+                score -= 4
+                reasons.append("EMA20 in discesa forte contro BUY")
         if ema50_slope == "DOWN":
-    if reversal_buy:
-        score -= 1
-        reasons.append("EMA50 DOWN ma setup reversal BUY")
-    else:
-        score -= 2
-        reasons.append("EMA50 in discesa")
+            if reversal_buy:
+                score -= 1
+                reasons.append("EMA50 DOWN ma setup reversal BUY")
+            else:
+                score -= 2
+                reasons.append("EMA50 in discesa")
 
         if volume_spike and candle_dir == "BEAR":
             score -= 3
