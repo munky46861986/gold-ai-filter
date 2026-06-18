@@ -29,14 +29,14 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-    return "Gold AI Filter Bot v7 Trade Tracker attivo ✅"
+   return "Gold AI Filter Bot v8 Reversal Pending attivo ✅"
 
 
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "version": "v7",
+        "version": "v8",
         "open_trades": len(OPEN_TRADES),
         "bias": BIAS,
         "news_bias": NEWS_BIAS,
@@ -271,15 +271,19 @@ def score_signal(data, signal):
             score += 1
             reasons.append("EMA50 in salita")
         if ema20_slope == "DOWN":
-    if reversal_buy:
+        if reversal_buy:
         score -= 1
         reasons.append("EMA20 DOWN ma setup reversal BUY")
-    else:
+        else:
         score -= 4
         reasons.append("EMA20 in discesa forte contro BUY")
         if ema50_slope == "DOWN":
-            score -= 2
-            reasons.append("EMA50 in discesa")
+    if reversal_buy:
+        score -= 1
+        reasons.append("EMA50 DOWN ma setup reversal BUY")
+    else:
+        score -= 2
+        reasons.append("EMA50 in discesa")
 
         if volume_spike and candle_dir == "BEAR":
             score -= 3
