@@ -136,8 +136,7 @@ def get_auto_news_bias():
     NEWS_CACHE["bias"] = bias
     NEWS_CACHE["reasons"] = reasons
 
-    return bias, reasons
-    def score_signal(data, signal):
+    return bias, reasonsdef score_signal(data, signal):
     score = 0
     reasons = []
 
@@ -418,8 +417,7 @@ def save_trade(data, signal, score):
     }
 
     OPEN_TRADES.append(trade)
-    return trade
-    def handle_price_update(data):
+    return tradedef handle_price_update(data):
     high = to_float(data.get("high"))
     low = to_float(data.get("low"))
 
