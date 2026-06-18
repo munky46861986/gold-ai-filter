@@ -139,7 +139,7 @@ def get_auto_news_bias():
     return bias, reasons
 
 
-def score_signal(data, signal):
+    def score_signal(data, signal):
     score = 0
     reasons = []
 
