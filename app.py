@@ -136,7 +136,7 @@ def get_auto_news_bias():
     NEWS_CACHE["bias"] = bias
     NEWS_CACHE["reasons"] = reasons
 
-   return bias, reasons
+    return bias, reasons
 
 
 def score_signal(data, signal):
