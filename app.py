@@ -337,7 +337,8 @@ def save_trade(data, signal, score):
         "tp5": to_float(data.get("tp5")),
         "tp6": to_float(data.get("tp6")),
         "score": score,
-        "status": "OPEN",
+        "status": "PENDING",
+        "entered": False,
         "be": False,
         "highest_tp": 0,
         "created": time.time()
@@ -355,11 +356,48 @@ def handle_price_update(data):
     updates = []
 
     for trade in OPEN_TRADES:
-        if trade["status"] != "OPEN":
-            continue
+    if trade["status"] not in ["OPEN", "PENDING"]:
+        continue
 
         signal = trade["signal"]
         trade_id = trade["id"]
+        # PENDING ENTRY SYSTEM
+
+if trade["status"] == "PENDING":
+
+    if signal == "BUY":
+
+        entered = (
+            low <= trade["entry_high"]
+            and high >= trade["entry_low"]
+        )
+
+        if entered:
+            trade["status"] = "OPEN"
+            trade["entered"] = True
+
+            updates.append(
+                f"🎯 Trade #{trade_id} BUY ATTIVATO\n"
+                f"Zona: {trade['entry_low']} - {trade['entry_high']}"
+            )
+
+    if signal == "SELL":
+
+        entered = (
+            high >= trade["entry_low"]
+            and low <= trade["entry_high"]
+        )
+
+        if entered:
+            trade["status"] = "OPEN"
+            trade["entered"] = True
+
+            updates.append(
+                f"🎯 Trade #{trade_id} SELL ATTIVATO\n"
+                f"Zona: {trade['entry_low']} - {trade['entry_high']}"
+            )
+
+    continue
 
         if signal == "BUY":
             if not trade["be"] and low <= trade["sl"]:
