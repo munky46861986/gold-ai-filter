@@ -158,6 +158,29 @@ def score_signal(data, signal):
     volume_spike = str(data.get("volume_spike", "false")).lower() == "true"
 
     active_news_bias, news_reasons = get_auto_news_bias()
+        reversal_buy = (
+        signal == "BUY"
+        and active_news_bias == "BULLISH_GOLD"
+        and structure in ["LL", "BULLISH"]
+        and candle_dir == "BULL"
+        and rsi > 42
+    )
+
+    reversal_sell = (
+        signal == "SELL"
+        and active_news_bias == "BEARISH_GOLD"
+        and structure in ["HH", "BEARISH"]
+        and candle_dir == "BEAR"
+        and rsi < 58
+    )
+
+    if reversal_buy:
+        score += 5
+        reasons.append("Setup REVERSAL BUY stile Max")
+
+    if reversal_sell:
+        score += 5
+        reasons.append("Setup REVERSAL SELL stile Max")
 
     if BIAS == "FORCE_SELL":
         if signal == "BUY":
