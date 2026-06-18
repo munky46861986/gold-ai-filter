@@ -29,7 +29,7 @@ def send_telegram(text: str):
 
 @app.route("/")
 def home():
-   return "Gold AI Filter Bot v8 Reversal Pending attivo ✅"
+    return "Gold AI Filter Bot v8 Reversal Pending attivo ✅"
 
 
 @app.route("/health")
@@ -48,7 +48,7 @@ def health():
 
 @app.route("/test")
 def test():
-    send_telegram("✅ TEST TELEGRAM DA RENDER - v7")
+    send_telegram("✅ TEST TELEGRAM DA RENDER - v8")
     return "OK"
 
 
@@ -137,9 +137,7 @@ def get_auto_news_bias():
     NEWS_CACHE["reasons"] = reasons
 
     return bias, reasons
-
-
-  def score_signal(data, signal):
+    def score_signal(data, signal):
     score = 0
     reasons = []
 
@@ -159,6 +157,7 @@ def get_auto_news_bias():
 
     active_news_bias, news_reasons = get_auto_news_bias()
 
+    # REVERSAL MODE stile Max
     reversal_buy = (
         signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
@@ -198,7 +197,7 @@ def get_auto_news_bias():
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
             score += 1
-            reasons.append("News bullish gold leggera")
+            reasons.append("News bullish gold")
         else:
             score -= 2
             reasons.append("SELL contro news bullish gold")
@@ -206,7 +205,7 @@ def get_auto_news_bias():
     if active_news_bias == "BEARISH_GOLD":
         if signal == "SELL":
             score += 1
-            reasons.append("News bearish gold leggera")
+            reasons.append("News bearish gold")
         else:
             score -= 2
             reasons.append("BUY contro news bearish gold")
@@ -215,16 +214,22 @@ def get_auto_news_bias():
         score -= 2
         reasons.append("Evento macro ad alto rischio")
 
+    # ---------------- BUY ----------------
+
     if signal == "BUY":
+
         if h1_bias == "BUY":
             score += 2
             reasons.append("H1 BUY")
+
         if h4_bias == "BUY":
             score += 2
             reasons.append("H4 BUY")
+
         if day_bias == "BUY":
             score += 2
             reasons.append("Daily BUY")
+
         if day_bias == "SELL":
             if reversal_buy:
                 score -= 1
@@ -236,16 +241,18 @@ def get_auto_news_bias():
         if structure in ["HL", "BULLISH", "LL"]:
             score += 2
             reasons.append(f"Struttura {structure}")
+
         if structure == "HH":
             score -= 3
-            reasons.append("BUY dopo HH: rischio comprare in alto")
+            reasons.append("BUY dopo HH")
 
         if rsi > 50:
             score += 1
             reasons.append("RSI sopra 50")
+
         if rsi > 68:
             score -= 2
-            reasons.append("RSI alto: buy in estensione")
+            reasons.append("RSI alto")
 
         if above_ema200:
             score += 1
@@ -254,69 +261,86 @@ def get_auto_news_bias():
         if candle_dir == "BULL":
             score += 1
             reasons.append("Candela bullish")
+
         if candle_dir == "BEAR":
             score -= 2
             reasons.append("Candela rossa contro BUY")
 
         if rejection == "LOWER_WICK":
             score += 2
-            reasons.append("Rejection bullish con wick bassa")
+            reasons.append("Rejection bullish")
+
         if rejection == "UPPER_WICK":
             score -= 3
-            reasons.append("Wick alta: rischio rigetto BUY")
+            reasons.append("Wick alta")
 
         if ema20_slope == "UP":
             score += 1
-            reasons.append("EMA20 in salita")
+            reasons.append("EMA20 UP")
+
         if ema50_slope == "UP":
             score += 1
-            reasons.append("EMA50 in salita")
+            reasons.append("EMA50 UP")
+
         if ema20_slope == "DOWN":
             if reversal_buy:
                 score -= 1
-                reasons.append("EMA20 DOWN ma setup reversal BUY")
+                reasons.append("EMA20 DOWN ma reversal BUY")
             else:
                 score -= 4
-                reasons.append("EMA20 in discesa forte contro BUY")
+                reasons.append("EMA20 DOWN")
+
         if ema50_slope == "DOWN":
             if reversal_buy:
                 score -= 1
-                reasons.append("EMA50 DOWN ma setup reversal BUY")
+                reasons.append("EMA50 DOWN ma reversal BUY")
             else:
                 score -= 2
-                reasons.append("EMA50 in discesa")
+                reasons.append("EMA50 DOWN")
 
         if volume_spike and candle_dir == "BEAR":
             score -= 3
-            reasons.append("Volume spike su candela rossa")
+            reasons.append("Volume spike bearish")
+
+    # ---------------- SELL ----------------
 
     if signal == "SELL":
+
         if h1_bias == "SELL":
             score += 2
             reasons.append("H1 SELL")
+
         if h4_bias == "SELL":
             score += 2
             reasons.append("H4 SELL")
+
         if day_bias == "SELL":
             score += 3
             reasons.append("Daily SELL")
+
         if day_bias == "BUY":
-            score -= 3
-            reasons.append("Contro Daily BUY")
+            if reversal_sell:
+                score -= 1
+                reasons.append("SELL reversal contro Daily BUY")
+            else:
+                score -= 3
+                reasons.append("Contro Daily BUY")
 
         if structure in ["LH", "BEARISH", "HH"]:
             score += 2
             reasons.append(f"Struttura {structure}")
+
         if structure == "LL":
             score -= 3
-            reasons.append("SELL dopo LL: rischio vendere in basso")
+            reasons.append("SELL dopo LL")
 
         if rsi < 50:
             score += 1
             reasons.append("RSI sotto 50")
+
         if rsi < 32:
             score -= 2
-            reasons.append("RSI basso: sell in estensione")
+            reasons.append("RSI basso")
 
         if not above_ema200:
             score += 1
@@ -325,35 +349,49 @@ def get_auto_news_bias():
         if candle_dir == "BEAR":
             score += 1
             reasons.append("Candela bearish")
+
         if candle_dir == "BULL":
             score -= 2
             reasons.append("Candela verde contro SELL")
 
         if rejection == "UPPER_WICK":
             score += 2
-            reasons.append("Rejection bearish con wick alta")
+            reasons.append("Rejection bearish")
+
         if rejection == "LOWER_WICK":
             score -= 3
-            reasons.append("Wick bassa: rischio rigetto SELL")
+            reasons.append("Wick bassa")
 
         if ema20_slope == "DOWN":
             score += 1
-            reasons.append("EMA20 in discesa")
+            reasons.append("EMA20 DOWN")
+
         if ema50_slope == "DOWN":
             score += 1
-            reasons.append("EMA50 in discesa")
+            reasons.append("EMA50 DOWN")
+
         if ema20_slope == "UP":
-            score -= 2
-            reasons.append("EMA20 in salita")
+            if reversal_sell:
+                score -= 1
+                reasons.append("EMA20 UP ma reversal SELL")
+            else:
+                score -= 2
+                reasons.append("EMA20 UP")
+
         if ema50_slope == "UP":
-            score -= 2
-            reasons.append("EMA50 in salita")
+            if reversal_sell:
+                score -= 1
+                reasons.append("EMA50 UP ma reversal SELL")
+            else:
+                score -= 2
+                reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
             score -= 3
-            reasons.append("Volume spike su candela verde")
+            reasons.append("Volume spike bullish")
 
     return score, reasons, active_news_bias, news_reasons
+
 
 def save_trade(data, signal, score):
     trade_id = str(int(time.time()))
@@ -381,11 +419,9 @@ def save_trade(data, signal, score):
 
     OPEN_TRADES.append(trade)
     return trade
-
-def handle_price_update(data):
+    def handle_price_update(data):
     high = to_float(data.get("high"))
     low = to_float(data.get("low"))
-    close = to_float(data.get("close"))
 
     updates = []
 
@@ -396,7 +432,6 @@ def handle_price_update(data):
         signal = trade["signal"]
         trade_id = trade["id"]
 
-        # PENDING ENTRY SYSTEM
         if trade["status"] == "PENDING":
             if signal == "BUY":
                 entered = low <= trade["entry_high"] and high >= trade["entry_low"]
@@ -466,13 +501,19 @@ def handle_price_update(data):
         send_telegram(msg)
 
     return updates
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
         updates = handle_price_update(data)
-        return jsonify({"status": "price_checked", "updates": len(updates), "open_trades": len(OPEN_TRADES)})
+        return jsonify({
+            "status": "price_checked",
+            "updates": len(updates),
+            "open_trades": len(OPEN_TRADES)
+        })
 
     signal = normalize_signal(data.get("signal", ""))
     symbol = data.get("symbol", "XAUUSD")
@@ -485,7 +526,7 @@ def webhook():
     score, reasons, active_news_bias, news_reasons = score_signal(data, signal)
 
     if score < MIN_SCORE:
-        text = f"""🚫 SEGNALE BLOCCATO v7
+        text = f"""🚫 SEGNALE BLOCCATO v8
 
 Segnale: {signal}
 Symbol: {symbol}
@@ -513,8 +554,7 @@ News:
     entry_high = data.get("entry_high", "")
     sl = data.get("sl", "")
 
-    lines = [f"{emoji} GOLD {signal} AI FILTER v7", ""]
-
+    lines = [f"{emoji} GOLD {signal} AI FILTER v8", ""]
     lines.append(f"🆔 Trade ID: {trade['id']}")
 
     if entry_low and entry_high:
@@ -549,7 +589,12 @@ News:
 
     send_telegram("\n".join(lines))
 
-    return jsonify({"status": "sent", "signal": signal, "score": score, "trade_id": trade["id"]})
+    return jsonify({
+        "status": "sent",
+        "signal": signal,
+        "score": score,
+        "trade_id": trade["id"]
+    })
 
 
 if __name__ == "__main__":
