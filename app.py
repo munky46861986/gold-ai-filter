@@ -139,7 +139,7 @@ def get_auto_news_bias():
     return bias, reasons
 
 
-   def score_signal(data, signal):
+  def score_signal(data, signal):
     score = 0
     reasons = []
 
@@ -354,7 +354,6 @@ def get_auto_news_bias():
             reasons.append("Volume spike su candela verde")
 
     return score, reasons, active_news_bias, news_reasons
-
 
 def save_trade(data, signal, score):
     trade_id = str(int(time.time()))
