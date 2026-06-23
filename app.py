@@ -12,7 +12,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v9 Max Fade + Anti Duplicate"
+VERSION = "v10 Max Dip Buy + SL Cooldown"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -28,8 +28,16 @@ AUTO_NEWS = os.getenv("AUTO_NEWS", "FALSE").upper() == "TRUE"
 TRADES_FILE = os.getenv("TRADES_FILE", "trades.json")
 USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Europe/Rome")
 
-DUPLICATE_SECONDS = int(os.getenv("DUPLICATE_SECONDS", "1800"))
+DUPLICATE_SECONDS = int(os.getenv("DUPLICATE_SECONDS", "1200"))
 DUPLICATE_SCORE_DELTA = int(os.getenv("DUPLICATE_SCORE_DELTA", "4"))
+
+# Nuovo v10:
+# Se il bot prende troppi SL diretti SELL, blocca nuovi SELL per un periodo.
+SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
+SL_COOLDOWN_SIGNAL = os.getenv("SL_COOLDOWN_SIGNAL", "SELL").upper()
+SL_COOLDOWN_LOSSES = int(os.getenv("SL_COOLDOWN_LOSSES", "2"))
+SL_COOLDOWN_LOOKBACK_SECONDS = int(os.getenv("SL_COOLDOWN_LOOKBACK_SECONDS", "5400"))  # 90 minuti
+SL_COOLDOWN_SECONDS = int(os.getenv("SL_COOLDOWN_SECONDS", "3600"))  # 60 minuti
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -167,6 +175,11 @@ def health():
         "min_score": MIN_SCORE,
         "duplicate_seconds": DUPLICATE_SECONDS,
         "duplicate_score_delta": DUPLICATE_SCORE_DELTA,
+        "sl_cooldown_enabled": SL_COOLDOWN_ENABLED,
+        "sl_cooldown_signal": SL_COOLDOWN_SIGNAL,
+        "sl_cooldown_losses": SL_COOLDOWN_LOSSES,
+        "sl_cooldown_lookback_seconds": SL_COOLDOWN_LOOKBACK_SECONDS,
+        "sl_cooldown_seconds": SL_COOLDOWN_SECONDS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -312,7 +325,10 @@ def score_signal(data, signal):
 
     active_news_bias, news_reasons = get_auto_news_bias()
 
-    # REVERSAL CLASSICO
+    # =========================
+    # SETUP SPECIALI
+    # =========================
+
     reversal_buy = (
         signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
@@ -329,9 +345,8 @@ def score_signal(data, signal):
         and rsi < 58
     )
 
-    # MAX FADE MODE
-    # Serve per prendere SELL tipo Max:
-    # news bullish, prezzo in alto, rejection bearish, Daily/H4 ancora sell.
+    # MAX FADE SELL:
+    # Vende eccesso rialzista con news bullish, Daily/H4 sell e rejection.
     max_fade_sell = (
         signal == "SELL"
         and active_news_bias == "BULLISH_GOLD"
@@ -346,29 +361,45 @@ def score_signal(data, signal):
         and rsi < 68
     )
 
-    max_fade_buy = (
+    # MAX DIP BUY v10:
+    # Compra il fondo dopo discesa estesa quando le news restano bullish.
+    # Serve per non vendere il bottom e per avvicinarsi a Max quando entra BUY da zona bassa.
+    max_dip_buy = (
         signal == "BUY"
-        and active_news_bias == "BEARISH_GOLD"
-        and day_bias == "BUY"
-        and h4_bias == "BUY"
+        and active_news_bias == "BULLISH_GOLD"
         and structure in ["LL", "BULLISH"]
         and (
             rejection == "LOWER_WICK"
             or lower_wick_strong
             or near_m15_low
         )
-        and rsi > 32
+        and rsi > 30
+        and rsi < 62
     )
 
-    if max_fade_sell:
+    # MAX DIP SELL speculare, disattivato di fatto ma pronto:
+    max_dip_sell = (
+        signal == "SELL"
+        and active_news_bias == "BEARISH_GOLD"
+        and structure in ["HH", "BEARISH"]
+        and (
+            rejection == "UPPER_WICK"
+            or upper_wick_strong
+            or near_m15_high
+        )
+        and rsi < 70
+        and rsi > 38
+    )
+
+    if max_dip_buy:
+        setup_type = "MAX_DIP_BUY"
+        score += 8
+        reasons.append("MAX DIP BUY: acquisto da fondo con news bullish e rejection")
+
+    elif max_fade_sell:
         setup_type = "MAX_FADE_SELL"
         score += 5
         reasons.append("MAX FADE SELL: vendita su eccesso bullish con rejection")
-
-    elif max_fade_buy:
-        setup_type = "MAX_FADE_BUY"
-        score += 5
-        reasons.append("MAX FADE BUY: acquisto su eccesso bearish con rejection")
 
     elif reversal_buy:
         setup_type = "REVERSAL_BUY"
@@ -380,7 +411,15 @@ def score_signal(data, signal):
         score += 5
         reasons.append("Setup REVERSAL SELL stile Max")
 
+    elif max_dip_sell:
+        setup_type = "MAX_DIP_SELL"
+        score += 5
+        reasons.append("MAX DIP SELL: vendita da eccesso bearish")
+
+    # =========================
     # BIAS MANUALE
+    # =========================
+
     if BIAS == "FORCE_SELL":
         if signal == "BUY":
             return -999, ["Bloccato: FORCE_SELL attivo"], active_news_bias, news_reasons, setup_type
@@ -393,7 +432,10 @@ def score_signal(data, signal):
         score += 4
         reasons.append("Bias manuale FORCE_BUY")
 
+    # =========================
     # NEWS
+    # =========================
+
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
             score += 1
@@ -410,17 +452,17 @@ def score_signal(data, signal):
             score += 1
             reasons.append("News bearish gold")
         else:
-            if max_fade_buy:
-                reasons.append("BUY contro news bearish permesso: setup fade Max")
-            else:
-                score -= 2
-                reasons.append("BUY contro news bearish gold")
+            score -= 2
+            reasons.append("BUY contro news bearish gold")
 
     if EVENT_RISK == "HIGH":
         score -= 2
         reasons.append("Evento macro ad alto rischio")
 
+    # =========================
     # BUY
+    # =========================
+
     if signal == "BUY":
 
         if h1_bias == "BUY":
@@ -436,7 +478,10 @@ def score_signal(data, signal):
             reasons.append("Daily BUY")
 
         if day_bias == "SELL":
-            if reversal_buy:
+            if max_dip_buy:
+                score -= 1
+                reasons.append("BUY da fondo contro Daily SELL accettato")
+            elif reversal_buy:
                 score -= 1
                 reasons.append("BUY reversal contro Daily SELL")
             else:
@@ -468,8 +513,8 @@ def score_signal(data, signal):
             reasons.append("Candela bullish")
 
         if candle_dir == "BEAR":
-            if max_fade_buy and rejection == "LOWER_WICK":
-                reasons.append("Candela rossa accettata: lower wick bullish da fade")
+            if max_dip_buy and (rejection == "LOWER_WICK" or lower_wick_strong or near_m15_low):
+                reasons.append("Candela rossa accettata: possibile exhaustion BUY da fondo")
             else:
                 score -= 2
                 reasons.append("Candela rossa contro BUY")
@@ -479,8 +524,12 @@ def score_signal(data, signal):
             reasons.append("Rejection bullish")
 
         if rejection == "UPPER_WICK":
-            score -= 3
-            reasons.append("Wick alta")
+            if max_dip_buy:
+                score -= 1
+                reasons.append("Wick alta ma setup fondo ancora valido")
+            else:
+                score -= 3
+                reasons.append("Wick alta")
 
         if ema20_slope == "UP":
             score += 1
@@ -491,26 +540,38 @@ def score_signal(data, signal):
             reasons.append("EMA50 UP")
 
         if ema20_slope == "DOWN":
-            if reversal_buy or max_fade_buy:
+            if max_dip_buy:
                 score -= 1
-                reasons.append("EMA20 DOWN ma setup BUY speciale")
+                reasons.append("EMA20 DOWN ma MAX DIP BUY")
+            elif reversal_buy:
+                score -= 1
+                reasons.append("EMA20 DOWN ma reversal BUY")
             else:
                 score -= 4
                 reasons.append("EMA20 DOWN")
 
         if ema50_slope == "DOWN":
-            if reversal_buy or max_fade_buy:
+            if max_dip_buy:
                 score -= 1
-                reasons.append("EMA50 DOWN ma setup BUY speciale")
+                reasons.append("EMA50 DOWN ma MAX DIP BUY")
+            elif reversal_buy:
+                score -= 1
+                reasons.append("EMA50 DOWN ma reversal BUY")
             else:
                 score -= 2
                 reasons.append("EMA50 DOWN")
 
         if volume_spike and candle_dir == "BEAR":
-            score -= 3
-            reasons.append("Volume spike bearish")
+            if max_dip_buy:
+                reasons.append("Volume spike bearish assorbito dal setup fondo")
+            else:
+                score -= 3
+                reasons.append("Volume spike bearish")
 
+    # =========================
     # SELL
+    # =========================
+
     if signal == "SELL":
 
         if h1_bias == "SELL":
@@ -653,6 +714,61 @@ def should_block_duplicate(signal, symbol, score):
 
 
 # =========================
+# SL COOLDOWN v10
+# =========================
+
+def get_recent_direct_losses(signal, symbol):
+    now = now_ts()
+    symbol = str(symbol).upper()
+    signal = str(signal).upper()
+
+    losses = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != signal:
+            continue
+
+        if trade.get("status") != "LOSS":
+            continue
+
+        # SL diretto = loss prima di TP1
+        if int(trade.get("highest_tp", 0)) > 0:
+            continue
+
+        closed = trade.get("closed") or trade.get("created") or 0
+
+        if now - closed <= SL_COOLDOWN_LOOKBACK_SECONDS:
+            losses.append(trade)
+
+    return sorted(losses, key=lambda x: x.get("closed") or x.get("created") or 0, reverse=True)
+
+
+def should_block_by_sl_cooldown(signal, symbol):
+    if not SL_COOLDOWN_ENABLED:
+        return False, []
+
+    signal = str(signal).upper()
+
+    if signal != SL_COOLDOWN_SIGNAL:
+        return False, []
+
+    losses = get_recent_direct_losses(signal, symbol)
+
+    if len(losses) < SL_COOLDOWN_LOSSES:
+        return False, losses
+
+    latest_loss = losses[0].get("closed") or losses[0].get("created") or 0
+
+    if now_ts() - latest_loss <= SL_COOLDOWN_SECONDS:
+        return True, losses
+
+    return False, losses
+
+
+# =========================
 # TRADE MANAGEMENT
 # =========================
 
@@ -683,13 +799,21 @@ def save_trade(data, signal, score, setup_type):
         "created": now_ts(),
         "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
         "activated": None,
-        "closed": None
+        "activated_local": None,
+        "closed": None,
+        "closed_local": None
     }
 
     OPEN_TRADES.append(trade)
     save_trades()
 
     return trade
+
+
+def close_trade(trade, status):
+    trade["status"] = status
+    trade["closed"] = now_ts()
+    trade["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def handle_price_update(data):
@@ -707,7 +831,10 @@ def handle_price_update(data):
         trade_id = trade.get("id")
         be_was_already_active = bool(trade.get("be", False))
 
+        # =========================
         # PENDING ENTRY
+        # =========================
+
         if trade.get("status") == "PENDING":
 
             if signal == "BUY":
@@ -717,6 +844,7 @@ def handle_price_update(data):
                     trade["status"] = "OPEN"
                     trade["entered"] = True
                     trade["activated"] = now_ts()
+                    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
                     changed = True
 
                     updates.append(
@@ -734,6 +862,7 @@ def handle_price_update(data):
                     trade["status"] = "OPEN"
                     trade["entered"] = True
                     trade["activated"] = now_ts()
+                    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
                     changed = True
 
                     updates.append(
@@ -744,12 +873,14 @@ def handle_price_update(data):
                 else:
                     continue
 
+        # =========================
         # BUY MANAGEMENT
+        # =========================
+
         if signal == "BUY":
 
             if not trade.get("be") and low <= trade["sl"]:
-                trade["status"] = "LOSS"
-                trade["closed"] = now_ts()
+                close_trade(trade, "LOSS")
                 changed = True
 
                 updates.append(
@@ -780,20 +911,21 @@ def handle_price_update(data):
                         )
 
             if trade.get("be") and be_was_already_active and low <= trade["entry_low"]:
-                trade["status"] = "BE"
-                trade["closed"] = now_ts()
+                close_trade(trade, "BE")
                 changed = True
 
                 updates.append(
                     f"🟡 Trade #{trade_id} BUY chiuso a BE dopo TP{trade.get('highest_tp', 0)}"
                 )
 
+        # =========================
         # SELL MANAGEMENT
+        # =========================
+
         if signal == "SELL":
 
             if not trade.get("be") and high >= trade["sl"]:
-                trade["status"] = "LOSS"
-                trade["closed"] = now_ts()
+                close_trade(trade, "LOSS")
                 changed = True
 
                 updates.append(
@@ -824,8 +956,7 @@ def handle_price_update(data):
                         )
 
             if trade.get("be") and be_was_already_active and high >= trade["entry_high"]:
-                trade["status"] = "BE"
-                trade["closed"] = now_ts()
+                close_trade(trade, "BE")
                 changed = True
 
                 updates.append(
@@ -863,6 +994,7 @@ def get_daily_stats():
     total = len(today_trades)
     active = sum(1 for t in today_trades if t.get("status") in ["PENDING", "OPEN"])
     losses = sum(1 for t in today_trades if t.get("status") == "LOSS")
+    direct_losses = sum(1 for t in today_trades if t.get("status") == "LOSS" and int(t.get("highest_tp", 0)) == 0)
     be = sum(1 for t in today_trades if t.get("status") == "BE")
 
     tp1 = sum(1 for t in today_trades if int(t.get("highest_tp", 0)) >= 1)
@@ -881,24 +1013,34 @@ def get_daily_stats():
                 "tp1": 0,
                 "tp3": 0,
                 "tp5": 0,
+                "tp8": 0,
                 "loss": 0,
+                "direct_loss": 0,
                 "be": 0,
                 "active": 0
             }
 
         by_setup[setup]["total"] += 1
 
-        if int(trade.get("highest_tp", 0)) >= 1:
+        highest_tp = int(trade.get("highest_tp", 0))
+
+        if highest_tp >= 1:
             by_setup[setup]["tp1"] += 1
 
-        if int(trade.get("highest_tp", 0)) >= 3:
+        if highest_tp >= 3:
             by_setup[setup]["tp3"] += 1
 
-        if int(trade.get("highest_tp", 0)) >= 5:
+        if highest_tp >= 5:
             by_setup[setup]["tp5"] += 1
+
+        if highest_tp >= 8:
+            by_setup[setup]["tp8"] += 1
 
         if trade.get("status") == "LOSS":
             by_setup[setup]["loss"] += 1
+
+            if highest_tp == 0:
+                by_setup[setup]["direct_loss"] += 1
 
         if trade.get("status") == "BE":
             by_setup[setup]["be"] += 1
@@ -907,7 +1049,7 @@ def get_daily_stats():
             by_setup[setup]["active"] += 1
 
     tp1_rate = round((tp1 / total) * 100, 2) if total else 0
-    loss_rate = round((losses / total) * 100, 2) if total else 0
+    direct_loss_rate = round((direct_losses / total) * 100, 2) if total else 0
 
     return {
         "version": VERSION,
@@ -916,13 +1058,14 @@ def get_daily_stats():
         "total_today": total,
         "active_today": active,
         "losses_today": losses,
+        "direct_losses_today": direct_losses,
         "be_today": be,
         "tp1_hit_today": tp1,
         "tp3_hit_today": tp3,
         "tp5_hit_today": tp5,
         "tp8_hit_today": tp8,
         "tp1_rate_percent": tp1_rate,
-        "loss_rate_percent": loss_rate,
+        "direct_loss_rate_percent": direct_loss_rate,
         "by_setup_type": by_setup
     }
 
@@ -936,7 +1079,8 @@ def send_daily_stats_to_telegram():
         "",
         f"Trade totali: {s['total_today']}",
         f"Attivi: {s['active_today']}",
-        f"SL diretti: {s['losses_today']}",
+        f"SL totali: {s['losses_today']}",
+        f"SL diretti: {s['direct_losses_today']} ({s['direct_loss_rate_percent']}%)",
         f"BE: {s['be_today']}",
         "",
         f"TP1 hit: {s['tp1_hit_today']} ({s['tp1_rate_percent']}%)",
@@ -950,7 +1094,8 @@ def send_daily_stats_to_telegram():
     for setup, data in s["by_setup_type"].items():
         lines.append(
             f"- {setup}: total {data['total']}, TP1 {data['tp1']}, "
-            f"TP3 {data['tp3']}, TP5 {data['tp5']}, SL {data['loss']}, BE {data['be']}"
+            f"TP3 {data['tp3']}, TP5 {data['tp5']}, TP8 {data['tp8']}, "
+            f"SL {data['loss']}, SL diretti {data['direct_loss']}, BE {data['be']}"
         )
 
     send_telegram("\n".join(lines))
@@ -984,7 +1129,10 @@ def webhook():
 
     score, reasons, active_news_bias, news_reasons, setup_type = score_signal(data, signal)
 
+    # =========================
     # SCORE BLOCK
+    # =========================
+
     if score < MIN_SCORE:
         text = f"""🚫 SEGNALE BLOCCATO {VERSION}
 
@@ -1013,7 +1161,49 @@ News:
             "setup_type": setup_type
         })
 
+    # =========================
+    # SL COOLDOWN BLOCK v10
+    # =========================
+
+    block_sl_cooldown, recent_losses = should_block_by_sl_cooldown(signal, symbol)
+
+    if block_sl_cooldown:
+        last_loss = recent_losses[0]
+        last_loss_time = last_loss.get("closed_local") or "N/D"
+
+        text = f"""🛑 SELL BLOCCATO {VERSION}
+
+Motivo: stop temporaneo dopo SL diretti
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+SL diretti recenti: {len(recent_losses)}
+Soglia SL diretti: {SL_COOLDOWN_LOSSES}
+Lookback secondi: {SL_COOLDOWN_LOOKBACK_SECONDS}
+Cooldown secondi: {SL_COOLDOWN_SECONDS}
+Ultimo SL: {last_loss_time}
+
+Azione:
+Nuovi SELL bloccati temporaneamente.
+Il bot può ancora accettare BUY da fondo / reversal.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_sl_cooldown",
+            "score": score,
+            "setup_type": setup_type,
+            "recent_direct_losses": len(recent_losses)
+        })
+
+    # =========================
     # DUPLICATE BLOCK
+    # =========================
+
     block_duplicate, recent = should_block_duplicate(signal, symbol, score)
 
     if block_duplicate:
@@ -1047,7 +1237,10 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
             "recent_trade_id": recent.get("id")
         })
 
+    # =========================
     # SAVE TRADE
+    # =========================
+
     trade = save_trade(data, signal, score, setup_type)
     emoji = "🟢" if signal == "BUY" else "🔴"
 
