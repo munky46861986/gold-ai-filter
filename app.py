@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import math
 import requests
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -12,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v10 Max Dip Buy + SL Cooldown"
+VERSION = "v11 Runner + Exhaustion Control"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -31,13 +32,28 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Europe/Rome")
 DUPLICATE_SECONDS = int(os.getenv("DUPLICATE_SECONDS", "1200"))
 DUPLICATE_SCORE_DELTA = int(os.getenv("DUPLICATE_SCORE_DELTA", "4"))
 
-# Nuovo v10:
-# Se il bot prende troppi SL diretti SELL, blocca nuovi SELL per un periodo.
+# v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
 SL_COOLDOWN_SIGNAL = os.getenv("SL_COOLDOWN_SIGNAL", "SELL").upper()
 SL_COOLDOWN_LOSSES = int(os.getenv("SL_COOLDOWN_LOSSES", "2"))
 SL_COOLDOWN_LOOKBACK_SECONDS = int(os.getenv("SL_COOLDOWN_LOOKBACK_SECONDS", "5400"))  # 90 minuti
 SL_COOLDOWN_SECONDS = int(os.getenv("SL_COOLDOWN_SECONDS", "3600"))  # 60 minuti
+
+# v11: Runner dopo TP8
+RUNNER_MODE_ENABLED = os.getenv("RUNNER_MODE_ENABLED", "TRUE").upper() == "TRUE"
+RUNNER_TP_LEVEL = int(os.getenv("RUNNER_TP_LEVEL", "8"))
+
+# v11: Livelli psicologici
+PSYCH_LEVEL_STEP = float(os.getenv("PSYCH_LEVEL_STEP", "25"))
+PSYCH_LEVEL_DISTANCE = float(os.getenv("PSYCH_LEVEL_DISTANCE", "3.5"))
+
+# v11: Exhaustion Control
+# Dopo tanti SELL arrivati a TP8, il bot smette di inseguire SELL NORMAL bassi.
+SELL_EXHAUSTION_ENABLED = os.getenv("SELL_EXHAUSTION_ENABLED", "TRUE").upper() == "TRUE"
+SELL_EXHAUSTION_TP_LEVEL = int(os.getenv("SELL_EXHAUSTION_TP_LEVEL", "8"))
+SELL_EXHAUSTION_COUNT = int(os.getenv("SELL_EXHAUSTION_COUNT", "2"))
+SELL_EXHAUSTION_LOOKBACK_SECONDS = int(os.getenv("SELL_EXHAUSTION_LOOKBACK_SECONDS", "7200"))  # 2 ore
+SELL_EXHAUSTION_MAX_FADE_MIN_SCORE = int(os.getenv("SELL_EXHAUSTION_MAX_FADE_MIN_SCORE", "14"))
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -82,6 +98,13 @@ def to_float(value, default=0.0):
         return default
 
 
+def to_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def to_bool(value):
     return str(value).lower() == "true"
 
@@ -103,6 +126,32 @@ def send_telegram(text: str):
         print(f"ERRORE TELEGRAM: {e}")
         print(text)
         return False
+
+
+def get_price_from_data(data):
+    price = to_float(data.get("price"), 0)
+
+    if price:
+        return price
+
+    entry_low = to_float(data.get("entry_low"), 0)
+    entry_high = to_float(data.get("entry_high"), 0)
+
+    if entry_low and entry_high:
+        return (entry_low + entry_high) / 2
+
+    return 0
+
+
+def psych_info(price):
+    if not price or PSYCH_LEVEL_STEP <= 0:
+        return False, None, None
+
+    nearest = round(price / PSYCH_LEVEL_STEP) * PSYCH_LEVEL_STEP
+    distance = abs(price - nearest)
+    near = distance <= PSYCH_LEVEL_DISTANCE
+
+    return near, nearest, distance
 
 
 # =========================
@@ -180,6 +229,15 @@ def health():
         "sl_cooldown_losses": SL_COOLDOWN_LOSSES,
         "sl_cooldown_lookback_seconds": SL_COOLDOWN_LOOKBACK_SECONDS,
         "sl_cooldown_seconds": SL_COOLDOWN_SECONDS,
+        "runner_mode_enabled": RUNNER_MODE_ENABLED,
+        "runner_tp_level": RUNNER_TP_LEVEL,
+        "psych_level_step": PSYCH_LEVEL_STEP,
+        "psych_level_distance": PSYCH_LEVEL_DISTANCE,
+        "sell_exhaustion_enabled": SELL_EXHAUSTION_ENABLED,
+        "sell_exhaustion_tp_level": SELL_EXHAUSTION_TP_LEVEL,
+        "sell_exhaustion_count": SELL_EXHAUSTION_COUNT,
+        "sell_exhaustion_lookback_seconds": SELL_EXHAUSTION_LOOKBACK_SECONDS,
+        "sell_exhaustion_max_fade_min_score": SELL_EXHAUSTION_MAX_FADE_MIN_SCORE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -323,6 +381,19 @@ def score_signal(data, signal):
     upper_wick_strong = to_bool(data.get("upper_wick_strong", "false"))
     lower_wick_strong = to_bool(data.get("lower_wick_strong", "false"))
 
+    price = get_price_from_data(data)
+    near_psych_level, nearest_psych, psych_distance = psych_info(price)
+
+    # TradingView v29 manda già questi campi. Se ci sono, li uso.
+    if data.get("near_psych_level") is not None:
+        near_psych_level = to_bool(data.get("near_psych_level"))
+
+    if data.get("psych_level") is not None:
+        nearest_psych = to_float(data.get("psych_level"), nearest_psych or 0)
+
+    if data.get("psych_distance") is not None:
+        psych_distance = to_float(data.get("psych_distance"), psych_distance or 999)
+
     active_news_bias, news_reasons = get_auto_news_bias()
 
     # =========================
@@ -345,8 +416,8 @@ def score_signal(data, signal):
         and rsi < 58
     )
 
-    # MAX FADE SELL:
-    # Vende eccesso rialzista con news bullish, Daily/H4 sell e rejection.
+    # MAX FADE SELL v11:
+    # Deve essere un vero rimbalzo/upper rejection, non un SELL basso qualsiasi.
     max_fade_sell = (
         signal == "SELL"
         and active_news_bias == "BULLISH_GOLD"
@@ -354,30 +425,47 @@ def score_signal(data, signal):
         and h4_bias == "SELL"
         and structure in ["HH", "BEARISH"]
         and (
-            rejection == "UPPER_WICK"
+            near_m15_high
+            or rejection == "UPPER_WICK"
             or upper_wick_strong
-            or near_m15_high
         )
         and rsi < 68
     )
 
-    # MAX DIP BUY v10:
-    # Compra il fondo dopo discesa estesa quando le news restano bullish.
-    # Serve per non vendere il bottom e per avvicinarsi a Max quando entra BUY da zona bassa.
+    # MAX DIP BUY v11:
+    # Più selettivo della v10.
+    # Richiede almeno 2 conferme tra:
+    # - vicino a minimo M15
+    # - lower wick/rejection
+    # - livello psicologico
+    # - RSI basso
+    # - candela bullish
+    dip_confirmations = 0
+
+    if near_m15_low:
+        dip_confirmations += 1
+
+    if rejection == "LOWER_WICK" or lower_wick_strong:
+        dip_confirmations += 1
+
+    if near_psych_level:
+        dip_confirmations += 1
+
+    if rsi < 42:
+        dip_confirmations += 1
+
+    if candle_dir == "BULL":
+        dip_confirmations += 1
+
     max_dip_buy = (
         signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
         and structure in ["LL", "BULLISH"]
-        and (
-            rejection == "LOWER_WICK"
-            or lower_wick_strong
-            or near_m15_low
-        )
-        and rsi > 30
+        and rsi > 26
         and rsi < 62
+        and dip_confirmations >= 2
     )
 
-    # MAX DIP SELL speculare, disattivato di fatto ma pronto:
     max_dip_sell = (
         signal == "SELL"
         and active_news_bias == "BEARISH_GOLD"
@@ -394,12 +482,16 @@ def score_signal(data, signal):
     if max_dip_buy:
         setup_type = "MAX_DIP_BUY"
         score += 8
-        reasons.append("MAX DIP BUY: acquisto da fondo con news bullish e rejection")
+        reasons.append(f"MAX DIP BUY: fondo confermato ({dip_confirmations} conferme)")
+
+        if near_psych_level:
+            score += 3
+            reasons.append(f"Vicino livello psicologico {nearest_psych}")
 
     elif max_fade_sell:
         setup_type = "MAX_FADE_SELL"
         score += 5
-        reasons.append("MAX FADE SELL: vendita su eccesso bullish con rejection")
+        reasons.append("MAX FADE SELL: vendita su rimbalzo alto con rejection")
 
     elif reversal_buy:
         setup_type = "REVERSAL_BUY"
@@ -513,8 +605,8 @@ def score_signal(data, signal):
             reasons.append("Candela bullish")
 
         if candle_dir == "BEAR":
-            if max_dip_buy and (rejection == "LOWER_WICK" or lower_wick_strong or near_m15_low):
-                reasons.append("Candela rossa accettata: possibile exhaustion BUY da fondo")
+            if max_dip_buy:
+                reasons.append("Candela rossa accettata: exhaustion BUY da fondo")
             else:
                 score -= 2
                 reasons.append("Candela rossa contro BUY")
@@ -526,7 +618,7 @@ def score_signal(data, signal):
         if rejection == "UPPER_WICK":
             if max_dip_buy:
                 score -= 1
-                reasons.append("Wick alta ma setup fondo ancora valido")
+                reasons.append("Wick alta ma fondo ancora valido")
             else:
                 score -= 3
                 reasons.append("Wick alta")
@@ -563,7 +655,8 @@ def score_signal(data, signal):
 
         if volume_spike and candle_dir == "BEAR":
             if max_dip_buy:
-                reasons.append("Volume spike bearish assorbito dal setup fondo")
+                score -= 1
+                reasons.append("Volume bearish ma setup fondo ancora valido")
             else:
                 score -= 3
                 reasons.append("Volume spike bearish")
@@ -769,6 +862,74 @@ def should_block_by_sl_cooldown(signal, symbol):
 
 
 # =========================
+# SELL EXHAUSTION v11
+# =========================
+
+def get_recent_tp_trades(signal, symbol, min_tp=8, lookback_seconds=7200):
+    now = now_ts()
+    symbol = str(symbol).upper()
+    signal = str(signal).upper()
+
+    hits = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != signal:
+            continue
+
+        if int(trade.get("highest_tp", 0)) < min_tp:
+            continue
+
+        event_time = (
+            trade.get(f"tp{min_tp}_time")
+            or trade.get("last_tp_time")
+            or trade.get("closed")
+            or trade.get("created")
+            or 0
+        )
+
+        if now - event_time <= lookback_seconds:
+            hits.append(trade)
+
+    return sorted(
+        hits,
+        key=lambda x: x.get(f"tp{min_tp}_time") or x.get("last_tp_time") or x.get("created") or 0,
+        reverse=True
+    )
+
+
+def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
+    if not SELL_EXHAUSTION_ENABLED:
+        return False, []
+
+    if str(signal).upper() != "SELL":
+        return False, []
+
+    recent_tp8_sells = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=SELL_EXHAUSTION_TP_LEVEL,
+        lookback_seconds=SELL_EXHAUSTION_LOOKBACK_SECONDS
+    )
+
+    if len(recent_tp8_sells) < SELL_EXHAUSTION_COUNT:
+        return False, recent_tp8_sells
+
+    # Dopo tanti TP8 SELL:
+    # - blocca SELL NORMAL
+    # - permette MAX_FADE_SELL solo se molto forte
+    if setup_type == "NORMAL":
+        return True, recent_tp8_sells
+
+    if setup_type == "MAX_FADE_SELL" and score < SELL_EXHAUSTION_MAX_FADE_MIN_SCORE:
+        return True, recent_tp8_sells
+
+    return False, recent_tp8_sells
+
+
+# =========================
 # TRADE MANAGEMENT
 # =========================
 
@@ -796,12 +957,16 @@ def save_trade(data, signal, score, setup_type):
         "entered": False,
         "be": False,
         "highest_tp": 0,
+        "runner": False,
+        "runner_notified": False,
         "created": now_ts(),
         "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
         "activated": None,
         "activated_local": None,
         "closed": None,
-        "closed_local": None
+        "closed_local": None,
+        "last_tp_time": None,
+        "last_tp_local": None
     }
 
     OPEN_TRADES.append(trade)
@@ -814,6 +979,23 @@ def close_trade(trade, status):
     trade["status"] = status
     trade["closed"] = now_ts()
     trade["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def runner_message(trade, tp_level, tp_value):
+    signal = trade.get("signal")
+    trade_id = trade.get("id")
+    setup = trade.get("setup_type", "NORMAL")
+
+    return (
+        f"🚀 RUNNER MODE ATTIVO\n\n"
+        f"Trade #{trade_id} {signal}\n"
+        f"Setup: {setup}\n"
+        f"TP{tp_level} raggiunto: {tp_value}\n\n"
+        f"Lettura v11:\n"
+        f"Il movimento ha superato tutti i target standard.\n"
+        f"Possibile giornata direzionale stile Max.\n"
+        f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
+    )
 
 
 def handle_price_update(data):
@@ -895,6 +1077,10 @@ def handle_price_update(data):
 
                 if tp and high >= tp and trade.get("highest_tp", 0) < i:
                     trade["highest_tp"] = i
+                    trade["last_tp_time"] = now_ts()
+                    trade["last_tp_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+                    trade[f"tp{i}_time"] = trade["last_tp_time"]
+                    trade[f"tp{i}_local"] = trade["last_tp_local"]
                     changed = True
 
                     if i == 1:
@@ -910,12 +1096,19 @@ def handle_price_update(data):
                             f"🎯 TP{i}: {tp}"
                         )
 
+                    if RUNNER_MODE_ENABLED and i >= RUNNER_TP_LEVEL and not trade.get("runner_notified"):
+                        trade["runner"] = True
+                        trade["runner_notified"] = True
+                        updates.append(runner_message(trade, i, tp))
+
             if trade.get("be") and be_was_already_active and low <= trade["entry_low"]:
                 close_trade(trade, "BE")
                 changed = True
 
+                runner_note = " con RUNNER attivo" if trade.get("runner") else ""
+
                 updates.append(
-                    f"🟡 Trade #{trade_id} BUY chiuso a BE dopo TP{trade.get('highest_tp', 0)}"
+                    f"🟡 Trade #{trade_id} BUY chiuso a BE dopo TP{trade.get('highest_tp', 0)}{runner_note}"
                 )
 
         # =========================
@@ -940,6 +1133,10 @@ def handle_price_update(data):
 
                 if tp and low <= tp and trade.get("highest_tp", 0) < i:
                     trade["highest_tp"] = i
+                    trade["last_tp_time"] = now_ts()
+                    trade["last_tp_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+                    trade[f"tp{i}_time"] = trade["last_tp_time"]
+                    trade[f"tp{i}_local"] = trade["last_tp_local"]
                     changed = True
 
                     if i == 1:
@@ -955,12 +1152,19 @@ def handle_price_update(data):
                             f"🎯 TP{i}: {tp}"
                         )
 
+                    if RUNNER_MODE_ENABLED and i >= RUNNER_TP_LEVEL and not trade.get("runner_notified"):
+                        trade["runner"] = True
+                        trade["runner_notified"] = True
+                        updates.append(runner_message(trade, i, tp))
+
             if trade.get("be") and be_was_already_active and high >= trade["entry_high"]:
                 close_trade(trade, "BE")
                 changed = True
 
+                runner_note = " con RUNNER attivo" if trade.get("runner") else ""
+
                 updates.append(
-                    f"🟡 Trade #{trade_id} SELL chiuso a BE dopo TP{trade.get('highest_tp', 0)}"
+                    f"🟡 Trade #{trade_id} SELL chiuso a BE dopo TP{trade.get('highest_tp', 0)}{runner_note}"
                 )
 
     if changed:
@@ -996,6 +1200,7 @@ def get_daily_stats():
     losses = sum(1 for t in today_trades if t.get("status") == "LOSS")
     direct_losses = sum(1 for t in today_trades if t.get("status") == "LOSS" and int(t.get("highest_tp", 0)) == 0)
     be = sum(1 for t in today_trades if t.get("status") == "BE")
+    runners = sum(1 for t in today_trades if t.get("runner"))
 
     tp1 = sum(1 for t in today_trades if int(t.get("highest_tp", 0)) >= 1)
     tp3 = sum(1 for t in today_trades if int(t.get("highest_tp", 0)) >= 3)
@@ -1014,6 +1219,7 @@ def get_daily_stats():
                 "tp3": 0,
                 "tp5": 0,
                 "tp8": 0,
+                "runner": 0,
                 "loss": 0,
                 "direct_loss": 0,
                 "be": 0,
@@ -1035,6 +1241,9 @@ def get_daily_stats():
 
         if highest_tp >= 8:
             by_setup[setup]["tp8"] += 1
+
+        if trade.get("runner"):
+            by_setup[setup]["runner"] += 1
 
         if trade.get("status") == "LOSS":
             by_setup[setup]["loss"] += 1
@@ -1060,6 +1269,7 @@ def get_daily_stats():
         "losses_today": losses,
         "direct_losses_today": direct_losses,
         "be_today": be,
+        "runners_today": runners,
         "tp1_hit_today": tp1,
         "tp3_hit_today": tp3,
         "tp5_hit_today": tp5,
@@ -1082,6 +1292,7 @@ def send_daily_stats_to_telegram():
         f"SL totali: {s['losses_today']}",
         f"SL diretti: {s['direct_losses_today']} ({s['direct_loss_rate_percent']}%)",
         f"BE: {s['be_today']}",
+        f"Runner: {s['runners_today']}",
         "",
         f"TP1 hit: {s['tp1_hit_today']} ({s['tp1_rate_percent']}%)",
         f"TP3 hit: {s['tp3_hit_today']}",
@@ -1095,7 +1306,7 @@ def send_daily_stats_to_telegram():
         lines.append(
             f"- {setup}: total {data['total']}, TP1 {data['tp1']}, "
             f"TP3 {data['tp3']}, TP5 {data['tp5']}, TP8 {data['tp8']}, "
-            f"SL {data['loss']}, SL diretti {data['direct_loss']}, BE {data['be']}"
+            f"Runner {data['runner']}, SL {data['loss']}, SL diretti {data['direct_loss']}, BE {data['be']}"
         )
 
     send_telegram("\n".join(lines))
@@ -1162,7 +1373,7 @@ News:
         })
 
     # =========================
-    # SL COOLDOWN BLOCK v10
+    # SL COOLDOWN BLOCK
     # =========================
 
     block_sl_cooldown, recent_losses = should_block_by_sl_cooldown(signal, symbol)
@@ -1198,6 +1409,41 @@ Il bot può ancora accettare BUY da fondo / reversal.
             "score": score,
             "setup_type": setup_type,
             "recent_direct_losses": len(recent_losses)
+        })
+
+    # =========================
+    # SELL EXHAUSTION BLOCK v11
+    # =========================
+
+    block_exhaustion, recent_tp8_sells = should_block_by_sell_exhaustion(signal, symbol, setup_type, score)
+
+    if block_exhaustion:
+        text = f"""🧯 SELL BLOCCATO {VERSION}
+
+Motivo: SELL exhaustion dopo troppi TP profondi
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+SELL recenti arrivati almeno a TP{SELL_EXHAUSTION_TP_LEVEL}: {len(recent_tp8_sells)}
+Soglia: {SELL_EXHAUSTION_COUNT}
+Lookback secondi: {SELL_EXHAUSTION_LOOKBACK_SECONDS}
+
+Azione:
+Non inseguo nuovi SELL bassi dopo una discesa già molto pagata.
+Accetto solo MAX_FADE_SELL molto forti da rimbalzo alto.
+Favorisco MAX_DIP_BUY se il fondo viene confermato.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_sell_exhaustion",
+            "score": score,
+            "setup_type": setup_type,
+            "recent_tp_sells": len(recent_tp8_sells)
         })
 
     # =========================
