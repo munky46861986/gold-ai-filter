@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v11 Runner + Exhaustion Control"
+VERSION = "v12 Max Recovery Buy"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -54,6 +54,15 @@ SELL_EXHAUSTION_TP_LEVEL = int(os.getenv("SELL_EXHAUSTION_TP_LEVEL", "8"))
 SELL_EXHAUSTION_COUNT = int(os.getenv("SELL_EXHAUSTION_COUNT", "2"))
 SELL_EXHAUSTION_LOOKBACK_SECONDS = int(os.getenv("SELL_EXHAUSTION_LOOKBACK_SECONDS", "7200"))  # 2 ore
 SELL_EXHAUSTION_MAX_FADE_MIN_SCORE = int(os.getenv("SELL_EXHAUSTION_MAX_FADE_MIN_SCORE", "14"))
+
+# v12: Max Recovery Buy
+# Serve per prendere il BUY di recupero dopo una grande discesa,
+# non solo il BUY sul minimo puro.
+RECOVERY_BUY_ENABLED = os.getenv("RECOVERY_BUY_ENABLED", "TRUE").upper() == "TRUE"
+RECOVERY_BUY_TP_LEVEL = int(os.getenv("RECOVERY_BUY_TP_LEVEL", "8"))
+RECOVERY_BUY_DEEP_SELL_COUNT = int(os.getenv("RECOVERY_BUY_DEEP_SELL_COUNT", "1"))
+RECOVERY_BUY_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_BUY_LOOKBACK_SECONDS", "7200"))
+RECOVERY_BUY_MIN_CONFIRMATIONS = int(os.getenv("RECOVERY_BUY_MIN_CONFIRMATIONS", "3"))
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -238,6 +247,11 @@ def health():
         "sell_exhaustion_count": SELL_EXHAUSTION_COUNT,
         "sell_exhaustion_lookback_seconds": SELL_EXHAUSTION_LOOKBACK_SECONDS,
         "sell_exhaustion_max_fade_min_score": SELL_EXHAUSTION_MAX_FADE_MIN_SCORE,
+        "recovery_buy_enabled": RECOVERY_BUY_ENABLED,
+        "recovery_buy_tp_level": RECOVERY_BUY_TP_LEVEL,
+        "recovery_buy_deep_sell_count": RECOVERY_BUY_DEEP_SELL_COUNT,
+        "recovery_buy_lookback_seconds": RECOVERY_BUY_LOOKBACK_SECONDS,
+        "recovery_buy_min_confirmations": RECOVERY_BUY_MIN_CONFIRMATIONS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -382,7 +396,14 @@ def score_signal(data, signal):
     lower_wick_strong = to_bool(data.get("lower_wick_strong", "false"))
 
     price = get_price_from_data(data)
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
+
+    # Campi extra mandati dal Pine v30
+    close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
+    close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
+    recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
+    recent_low_touch = to_bool(data.get("recent_low_touch", "false"))
 
     # TradingView v29 manda già questi campi. Se ci sono, li uso.
     if data.get("near_psych_level") is not None:
@@ -395,6 +416,15 @@ def score_signal(data, signal):
         psych_distance = to_float(data.get("psych_distance"), psych_distance or 999)
 
     active_news_bias, news_reasons = get_auto_news_bias()
+
+    # v12 context:
+    # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
+    recent_deep_sells = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=RECOVERY_BUY_TP_LEVEL,
+        lookback_seconds=RECOVERY_BUY_LOOKBACK_SECONDS
+    )
 
     # =========================
     # SETUP SPECIALI
@@ -457,6 +487,48 @@ def score_signal(data, signal):
     if candle_dir == "BULL":
         dip_confirmations += 1
 
+    # MAX RECOVERY BUY v12:
+    # Compra il recupero dopo che il mercato ha già fatto una grande discesa.
+    # È diverso dal MAX_DIP_BUY:
+    # - MAX_DIP_BUY compra il fondo.
+    # - MAX_RECOVERY_BUY compra il ritorno sopra zona chiave dopo il fondo.
+    recovery_confirmations = 0
+
+    if len(recent_deep_sells) >= RECOVERY_BUY_DEEP_SELL_COUNT:
+        recovery_confirmations += 1
+
+    if recovery_buy_signal or recent_low_touch:
+        recovery_confirmations += 1
+
+    if near_psych_level:
+        recovery_confirmations += 1
+
+    if candle_dir == "BULL":
+        recovery_confirmations += 1
+
+    if close_above_ema20:
+        recovery_confirmations += 1
+
+    if structure in ["LL", "BULLISH", "HL"]:
+        recovery_confirmations += 1
+
+    max_recovery_buy = (
+        RECOVERY_BUY_ENABLED
+        and signal == "BUY"
+        and active_news_bias == "BULLISH_GOLD"
+        and len(recent_deep_sells) >= RECOVERY_BUY_DEEP_SELL_COUNT
+        and structure in ["LL", "BULLISH", "HL"]
+        and rsi > 34
+        and rsi < 70
+        and recovery_confirmations >= RECOVERY_BUY_MIN_CONFIRMATIONS
+        and (
+            recovery_buy_signal
+            or close_above_ema20
+            or candle_dir == "BULL"
+            or near_psych_level
+        )
+    )
+
     max_dip_buy = (
         signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
@@ -479,7 +551,20 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if max_dip_buy:
+    if max_recovery_buy:
+        setup_type = "MAX_RECOVERY_BUY"
+        score += 9
+        reasons.append(f"MAX RECOVERY BUY: recupero dopo grande discesa ({recovery_confirmations} conferme)")
+
+        if len(recent_deep_sells) >= RECOVERY_BUY_DEEP_SELL_COUNT:
+            score += 2
+            reasons.append(f"Contesto post SELL profondi: {len(recent_deep_sells)} trade almeno TP{RECOVERY_BUY_TP_LEVEL}")
+
+        if near_psych_level:
+            score += 3
+            reasons.append(f"Recupero vicino livello psicologico {nearest_psych}")
+
+    elif max_dip_buy:
         setup_type = "MAX_DIP_BUY"
         score += 8
         reasons.append(f"MAX DIP BUY: fondo confermato ({dip_confirmations} conferme)")
@@ -570,9 +655,9 @@ def score_signal(data, signal):
             reasons.append("Daily BUY")
 
         if day_bias == "SELL":
-            if max_dip_buy:
+            if max_dip_buy or max_recovery_buy:
                 score -= 1
-                reasons.append("BUY da fondo contro Daily SELL accettato")
+                reasons.append("BUY da fondo/recupero contro Daily SELL accettato")
             elif reversal_buy:
                 score -= 1
                 reasons.append("BUY reversal contro Daily SELL")
@@ -605,8 +690,8 @@ def score_signal(data, signal):
             reasons.append("Candela bullish")
 
         if candle_dir == "BEAR":
-            if max_dip_buy:
-                reasons.append("Candela rossa accettata: exhaustion BUY da fondo")
+            if max_dip_buy or max_recovery_buy:
+                reasons.append("Candela rossa accettata: exhaustion/recovery BUY")
             else:
                 score -= 2
                 reasons.append("Candela rossa contro BUY")
@@ -616,9 +701,9 @@ def score_signal(data, signal):
             reasons.append("Rejection bullish")
 
         if rejection == "UPPER_WICK":
-            if max_dip_buy:
+            if max_dip_buy or max_recovery_buy:
                 score -= 1
-                reasons.append("Wick alta ma fondo ancora valido")
+                reasons.append("Wick alta ma BUY speciale ancora valido")
             else:
                 score -= 3
                 reasons.append("Wick alta")
@@ -632,9 +717,9 @@ def score_signal(data, signal):
             reasons.append("EMA50 UP")
 
         if ema20_slope == "DOWN":
-            if max_dip_buy:
+            if max_dip_buy or max_recovery_buy:
                 score -= 1
-                reasons.append("EMA20 DOWN ma MAX DIP BUY")
+                reasons.append("EMA20 DOWN ma BUY speciale")
             elif reversal_buy:
                 score -= 1
                 reasons.append("EMA20 DOWN ma reversal BUY")
@@ -643,9 +728,9 @@ def score_signal(data, signal):
                 reasons.append("EMA20 DOWN")
 
         if ema50_slope == "DOWN":
-            if max_dip_buy:
+            if max_dip_buy or max_recovery_buy:
                 score -= 1
-                reasons.append("EMA50 DOWN ma MAX DIP BUY")
+                reasons.append("EMA50 DOWN ma BUY speciale")
             elif reversal_buy:
                 score -= 1
                 reasons.append("EMA50 DOWN ma reversal BUY")
@@ -654,9 +739,9 @@ def score_signal(data, signal):
                 reasons.append("EMA50 DOWN")
 
         if volume_spike and candle_dir == "BEAR":
-            if max_dip_buy:
+            if max_dip_buy or max_recovery_buy:
                 score -= 1
-                reasons.append("Volume bearish ma setup fondo ancora valido")
+                reasons.append("Volume bearish ma BUY speciale ancora valido")
             else:
                 score -= 3
                 reasons.append("Volume spike bearish")
