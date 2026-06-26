@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v12 Max Recovery Buy"
+VERSION = "v13 Recovery Lock"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -63,6 +63,35 @@ RECOVERY_BUY_TP_LEVEL = int(os.getenv("RECOVERY_BUY_TP_LEVEL", "8"))
 RECOVERY_BUY_DEEP_SELL_COUNT = int(os.getenv("RECOVERY_BUY_DEEP_SELL_COUNT", "1"))
 RECOVERY_BUY_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_BUY_LOOKBACK_SECONDS", "7200"))
 RECOVERY_BUY_MIN_CONFIRMATIONS = int(os.getenv("RECOVERY_BUY_MIN_CONFIRMATIONS", "3"))
+
+# v13: Recovery Lock
+# Se un BUY da fondo/recupero sta funzionando, il bot smette di combatterlo con SELL.
+RECOVERY_LOCK_ENABLED = os.getenv("RECOVERY_LOCK_ENABLED", "TRUE").upper() == "TRUE"
+
+# Se un BUY speciale prende TP3, blocco SELL NORMAL per 45 minuti.
+RECOVERY_LOCK_TP3_LEVEL = int(os.getenv("RECOVERY_LOCK_TP3_LEVEL", "3"))
+RECOVERY_LOCK_TP3_SECONDS = int(os.getenv("RECOVERY_LOCK_TP3_SECONDS", "2700"))
+
+# Se un BUY speciale prende TP5/TP6, blocco più forte per 90 minuti.
+RECOVERY_LOCK_TP5_LEVEL = int(os.getenv("RECOVERY_LOCK_TP5_LEVEL", "5"))
+RECOVERY_LOCK_TP5_SECONDS = int(os.getenv("RECOVERY_LOCK_TP5_SECONDS", "5400"))
+
+# Se un BUY arriva a TP8 / Runner, considero il recupero confermato per 2 ore.
+RECOVERY_LOCK_RUNNER_LEVEL = int(os.getenv("RECOVERY_LOCK_RUNNER_LEVEL", "8"))
+RECOVERY_LOCK_RUNNER_SECONDS = int(os.getenv("RECOVERY_LOCK_RUNNER_SECONDS", "7200"))
+
+# Durante Recovery Lock, un MAX_FADE_SELL può passare solo se è davvero fortissimo.
+RECOVERY_LOCK_MAX_FADE_MIN_SCORE = int(os.getenv("RECOVERY_LOCK_MAX_FADE_MIN_SCORE", "22"))
+
+# Se un BUY speciale è ancora OPEN e ha già preso TP1/TP2, blocco i SELL opposti.
+OPPOSITE_TRADE_LOCK_ENABLED = os.getenv("OPPOSITE_TRADE_LOCK_ENABLED", "TRUE").upper() == "TRUE"
+OPPOSITE_TRADE_LOCK_MIN_TP = int(os.getenv("OPPOSITE_TRADE_LOCK_MIN_TP", "1"))
+
+RECOVERY_LOCK_BUY_SETUPS = {
+    "MAX_RECOVERY_BUY",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY"
+}
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -252,6 +281,16 @@ def health():
         "recovery_buy_deep_sell_count": RECOVERY_BUY_DEEP_SELL_COUNT,
         "recovery_buy_lookback_seconds": RECOVERY_BUY_LOOKBACK_SECONDS,
         "recovery_buy_min_confirmations": RECOVERY_BUY_MIN_CONFIRMATIONS,
+        "recovery_lock_enabled": RECOVERY_LOCK_ENABLED,
+        "recovery_lock_tp3_level": RECOVERY_LOCK_TP3_LEVEL,
+        "recovery_lock_tp3_seconds": RECOVERY_LOCK_TP3_SECONDS,
+        "recovery_lock_tp5_level": RECOVERY_LOCK_TP5_LEVEL,
+        "recovery_lock_tp5_seconds": RECOVERY_LOCK_TP5_SECONDS,
+        "recovery_lock_runner_level": RECOVERY_LOCK_RUNNER_LEVEL,
+        "recovery_lock_runner_seconds": RECOVERY_LOCK_RUNNER_SECONDS,
+        "recovery_lock_max_fade_min_score": RECOVERY_LOCK_MAX_FADE_MIN_SCORE,
+        "opposite_trade_lock_enabled": OPPOSITE_TRADE_LOCK_ENABLED,
+        "opposite_trade_lock_min_tp": OPPOSITE_TRADE_LOCK_MIN_TP,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1014,6 +1053,193 @@ def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
     return False, recent_tp8_sells
 
 
+
+# =========================
+# RECOVERY LOCK v13
+# =========================
+
+def _trade_event_time(trade, tp_level):
+    return (
+        trade.get(f"tp{tp_level}_time")
+        or trade.get("last_tp_time")
+        or trade.get("closed")
+        or trade.get("created")
+        or 0
+    )
+
+
+def get_open_successful_buy_trades(symbol):
+    symbol = str(symbol).upper()
+    active_buys = []
+
+    if not OPPOSITE_TRADE_LOCK_ENABLED:
+        return active_buys
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != "BUY":
+            continue
+
+        if trade.get("status") != "OPEN":
+            continue
+
+        setup = trade.get("setup_type", "NORMAL")
+
+        if setup not in RECOVERY_LOCK_BUY_SETUPS:
+            continue
+
+        if int(trade.get("highest_tp", 0)) < OPPOSITE_TRADE_LOCK_MIN_TP:
+            continue
+
+        active_buys.append(trade)
+
+    return sorted(active_buys, key=lambda x: x.get("last_tp_time") or x.get("created") or 0, reverse=True)
+
+
+def get_recovery_lock_context(symbol):
+    if not RECOVERY_LOCK_ENABLED:
+        return {
+            "active": False,
+            "level": "NONE",
+            "reason": "Recovery Lock disattivato",
+            "trades": [],
+            "best_trade": None
+        }
+
+    now = now_ts()
+    symbol = str(symbol).upper()
+
+    active_successful_buys = get_open_successful_buy_trades(symbol)
+
+    if active_successful_buys:
+        best = active_successful_buys[0]
+        return {
+            "active": True,
+            "level": "ACTIVE_BUY_PROTECTION",
+            "reason": f"BUY speciale ancora OPEN con TP{best.get('highest_tp', 0)} già preso",
+            "trades": active_successful_buys,
+            "best_trade": best
+        }
+
+    runner_hits = []
+    strong_hits = []
+    normal_hits = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != "BUY":
+            continue
+
+        setup = trade.get("setup_type", "NORMAL")
+
+        if setup not in RECOVERY_LOCK_BUY_SETUPS:
+            continue
+
+        highest_tp = int(trade.get("highest_tp", 0))
+
+        if highest_tp >= RECOVERY_LOCK_RUNNER_LEVEL or trade.get("runner"):
+            event_time = _trade_event_time(trade, RECOVERY_LOCK_RUNNER_LEVEL)
+
+            if now - event_time <= RECOVERY_LOCK_RUNNER_SECONDS:
+                runner_hits.append(trade)
+
+        elif highest_tp >= RECOVERY_LOCK_TP5_LEVEL:
+            event_time = _trade_event_time(trade, RECOVERY_LOCK_TP5_LEVEL)
+
+            if now - event_time <= RECOVERY_LOCK_TP5_SECONDS:
+                strong_hits.append(trade)
+
+        elif highest_tp >= RECOVERY_LOCK_TP3_LEVEL:
+            event_time = _trade_event_time(trade, RECOVERY_LOCK_TP3_LEVEL)
+
+            if now - event_time <= RECOVERY_LOCK_TP3_SECONDS:
+                normal_hits.append(trade)
+
+    if runner_hits:
+        best = sorted(runner_hits, key=lambda x: x.get("last_tp_time") or x.get("created") or 0, reverse=True)[0]
+        return {
+            "active": True,
+            "level": "BULL_RECOVERY_RUNNER",
+            "reason": f"BUY speciale arrivato almeno a TP{RECOVERY_LOCK_RUNNER_LEVEL}/Runner",
+            "trades": runner_hits,
+            "best_trade": best
+        }
+
+    if strong_hits:
+        best = sorted(strong_hits, key=lambda x: x.get("last_tp_time") or x.get("created") or 0, reverse=True)[0]
+        return {
+            "active": True,
+            "level": "STRONG_RECOVERY",
+            "reason": f"BUY speciale arrivato almeno a TP{RECOVERY_LOCK_TP5_LEVEL}",
+            "trades": strong_hits,
+            "best_trade": best
+        }
+
+    if normal_hits:
+        best = sorted(normal_hits, key=lambda x: x.get("last_tp_time") or x.get("created") or 0, reverse=True)[0]
+        return {
+            "active": True,
+            "level": "RECOVERY_TP3",
+            "reason": f"BUY speciale arrivato almeno a TP{RECOVERY_LOCK_TP3_LEVEL}",
+            "trades": normal_hits,
+            "best_trade": best
+        }
+
+    return {
+        "active": False,
+        "level": "NONE",
+        "reason": "Nessun BUY Recovery/Dip recente abbastanza forte",
+        "trades": [],
+        "best_trade": None
+    }
+
+
+def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
+    if not RECOVERY_LOCK_ENABLED:
+        return False, get_recovery_lock_context(symbol)
+
+    if str(signal).upper() != "SELL":
+        return False, get_recovery_lock_context(symbol)
+
+    ctx = get_recovery_lock_context(symbol)
+
+    if not ctx["active"]:
+        return False, ctx
+
+    setup_type = str(setup_type).upper()
+
+    # Durante Recovery Lock i SELL NORMAL non devono combattere il recupero.
+    if setup_type == "NORMAL":
+        return True, ctx
+
+    # MAX_FADE_SELL può passare solo se è davvero fortissimo.
+    if setup_type == "MAX_FADE_SELL" and int(score) < RECOVERY_LOCK_MAX_FADE_MIN_SCORE:
+        return True, ctx
+
+    return False, ctx
+
+
+def recovery_lock_status_text(ctx):
+    if not ctx or not ctx.get("active"):
+        return "Recovery Lock non attivo"
+
+    best = ctx.get("best_trade") or {}
+
+    return (
+        f"Livello lock: {ctx.get('level')}\n"
+        f"Motivo: {ctx.get('reason')}\n"
+        f"Trade BUY riferimento: {best.get('id', 'N/D')}\n"
+        f"Setup BUY: {best.get('setup_type', 'N/D')}\n"
+        f"Highest TP BUY: {best.get('highest_tp', 0)}\n"
+        f"Status BUY: {best.get('status', 'N/D')}"
+    )
+
+
+
 # =========================
 # TRADE MANAGEMENT
 # =========================
@@ -1076,7 +1302,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v11:\n"
+        f"Lettura v13:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -1495,6 +1721,41 @@ Il bot può ancora accettare BUY da fondo / reversal.
             "setup_type": setup_type,
             "recent_direct_losses": len(recent_losses)
         })
+
+    # =========================
+    # RECOVERY LOCK BLOCK v13
+    # =========================
+
+    block_recovery_lock, recovery_ctx = should_block_sell_by_recovery_lock(signal, symbol, setup_type, score)
+
+    if block_recovery_lock:
+        text = f"""🟢🔒 SELL BLOCCATO {VERSION}
+
+Motivo: Recovery Lock attivo
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{recovery_lock_status_text(recovery_ctx)}
+
+Azione:
+Il bot non combatte un BUY Recovery/Dip che sta funzionando.
+SELL NORMAL bloccati.
+MAX_FADE_SELL consentiti solo se score >= {RECOVERY_LOCK_MAX_FADE_MIN_SCORE} e setup davvero forte.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_recovery_lock",
+            "score": score,
+            "setup_type": setup_type,
+            "recovery_lock_level": recovery_ctx.get("level"),
+            "recovery_lock_reason": recovery_ctx.get("reason")
+        })
+
 
     # =========================
     # SELL EXHAUSTION BLOCK v11
