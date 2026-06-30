@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v13 Recovery Lock"
+VERSION = "v14 Buy Fatigue + Conflict Resolver"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -91,6 +91,43 @@ RECOVERY_LOCK_BUY_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
+}
+
+# v14: Buy Fatigue + Conflict Resolver
+# La v13 non combatte i BUY che funzionano.
+# La v14 aggiunge due intelligenze:
+# 1) non inseguire troppi BUY quando l'onda è già matura;
+# 2) non aprire BUY e SELL quasi insieme, ma scegliere la direzione dominante.
+BUY_FATIGUE_ENABLED = os.getenv("BUY_FATIGUE_ENABLED", "TRUE").upper() == "TRUE"
+BUY_FATIGUE_TP_LEVEL = int(os.getenv("BUY_FATIGUE_TP_LEVEL", "5"))
+BUY_FATIGUE_COUNT = int(os.getenv("BUY_FATIGUE_COUNT", "2"))
+BUY_FATIGUE_LOOKBACK_SECONDS = int(os.getenv("BUY_FATIGUE_LOOKBACK_SECONDS", "7200"))
+BUY_FATIGUE_ALLOW_SCORE = int(os.getenv("BUY_FATIGUE_ALLOW_SCORE", "18"))
+
+# Dopo BUY_FATIGUE attivo, il bot accetta nuovi BUY solo se sono davvero speciali
+# e arrivano da zona bassa / livello psicologico / recente low.
+BUY_FATIGUE_ALLOW_SETUPS = {
+    "MAX_DIP_BUY",
+    "MAX_RECOVERY_BUY"
+}
+
+BUY_SL_COOLDOWN_ENABLED = os.getenv("BUY_SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
+BUY_SL_COOLDOWN_LOSSES = int(os.getenv("BUY_SL_COOLDOWN_LOSSES", "2"))
+BUY_SL_COOLDOWN_LOOKBACK_SECONDS = int(os.getenv("BUY_SL_COOLDOWN_LOOKBACK_SECONDS", "5400"))
+BUY_SL_COOLDOWN_SECONDS = int(os.getenv("BUY_SL_COOLDOWN_SECONDS", "3600"))
+
+CONFLICT_RESOLVER_ENABLED = os.getenv("CONFLICT_RESOLVER_ENABLED", "TRUE").upper() == "TRUE"
+CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
+CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
+
+SETUP_WEIGHTS = {
+    "MAX_RECOVERY_BUY": 5,
+    "MAX_DIP_BUY": 4,
+    "REVERSAL_BUY": 4,
+    "MAX_FADE_SELL": 3,
+    "MAX_DIP_SELL": 3,
+    "REVERSAL_SELL": 3,
+    "NORMAL": 1
 }
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
@@ -291,6 +328,18 @@ def health():
         "recovery_lock_max_fade_min_score": RECOVERY_LOCK_MAX_FADE_MIN_SCORE,
         "opposite_trade_lock_enabled": OPPOSITE_TRADE_LOCK_ENABLED,
         "opposite_trade_lock_min_tp": OPPOSITE_TRADE_LOCK_MIN_TP,
+        "buy_fatigue_enabled": BUY_FATIGUE_ENABLED,
+        "buy_fatigue_tp_level": BUY_FATIGUE_TP_LEVEL,
+        "buy_fatigue_count": BUY_FATIGUE_COUNT,
+        "buy_fatigue_lookback_seconds": BUY_FATIGUE_LOOKBACK_SECONDS,
+        "buy_fatigue_allow_score": BUY_FATIGUE_ALLOW_SCORE,
+        "buy_sl_cooldown_enabled": BUY_SL_COOLDOWN_ENABLED,
+        "buy_sl_cooldown_losses": BUY_SL_COOLDOWN_LOSSES,
+        "buy_sl_cooldown_lookback_seconds": BUY_SL_COOLDOWN_LOOKBACK_SECONDS,
+        "buy_sl_cooldown_seconds": BUY_SL_COOLDOWN_SECONDS,
+        "conflict_resolver_enabled": CONFLICT_RESOLVER_ENABLED,
+        "conflict_window_seconds": CONFLICT_WINDOW_SECONDS,
+        "conflict_dominance_margin": CONFLICT_DOMINANCE_MARGIN,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -438,7 +487,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30
+    # Campi extra mandati dal Pine v30/v31/v32
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1054,6 +1103,224 @@ def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
 
 
 
+
+# =========================
+# BUY FATIGUE + CONFLICT RESOLVER v14
+# =========================
+
+def get_recent_direct_losses_custom(signal, symbol, lookback_seconds):
+    now = now_ts()
+    symbol = str(symbol).upper()
+    signal = str(signal).upper()
+
+    losses = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != signal:
+            continue
+
+        if trade.get("status") != "LOSS":
+            continue
+
+        # SL diretto = loss prima di TP1
+        if int(trade.get("highest_tp", 0)) > 0:
+            continue
+
+        closed = trade.get("closed") or trade.get("created") or 0
+
+        if now - closed <= lookback_seconds:
+            losses.append(trade)
+
+    return sorted(losses, key=lambda x: x.get("closed") or x.get("created") or 0, reverse=True)
+
+
+def get_recent_active_opposite_trades(signal, symbol, window_seconds):
+    now = now_ts()
+    symbol = str(symbol).upper()
+    signal = str(signal).upper()
+    opposite = "SELL" if signal == "BUY" else "BUY"
+
+    trades = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if str(trade.get("signal", "")).upper() != opposite:
+            continue
+
+        if trade.get("status") not in ["PENDING", "OPEN"]:
+            continue
+
+        created = trade.get("created") or 0
+
+        if now - created <= window_seconds:
+            trades.append(trade)
+
+    return sorted(trades, key=lambda x: x.get("created") or 0, reverse=True)
+
+
+def directional_dominance_score(signal, setup_type, score, active_news_bias):
+    signal = str(signal).upper()
+    setup_type = str(setup_type).upper()
+    active_news_bias = str(active_news_bias).upper()
+
+    dominance = int(score)
+    dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # Se le news sono bullish gold, il BUY ha una priorità naturale.
+    # Il SELL è permesso, ma deve essere davvero superiore.
+    if active_news_bias == "BULLISH_GOLD":
+        if signal == "BUY":
+            dominance += 3
+        elif signal == "SELL":
+            dominance -= 2
+
+    # Se in futuro userai bearish gold, questa parte è già pronta.
+    if active_news_bias == "BEARISH_GOLD":
+        if signal == "SELL":
+            dominance += 3
+        elif signal == "BUY":
+            dominance -= 2
+
+    return dominance
+
+
+def should_block_by_conflict_resolver(signal, symbol, setup_type, score, active_news_bias):
+    if not CONFLICT_RESOLVER_ENABLED:
+        return False, None, []
+
+    recent_opposites = get_recent_active_opposite_trades(
+        signal,
+        symbol,
+        CONFLICT_WINDOW_SECONDS
+    )
+
+    if not recent_opposites:
+        return False, None, []
+
+    current_dom = directional_dominance_score(signal, setup_type, score, active_news_bias)
+
+    best_opposite = None
+    best_opposite_dom = -9999
+
+    for trade in recent_opposites:
+        opp_signal = trade.get("signal", "")
+        opp_setup = trade.get("setup_type", "NORMAL")
+        opp_score = int(trade.get("score", 0))
+        opp_dom = directional_dominance_score(opp_signal, opp_setup, opp_score, active_news_bias)
+
+        # Se il trade opposto ha già TP1+, lo considero più forte ancora.
+        if int(trade.get("highest_tp", 0)) >= 1:
+            opp_dom += 4
+
+        if opp_dom > best_opposite_dom:
+            best_opposite_dom = opp_dom
+            best_opposite = trade
+
+    # Se il nuovo segnale non domina nettamente, lo blocco.
+    # Questo evita BUY e SELL quasi insieme nella stessa zona.
+    if current_dom < best_opposite_dom + CONFLICT_DOMINANCE_MARGIN:
+        return True, best_opposite, recent_opposites
+
+    return False, best_opposite, recent_opposites
+
+
+def should_block_by_buy_sl_cooldown(signal, symbol):
+    if not BUY_SL_COOLDOWN_ENABLED:
+        return False, []
+
+    if str(signal).upper() != "BUY":
+        return False, []
+
+    losses = get_recent_direct_losses_custom(
+        "BUY",
+        symbol,
+        BUY_SL_COOLDOWN_LOOKBACK_SECONDS
+    )
+
+    if len(losses) < BUY_SL_COOLDOWN_LOSSES:
+        return False, losses
+
+    latest_loss = losses[0].get("closed") or losses[0].get("created") or 0
+
+    if now_ts() - latest_loss <= BUY_SL_COOLDOWN_SECONDS:
+        return True, losses
+
+    return False, losses
+
+
+def should_block_by_buy_fatigue(signal, symbol, setup_type, score, data):
+    if not BUY_FATIGUE_ENABLED:
+        return False, [], "Buy Fatigue disattivato"
+
+    if str(signal).upper() != "BUY":
+        return False, [], "Non è BUY"
+
+    recent_big_buys = get_recent_tp_trades(
+        "BUY",
+        symbol,
+        min_tp=BUY_FATIGUE_TP_LEVEL,
+        lookback_seconds=BUY_FATIGUE_LOOKBACK_SECONDS
+    )
+
+    if len(recent_big_buys) < BUY_FATIGUE_COUNT:
+        return False, recent_big_buys, "Pochi BUY profondi recenti"
+
+    setup_type = str(setup_type).upper()
+    price = get_price_from_data(data)
+    near_psych_level, nearest_psych, psych_distance = psych_info(price)
+
+    if data.get("near_psych_level") is not None:
+        near_psych_level = to_bool(data.get("near_psych_level"))
+
+    near_m15_low = to_bool(data.get("near_m15_low", "false"))
+    recent_low_touch = to_bool(data.get("recent_low_touch", "false"))
+    recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
+
+    # Dopo troppi BUY già pagati, accetto nuovi BUY solo se sono di qualità molto alta
+    # e arrivano da una zona ragionevole, non inseguendo in alto.
+    high_quality_allowed = (
+        setup_type in BUY_FATIGUE_ALLOW_SETUPS
+        and int(score) >= BUY_FATIGUE_ALLOW_SCORE
+        and (
+            near_psych_level
+            or near_m15_low
+            or recent_low_touch
+            or recovery_buy_signal
+        )
+    )
+
+    if high_quality_allowed:
+        return False, recent_big_buys, "BUY fatigue attiva ma setup speciale ancora valido"
+
+    return True, recent_big_buys, "Troppi BUY profondi recenti: rischio inseguimento onda già matura"
+
+
+def buy_fatigue_status_text(recent_big_buys):
+    if not recent_big_buys:
+        return "Nessun BUY profondo recente"
+
+    lines = [
+        f"BUY recenti arrivati almeno a TP{BUY_FATIGUE_TP_LEVEL}: {len(recent_big_buys)}",
+        f"Soglia: {BUY_FATIGUE_COUNT}",
+        f"Lookback secondi: {BUY_FATIGUE_LOOKBACK_SECONDS}",
+        ""
+    ]
+
+    for trade in recent_big_buys[:5]:
+        lines.append(
+            f"- ID {trade.get('id')} | {trade.get('setup_type')} | "
+            f"TP{trade.get('highest_tp', 0)} | status {trade.get('status')}"
+        )
+
+    return "\n".join(lines)
+
+
+
 # =========================
 # RECOVERY LOCK v13
 # =========================
@@ -1302,7 +1569,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v13:\n"
+        f"Lettura v14:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -1721,6 +1988,145 @@ Il bot può ancora accettare BUY da fondo / reversal.
             "setup_type": setup_type,
             "recent_direct_losses": len(recent_losses)
         })
+
+    # =========================
+    # BUY SL COOLDOWN BLOCK v14
+    # =========================
+
+    block_buy_sl_cooldown, recent_buy_losses = should_block_by_buy_sl_cooldown(signal, symbol)
+
+    if block_buy_sl_cooldown:
+        last_loss = recent_buy_losses[0]
+        last_loss_time = last_loss.get("closed_local") or "N/D"
+
+        text = f"""🛑 BUY BLOCCATO {VERSION}
+
+Motivo: stop temporaneo dopo SL diretti BUY
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+SL BUY diretti recenti: {len(recent_buy_losses)}
+Soglia SL diretti BUY: {BUY_SL_COOLDOWN_LOSSES}
+Lookback secondi: {BUY_SL_COOLDOWN_LOOKBACK_SECONDS}
+Cooldown secondi: {BUY_SL_COOLDOWN_SECONDS}
+Ultimo SL BUY: {last_loss_time}
+
+Azione:
+Nuovi BUY bloccati temporaneamente.
+Il bot evita di insistere sul recupero se il mercato ha appena negato più BUY.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_buy_sl_cooldown",
+            "score": score,
+            "setup_type": setup_type,
+            "recent_buy_direct_losses": len(recent_buy_losses)
+        })
+
+
+    # =========================
+    # BUY FATIGUE BLOCK v14
+    # =========================
+
+    block_buy_fatigue, recent_big_buys, fatigue_reason = should_block_by_buy_fatigue(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_buy_fatigue:
+        text = f"""🟢⚠️ BUY BLOCCATO {VERSION}
+
+Motivo: Buy Fatigue / onda già matura
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{buy_fatigue_status_text(recent_big_buys)}
+
+Azione:
+Il bot non insegue nuovi BUY dopo che l'onda ha già pagato molto.
+Nuovi BUY ammessi solo se setup speciale, score >= {BUY_FATIGUE_ALLOW_SCORE}
+e arrivo da zona bassa / livello psicologico / recovery confermata.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_buy_fatigue",
+            "score": score,
+            "setup_type": setup_type,
+            "recent_big_buys": len(recent_big_buys),
+            "fatigue_reason": fatigue_reason
+        })
+
+
+    # =========================
+    # CONFLICT RESOLVER BLOCK v14
+    # =========================
+
+    block_conflict, opposite_trade, recent_opposites = should_block_by_conflict_resolver(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        active_news_bias
+    )
+
+    if block_conflict:
+        opp_id = opposite_trade.get("id") if opposite_trade else "N/D"
+        opp_signal = opposite_trade.get("signal") if opposite_trade else "N/D"
+        opp_setup = opposite_trade.get("setup_type") if opposite_trade else "N/D"
+        opp_score = opposite_trade.get("score") if opposite_trade else "N/D"
+        opp_status = opposite_trade.get("status") if opposite_trade else "N/D"
+        opp_tp = opposite_trade.get("highest_tp", 0) if opposite_trade else 0
+
+        text = f"""⚖️ SEGNALE BLOCCATO {VERSION}
+
+Motivo: Conflict Resolver
+
+Nuovo segnale:
+- Segnale: {signal}
+- Symbol: {symbol}
+- Prezzo: {price}
+- Setup: {setup_type}
+- Score: {score}
+
+Trade opposto recente già attivo:
+- ID: {opp_id}
+- Segnale: {opp_signal}
+- Setup: {opp_setup}
+- Score: {opp_score}
+- Status: {opp_status}
+- Highest TP: {opp_tp}
+
+Finestra conflitto secondi: {CONFLICT_WINDOW_SECONDS}
+Margine dominanza richiesto: {CONFLICT_DOMINANCE_MARGIN}
+
+Azione:
+Il bot evita di aprire BUY e SELL quasi insieme.
+Passa solo la direzione dominante.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_conflict_resolver",
+            "score": score,
+            "setup_type": setup_type,
+            "opposite_trade_id": opp_id,
+            "opposite_signal": opp_signal
+        })
+
+
 
     # =========================
     # RECOVERY LOCK BLOCK v13
