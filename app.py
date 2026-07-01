@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v14 Buy Fatigue + Conflict Resolver"
+VERSION = "v15 Chaos Day + Extreme Zone Filter"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -129,6 +129,49 @@ SETUP_WEIGHTS = {
     "REVERSAL_SELL": 3,
     "NORMAL": 1
 }
+
+# v15: Chaos Day + Extreme Zone Filter
+# Serve per giornate tossiche tipo 01-07-26:
+# tanti fake, inversioni violente, SL diretti, squeeze e segnali validi solo da zone estreme.
+CHAOS_MODE_ENABLED = os.getenv("CHAOS_MODE_ENABLED", "TRUE").upper() == "TRUE"
+
+# Se ci sono almeno 3 SL diretti nelle ultime 3 ore, attivo Chaos Mode.
+CHAOS_DIRECT_SL_COUNT = int(os.getenv("CHAOS_DIRECT_SL_COUNT", "3"))
+CHAOS_LOOKBACK_SECONDS = int(os.getenv("CHAOS_LOOKBACK_SECONDS", "10800"))
+CHAOS_LOCK_SECONDS = int(os.getenv("CHAOS_LOCK_SECONDS", "5400"))
+
+# Stop totale se la giornata diventa davvero ingestibile.
+DAILY_KILL_SWITCH_ENABLED = os.getenv("DAILY_KILL_SWITCH_ENABLED", "TRUE").upper() == "TRUE"
+DAILY_MAX_DIRECT_SL = int(os.getenv("DAILY_MAX_DIRECT_SL", "5"))
+
+# In Chaos Mode non si entra nel mezzo.
+CHAOS_EXTREME_ZONE_REQUIRED = os.getenv("CHAOS_EXTREME_ZONE_REQUIRED", "TRUE").upper() == "TRUE"
+CHAOS_EXTREME_DISTANCE = float(os.getenv("CHAOS_EXTREME_DISTANCE", "8"))
+CHAOS_EXTREME_ATR_MULT = float(os.getenv("CHAOS_EXTREME_ATR_MULT", "2.5"))
+CHAOS_SELL_DAY_POSITION_MIN = float(os.getenv("CHAOS_SELL_DAY_POSITION_MIN", "0.70"))
+CHAOS_BUY_DAY_POSITION_MAX = float(os.getenv("CHAOS_BUY_DAY_POSITION_MAX", "0.30"))
+
+# In Chaos Mode devono passare solo setup speciali e abbastanza forti.
+CHAOS_MIN_SCORE = int(os.getenv("CHAOS_MIN_SCORE", "10"))
+CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").upper() == "TRUE"
+CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
+
+CHAOS_SELL_SETUPS = {
+    "MAX_FADE_SELL",
+    "REVERSAL_SELL",
+    "MAX_DIP_SELL"
+}
+
+CHAOS_BUY_SETUPS = {
+    "MAX_DIP_BUY",
+    "MAX_RECOVERY_BUY",
+    "REVERSAL_BUY"
+}
+
+# Evita che Runner/lock vecchi del giorno prima influenzino troppo la nuova sessione.
+SESSION_LOCK_RESET_ENABLED = os.getenv("SESSION_LOCK_RESET_ENABLED", "TRUE").upper() == "TRUE"
+LOCK_IGNORE_PREVIOUS_DAY = os.getenv("LOCK_IGNORE_PREVIOUS_DAY", "TRUE").upper() == "TRUE"
+STALE_TRADE_LOCK_SECONDS = int(os.getenv("STALE_TRADE_LOCK_SECONDS", "21600"))
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -340,6 +383,23 @@ def health():
         "conflict_resolver_enabled": CONFLICT_RESOLVER_ENABLED,
         "conflict_window_seconds": CONFLICT_WINDOW_SECONDS,
         "conflict_dominance_margin": CONFLICT_DOMINANCE_MARGIN,
+        "chaos_mode_enabled": CHAOS_MODE_ENABLED,
+        "chaos_direct_sl_count": CHAOS_DIRECT_SL_COUNT,
+        "chaos_lookback_seconds": CHAOS_LOOKBACK_SECONDS,
+        "chaos_lock_seconds": CHAOS_LOCK_SECONDS,
+        "daily_kill_switch_enabled": DAILY_KILL_SWITCH_ENABLED,
+        "daily_max_direct_sl": DAILY_MAX_DIRECT_SL,
+        "chaos_extreme_zone_required": CHAOS_EXTREME_ZONE_REQUIRED,
+        "chaos_extreme_distance": CHAOS_EXTREME_DISTANCE,
+        "chaos_extreme_atr_mult": CHAOS_EXTREME_ATR_MULT,
+        "chaos_sell_day_position_min": CHAOS_SELL_DAY_POSITION_MIN,
+        "chaos_buy_day_position_max": CHAOS_BUY_DAY_POSITION_MAX,
+        "chaos_min_score": CHAOS_MIN_SCORE,
+        "chaos_allow_normal_extreme": CHAOS_ALLOW_NORMAL_EXTREME,
+        "chaos_normal_min_score": CHAOS_NORMAL_MIN_SCORE,
+        "session_lock_reset_enabled": SESSION_LOCK_RESET_ENABLED,
+        "lock_ignore_previous_day": LOCK_IGNORE_PREVIOUS_DAY,
+        "stale_trade_lock_seconds": STALE_TRADE_LOCK_SECONDS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -487,7 +547,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32
+    # Campi extra mandati dal Pine v30/v31/v32/v33
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1321,6 +1381,299 @@ def buy_fatigue_status_text(recent_big_buys):
 
 
 
+
+# =========================
+# CHAOS DAY + EXTREME ZONE FILTER v15
+# =========================
+
+def trade_event_reference_time(trade):
+    return (
+        trade.get("last_tp_time")
+        or trade.get("activated")
+        or trade.get("closed")
+        or trade.get("created")
+        or 0
+    )
+
+
+def trade_is_stale_for_lock(trade):
+    if not SESSION_LOCK_RESET_ENABLED:
+        return False
+
+    event_time = trade_event_reference_time(trade)
+
+    if not event_time:
+        return False
+
+    if LOCK_IGNORE_PREVIOUS_DAY:
+        try:
+            if local_datetime(event_time).strftime("%Y-%m-%d") != today_key():
+                return True
+        except Exception:
+            pass
+
+    if now_ts() - event_time > STALE_TRADE_LOCK_SECONDS:
+        return True
+
+    return False
+
+
+def get_recent_direct_losses_total(symbol, lookback_seconds):
+    now = now_ts()
+    symbol = str(symbol).upper()
+
+    losses = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if trade.get("status") != "LOSS":
+            continue
+
+        # SL diretto = loss prima di TP1
+        if int(trade.get("highest_tp", 0)) > 0:
+            continue
+
+        closed = trade.get("closed") or trade.get("created") or 0
+
+        if now - closed <= lookback_seconds:
+            losses.append(trade)
+
+    return sorted(losses, key=lambda x: x.get("closed") or x.get("created") or 0, reverse=True)
+
+
+def get_today_direct_losses(symbol):
+    symbol = str(symbol).upper()
+    today = today_key()
+    losses = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if trade.get("status") != "LOSS":
+            continue
+
+        if int(trade.get("highest_tp", 0)) > 0:
+            continue
+
+        closed = trade.get("closed") or trade.get("created") or 0
+
+        try:
+            closed_day = local_datetime(closed).strftime("%Y-%m-%d")
+        except Exception:
+            closed_day = ""
+
+        if closed_day == today:
+            losses.append(trade)
+
+    return sorted(losses, key=lambda x: x.get("closed") or x.get("created") or 0, reverse=True)
+
+
+def get_chaos_context(symbol, data):
+    if not CHAOS_MODE_ENABLED:
+        return {
+            "active": False,
+            "reason": "Chaos Mode disattivato",
+            "recent_losses": [],
+            "today_losses": [],
+            "day_range_atr": 0
+        }
+
+    recent_losses = get_recent_direct_losses_total(symbol, CHAOS_LOOKBACK_SECONDS)
+    today_losses = get_today_direct_losses(symbol)
+
+    latest_loss_time = recent_losses[0].get("closed") or recent_losses[0].get("created") or 0 if recent_losses else 0
+
+    chaos_by_losses = (
+        len(recent_losses) >= CHAOS_DIRECT_SL_COUNT
+        and latest_loss_time
+        and now_ts() - latest_loss_time <= CHAOS_LOCK_SECONDS
+    )
+
+    atr = to_float(data.get("atr"), 0)
+    day_range = to_float(data.get("day_range"), 0)
+
+    if not day_range:
+        day_high = to_float(data.get("day_high"), 0)
+        day_low = to_float(data.get("day_low"), 0)
+        if day_high and day_low and day_high > day_low:
+            day_range = day_high - day_low
+
+    day_range_atr = day_range / atr if atr and day_range else 0
+
+    if DAILY_KILL_SWITCH_ENABLED and len(today_losses) >= DAILY_MAX_DIRECT_SL:
+        return {
+            "active": True,
+            "kill": True,
+            "reason": f"Daily Kill Switch: {len(today_losses)} SL diretti oggi",
+            "recent_losses": recent_losses,
+            "today_losses": today_losses,
+            "day_range_atr": day_range_atr
+        }
+
+    if chaos_by_losses:
+        return {
+            "active": True,
+            "kill": False,
+            "reason": f"Chaos Mode: {len(recent_losses)} SL diretti recenti",
+            "recent_losses": recent_losses,
+            "today_losses": today_losses,
+            "day_range_atr": day_range_atr
+        }
+
+    return {
+        "active": False,
+        "kill": False,
+        "reason": "Nessun trigger chaos attivo",
+        "recent_losses": recent_losses,
+        "today_losses": today_losses,
+        "day_range_atr": day_range_atr
+    }
+
+
+def extreme_zone_info(signal, data):
+    signal = str(signal).upper()
+
+    price = get_price_from_data(data)
+    atr = to_float(data.get("atr"), 0)
+
+    near_m15_high = to_bool(data.get("near_m15_high", "false"))
+    near_m15_low = to_bool(data.get("near_m15_low", "false"))
+
+    near_day_high = to_bool(data.get("near_day_high", "false"))
+    near_day_low = to_bool(data.get("near_day_low", "false"))
+
+    day_high = to_float(data.get("day_high"), 0)
+    day_low = to_float(data.get("day_low"), 0)
+    day_position = to_float(data.get("day_position"), -1)
+
+    if day_position < 0 and day_high and day_low and day_high > day_low and price:
+        day_position = (price - day_low) / (day_high - day_low)
+
+    threshold = CHAOS_EXTREME_DISTANCE
+
+    if atr:
+        threshold = max(threshold, atr * CHAOS_EXTREME_ATR_MULT)
+
+    if signal == "SELL":
+        computed_near_day_high = bool(day_high and price and (day_high - price) <= threshold)
+        high_position = bool(day_position >= CHAOS_SELL_DAY_POSITION_MIN) if day_position >= 0 else False
+
+        ok = (
+            near_m15_high
+            or near_day_high
+            or computed_near_day_high
+            or high_position
+        )
+
+        details = {
+            "side": "SELL_HIGH",
+            "near_m15_high": near_m15_high,
+            "near_day_high": near_day_high or computed_near_day_high,
+            "day_position": day_position,
+            "threshold": threshold,
+            "ok": ok
+        }
+
+        return ok, details
+
+    if signal == "BUY":
+        computed_near_day_low = bool(day_low and price and (price - day_low) <= threshold)
+        low_position = bool(day_position <= CHAOS_BUY_DAY_POSITION_MAX) if day_position >= 0 else False
+
+        ok = (
+            near_m15_low
+            or near_day_low
+            or computed_near_day_low
+            or low_position
+            or to_bool(data.get("recent_low_touch", "false"))
+        )
+
+        details = {
+            "side": "BUY_LOW",
+            "near_m15_low": near_m15_low,
+            "near_day_low": near_day_low or computed_near_day_low,
+            "day_position": day_position,
+            "threshold": threshold,
+            "ok": ok
+        }
+
+        return ok, details
+
+    return False, {"side": "UNKNOWN", "ok": False}
+
+
+def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
+    ctx = get_chaos_context(symbol, data)
+
+    if not ctx.get("active"):
+        return False, ctx, {"ok": True}, "Chaos non attivo"
+
+    if ctx.get("kill"):
+        return True, ctx, {"ok": False}, "Daily Kill Switch attivo"
+
+    setup_type = str(setup_type).upper()
+    signal = str(signal).upper()
+
+    extreme_ok, extreme_info = extreme_zone_info(signal, data)
+
+    if CHAOS_EXTREME_ZONE_REQUIRED and not extreme_ok:
+        return True, ctx, extreme_info, "No Mid-Range Trading: prezzo non in zona estrema"
+
+    if setup_type == "NORMAL":
+        if not CHAOS_ALLOW_NORMAL_EXTREME:
+            return True, ctx, extreme_info, "Chaos Mode: setup NORMAL bloccato"
+
+        if int(score) < CHAOS_NORMAL_MIN_SCORE:
+            return True, ctx, extreme_info, f"Chaos Mode: NORMAL ammesso solo con score >= {CHAOS_NORMAL_MIN_SCORE}"
+
+    if signal == "SELL":
+        if setup_type not in CHAOS_SELL_SETUPS and setup_type != "NORMAL":
+            return True, ctx, extreme_info, "Chaos Mode: SELL non è setup speciale da zona alta"
+
+    if signal == "BUY":
+        if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
+            return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
+
+    if int(score) < CHAOS_MIN_SCORE:
+        return True, ctx, extreme_info, f"Chaos Mode: score sotto soglia {CHAOS_MIN_SCORE}"
+
+    return False, ctx, extreme_info, "Setup ammesso in Chaos Mode"
+
+
+def chaos_status_text(ctx, extreme_info, block_reason):
+    recent_losses = ctx.get("recent_losses", []) or []
+    today_losses = ctx.get("today_losses", []) or []
+
+    lines = [
+        f"Motivo: {block_reason}",
+        f"Chaos reason: {ctx.get('reason')}",
+        f"SL diretti recenti: {len(recent_losses)} / soglia {CHAOS_DIRECT_SL_COUNT}",
+        f"SL diretti oggi: {len(today_losses)} / kill switch {DAILY_MAX_DIRECT_SL}",
+        f"Lookback chaos secondi: {CHAOS_LOOKBACK_SECONDS}",
+        f"Lock chaos secondi: {CHAOS_LOCK_SECONDS}",
+        "",
+        "Zona estrema:",
+        f"- Tipo: {extreme_info.get('side')}",
+        f"- OK zona estrema: {extreme_info.get('ok')}",
+        f"- Day position: {round(extreme_info.get('day_position', -1), 3) if isinstance(extreme_info.get('day_position', -1), (int, float)) else extreme_info.get('day_position')}",
+        f"- Threshold: {round(extreme_info.get('threshold', 0), 2) if isinstance(extreme_info.get('threshold', 0), (int, float)) else extreme_info.get('threshold')}",
+    ]
+
+    if recent_losses:
+        lines.append("")
+        lines.append("Ultimi SL diretti:")
+        for trade in recent_losses[:5]:
+            lines.append(
+                f"- ID {trade.get('id')} | {trade.get('signal')} | {trade.get('setup_type')} | {trade.get('closed_local', 'N/D')}"
+            )
+
+    return "\n".join(lines)
+
+
+
 # =========================
 # RECOVERY LOCK v13
 # =========================
@@ -1350,6 +1703,9 @@ def get_open_successful_buy_trades(symbol):
             continue
 
         if trade.get("status") != "OPEN":
+            continue
+
+        if trade_is_stale_for_lock(trade):
             continue
 
         setup = trade.get("setup_type", "NORMAL")
@@ -1399,6 +1755,9 @@ def get_recovery_lock_context(symbol):
             continue
 
         if str(trade.get("signal", "")).upper() != "BUY":
+            continue
+
+        if trade_is_stale_for_lock(trade):
             continue
 
         setup = trade.get("setup_type", "NORMAL")
@@ -1569,7 +1928,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v14:\n"
+        f"Lettura v15:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -2030,7 +2389,54 @@ Il bot evita di insistere sul recupero se il mercato ha appena negato più BUY.
 
 
     # =========================
-    # BUY FATIGUE BLOCK v14
+    # CHAOS DAY / EXTREME ZONE BLOCK v15
+    # =========================
+
+    block_chaos, chaos_ctx, extreme_info, chaos_reason = should_block_by_chaos_mode(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_chaos:
+        text = f"""🌪️ SEGNALE BLOCCATO {VERSION}
+
+Motivo: Chaos Day / Extreme Zone Filter
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{chaos_status_text(chaos_ctx, extreme_info, chaos_reason)}
+
+Azione:
+Giornata tossica o troppi SL diretti.
+Il bot non prende segnali nel mezzo.
+In Chaos Mode passa solo:
+- SELL da zona alta estrema
+- BUY da zona bassa estrema
+- setup speciale e score sufficiente
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_chaos_mode",
+            "score": score,
+            "setup_type": setup_type,
+            "chaos_reason": chaos_reason,
+            "extreme_ok": extreme_info.get("ok"),
+            "direct_losses_recent": len(chaos_ctx.get("recent_losses", [])),
+            "direct_losses_today": len(chaos_ctx.get("today_losses", []))
+        })
+
+
+
+    # =========================
+    # BUY FATIGUE BLOCK v14/v15
     # =========================
 
     block_buy_fatigue, recent_big_buys, fatigue_reason = should_block_by_buy_fatigue(
@@ -2071,7 +2477,7 @@ e arrivo da zona bassa / livello psicologico / recovery confermata.
 
 
     # =========================
-    # CONFLICT RESOLVER BLOCK v14
+    # CONFLICT RESOLVER BLOCK v14/v15
     # =========================
 
     block_conflict, opposite_trade, recent_opposites = should_block_by_conflict_resolver(
