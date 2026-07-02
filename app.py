@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v16 Max View + NFP Exhaustion Sell"
+VERSION = "v17 Auto Event Mode + Max View"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -202,7 +202,47 @@ MAX_VIEW_SELL_MIN_SCORE = int(os.getenv("MAX_VIEW_SELL_MIN_SCORE", "10"))
 # Permette SELL contro news bullish se è un vero top/exhaustion.
 MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 
+# v17: Auto Event Mode
+# Attiva automaticamente la modalità evento/NFP in base a:
+# - parole chiave macro nelle news;
+# - volatilità improvvisa ricevuta dal Pine;
+# - EVENT_RISK=HIGH;
+# - eventuale input manuale dal Pine.
+AUTO_EVENT_MODE_ENABLED = os.getenv("AUTO_EVENT_MODE_ENABLED", "TRUE").upper() == "TRUE"
+AUTO_EVENT_KEYWORDS_ENABLED = os.getenv("AUTO_EVENT_KEYWORDS_ENABLED", "TRUE").upper() == "TRUE"
+AUTO_EVENT_VOLATILITY_ENABLED = os.getenv("AUTO_EVENT_VOLATILITY_ENABLED", "TRUE").upper() == "TRUE"
+
+AUTO_EVENT_DURATION_SECONDS = int(os.getenv("AUTO_EVENT_DURATION_SECONDS", "7200"))
+AUTO_EVENT_CANDLE_ATR_MULT = float(os.getenv("AUTO_EVENT_CANDLE_ATR_MULT", "2.2"))
+AUTO_EVENT_M15_RANGE_ATR_MULT = float(os.getenv("AUTO_EVENT_M15_RANGE_ATR_MULT", "3.0"))
+AUTO_EVENT_DAY_RANGE_ATR_MULT = float(os.getenv("AUTO_EVENT_DAY_RANGE_ATR_MULT", "4.0"))
+AUTO_EVENT_VOLUME_SPIKE_REQUIRED = os.getenv("AUTO_EVENT_VOLUME_SPIKE_REQUIRED", "FALSE").upper() == "TRUE"
+
+AUTO_EVENT_KEYWORDS = [
+    "nfp",
+    "nonfarm payroll",
+    "non-farm payroll",
+    "payrolls",
+    "jobs report",
+    "unemployment",
+    "jobless claims",
+    "cpi",
+    "ppi",
+    "inflation",
+    "fomc",
+    "fed decision",
+    "federal reserve",
+    "powell",
+    "interest rate",
+    "rate decision",
+    "yields",
+    "gdp",
+    "ism",
+    "pmi"
+]
+
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
+AUTO_EVENT_CACHE = {"until": 0, "reasons": []}
 OPEN_TRADES = []
 
 try:
@@ -440,6 +480,17 @@ def health():
         "max_view_sell_base_bonus": MAX_VIEW_SELL_BASE_BONUS,
         "max_view_sell_min_score": MAX_VIEW_SELL_MIN_SCORE,
         "max_view_allow_sell_against_bullish_news": MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS,
+        "auto_event_mode_enabled": AUTO_EVENT_MODE_ENABLED,
+        "auto_event_keywords_enabled": AUTO_EVENT_KEYWORDS_ENABLED,
+        "auto_event_volatility_enabled": AUTO_EVENT_VOLATILITY_ENABLED,
+        "auto_event_duration_seconds": AUTO_EVENT_DURATION_SECONDS,
+        "auto_event_candle_atr_mult": AUTO_EVENT_CANDLE_ATR_MULT,
+        "auto_event_m15_range_atr_mult": AUTO_EVENT_M15_RANGE_ATR_MULT,
+        "auto_event_day_range_atr_mult": AUTO_EVENT_DAY_RANGE_ATR_MULT,
+        "auto_event_volume_spike_required": AUTO_EVENT_VOLUME_SPIKE_REQUIRED,
+        "auto_event_active": now_ts() < AUTO_EVENT_CACHE.get("until", 0),
+        "auto_event_until": AUTO_EVENT_CACHE.get("until", 0),
+        "auto_event_reasons": AUTO_EVENT_CACHE.get("reasons", []),
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -471,6 +522,138 @@ def stats():
 def stats_telegram():
     send_daily_stats_to_telegram()
     return jsonify({"status": "sent"})
+
+
+
+# =========================
+# AUTO EVENT MODE v17
+# =========================
+
+def normalize_text_for_event(value):
+    return str(value or "").lower()
+
+
+def event_keyword_hits(text):
+    text = normalize_text_for_event(text)
+    hits = []
+
+    for keyword in AUTO_EVENT_KEYWORDS:
+        if keyword in text:
+            hits.append(keyword)
+
+    # Rimuovo duplicati preservando ordine
+    unique = []
+    for hit in hits:
+        if hit not in unique:
+            unique.append(hit)
+
+    return unique
+
+
+def activate_auto_event_mode(reasons):
+    if not AUTO_EVENT_MODE_ENABLED:
+        return False, []
+
+    clean_reasons = []
+
+    for reason in reasons:
+        if reason and reason not in clean_reasons:
+            clean_reasons.append(str(reason))
+
+    if not clean_reasons:
+        return False, []
+
+    AUTO_EVENT_CACHE["until"] = max(
+        AUTO_EVENT_CACHE.get("until", 0),
+        now_ts() + AUTO_EVENT_DURATION_SECONDS
+    )
+    AUTO_EVENT_CACHE["reasons"] = clean_reasons
+
+    return True, clean_reasons
+
+
+def auto_event_cache_active():
+    if not AUTO_EVENT_MODE_ENABLED:
+        return False, []
+
+    if now_ts() < AUTO_EVENT_CACHE.get("until", 0):
+        return True, AUTO_EVENT_CACHE.get("reasons", [])
+
+    return False, []
+
+
+def detect_auto_event_from_data(data):
+    if not AUTO_EVENT_MODE_ENABLED:
+        return False, []
+
+    reasons = []
+
+    # Se l'utente attiva manualmente Event Mode nel Pine, lo trasformo in cache temporanea.
+    if to_bool(data.get("event_mode", "false")):
+        reasons.append("Event Mode attivo da Pine/TradingView")
+
+    if EVENT_RISK == "HIGH":
+        reasons.append("EVENT_RISK=HIGH su Render")
+
+    if AUTO_EVENT_VOLATILITY_ENABLED:
+        atr = to_float(data.get("atr"), 0)
+        volume_spike = to_bool(data.get("volume_spike", "false"))
+
+        candle_range = to_float(data.get("candle_range"), 0)
+        range_atr = to_float(data.get("range_atr"), 0)
+        m15_range_atr = to_float(data.get("m15_range_atr"), 0)
+
+        day_range = to_float(data.get("day_range"), 0)
+        day_range_atr = (day_range / atr) if atr and day_range else 0
+
+        if not range_atr and atr and candle_range:
+            range_atr = candle_range / atr
+
+        volatility_ok = True
+
+        if AUTO_EVENT_VOLUME_SPIKE_REQUIRED and not volume_spike:
+            volatility_ok = False
+
+        if volatility_ok and range_atr >= AUTO_EVENT_CANDLE_ATR_MULT:
+            reasons.append(f"Candela forte: range/ATR {round(range_atr, 2)}")
+
+        if volatility_ok and m15_range_atr >= AUTO_EVENT_M15_RANGE_ATR_MULT:
+            reasons.append(f"Range M15 esploso: M15/ATR {round(m15_range_atr, 2)}")
+
+        if volatility_ok and day_range_atr >= AUTO_EVENT_DAY_RANGE_ATR_MULT:
+            reasons.append(f"Range giornaliero elevato: DayRange/ATR {round(day_range_atr, 2)}")
+
+        if volume_spike and (range_atr >= 1.5 or m15_range_atr >= 2.2):
+            reasons.append("Volume spike con volatilità sopra media")
+
+    if reasons:
+        return activate_auto_event_mode(reasons)
+
+    return auto_event_cache_active()
+
+
+def auto_event_status_text(active, reasons):
+    if not active:
+        return "Auto Event Mode non attivo"
+
+    until = AUTO_EVENT_CACHE.get("until", 0)
+
+    try:
+        until_local = local_datetime(until).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        until_local = str(until)
+
+    lines = [
+        "⚡ Auto Event Mode ATTIVO",
+        f"Attivo fino a: {until_local}",
+        "Motivi:"
+    ]
+
+    for reason in reasons:
+        lines.append(f"- {reason}")
+
+    return "\n".join(lines)
+
 
 
 # =========================
@@ -523,12 +706,19 @@ def get_auto_news_bias():
 
     bullish_score = 0
     bearish_score = 0
+    auto_event_keyword_hits = []
 
     for article in articles:
         text = (
             (article.get("title") or "") + " " +
             (article.get("description") or "")
         ).lower()
+
+        if AUTO_EVENT_MODE_ENABLED and AUTO_EVENT_KEYWORDS_ENABLED:
+            hits = event_keyword_hits(text)
+            for hit in hits:
+                if hit not in auto_event_keyword_hits:
+                    auto_event_keyword_hits.append(hit)
 
         for word in bullish_words:
             if word in text:
@@ -547,6 +737,12 @@ def get_auto_news_bias():
     else:
         bias = "NEUTRAL"
         reasons = [f"News neutre: bullish {bullish_score}, bearish {bearish_score}"]
+
+    if auto_event_keyword_hits:
+        activate_auto_event_mode([
+            "News macro keyword: " + ", ".join(auto_event_keyword_hits[:6])
+        ])
+        reasons.append("Auto Event keyword: " + ", ".join(auto_event_keyword_hits[:6]))
 
     NEWS_CACHE["time"] = now
     NEWS_CACHE["bias"] = bias
@@ -587,7 +783,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -598,7 +794,14 @@ def score_signal(data, signal):
     near_day_high = to_bool(data.get("near_day_high", "false"))
     near_day_low = to_bool(data.get("near_day_low", "false"))
     day_position = to_float(data.get("day_position"), -1)
-    macro_event_mode = MAX_VIEW_EVENT_MODE or event_mode_from_pine or EVENT_RISK == "HIGH"
+
+    auto_event_active, auto_event_reasons = detect_auto_event_from_data(data)
+    macro_event_mode = (
+        MAX_VIEW_EVENT_MODE
+        or event_mode_from_pine
+        or EVENT_RISK == "HIGH"
+        or auto_event_active
+    )
 
     # TradingView v29 manda già questi campi. Se ci sono, li uso.
     if data.get("near_psych_level") is not None:
@@ -819,7 +1022,10 @@ def score_signal(data, signal):
 
         if macro_event_mode:
             score += MAX_VIEW_EVENT_BONUS
-            reasons.append("Modalità evento/NFP: possibile exhaustion sell")
+            if auto_event_active and auto_event_reasons:
+                reasons.append("Auto Event Mode: " + " | ".join(auto_event_reasons[:3]))
+            else:
+                reasons.append("Modalità evento/NFP: possibile exhaustion sell")
 
     elif max_recovery_buy:
         setup_type = "MAX_RECOVERY_BUY"
@@ -2067,7 +2273,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v16:\n"
+        f"Lettura v17:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
