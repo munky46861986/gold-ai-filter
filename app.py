@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v15 Chaos Day + Extreme Zone Filter"
+VERSION = "v16 Max View + NFP Exhaustion Sell"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
     "MAX_DIP_BUY": 4,
     "REVERSAL_BUY": 4,
@@ -157,6 +158,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "MAX_VIEW_SELL",
     "MAX_FADE_SELL",
     "REVERSAL_SELL",
     "MAX_DIP_SELL"
@@ -172,6 +174,33 @@ CHAOS_BUY_SETUPS = {
 SESSION_LOCK_RESET_ENABLED = os.getenv("SESSION_LOCK_RESET_ENABLED", "TRUE").upper() == "TRUE"
 LOCK_IGNORE_PREVIOUS_DAY = os.getenv("LOCK_IGNORE_PREVIOUS_DAY", "TRUE").upper() == "TRUE"
 STALE_TRADE_LOCK_SECONDS = int(os.getenv("STALE_TRADE_LOCK_SECONDS", "21600"))
+
+# v16: Max View + NFP Exhaustion Sell
+# Serve per leggere il cambio di contesto visto nei file:
+# il bot prende bene la salita, ma Max vende i rimbalzi alti perché vede esaurimento / NFP / view 3980.
+MAX_VIEW_SELL_ENABLED = os.getenv("MAX_VIEW_SELL_ENABLED", "TRUE").upper() == "TRUE"
+
+# Se ci sono già BUY profondi recenti, una salita può diventare zona di esaurimento da vendere.
+MAX_VIEW_BUY_TP_LEVEL = int(os.getenv("MAX_VIEW_BUY_TP_LEVEL", "5"))
+MAX_VIEW_BUY_COUNT = int(os.getenv("MAX_VIEW_BUY_COUNT", "2"))
+MAX_VIEW_LOOKBACK_SECONDS = int(os.getenv("MAX_VIEW_LOOKBACK_SECONDS", "7200"))
+
+# Zona alta stile Max: non vendo basso, vendo solo rimbalzi alti / top di giornata.
+MAX_VIEW_SELL_DAY_POSITION_MIN = float(os.getenv("MAX_VIEW_SELL_DAY_POSITION_MIN", "0.70"))
+MAX_VIEW_MIN_RSI = float(os.getenv("MAX_VIEW_MIN_RSI", "50"))
+
+# In giornate NFP / evento macro, questo setup prende più priorità.
+# Puoi attivarlo manualmente da Render con MAX_VIEW_EVENT_MODE=TRUE,
+# oppure da TradingView con l'input Event Mode nel Pine v34.
+MAX_VIEW_EVENT_MODE = os.getenv("MAX_VIEW_EVENT_MODE", "FALSE").upper() == "TRUE"
+MAX_VIEW_EVENT_BONUS = int(os.getenv("MAX_VIEW_EVENT_BONUS", "3"))
+
+# Quanto deve essere forte il setup per passare.
+MAX_VIEW_SELL_BASE_BONUS = int(os.getenv("MAX_VIEW_SELL_BASE_BONUS", "10"))
+MAX_VIEW_SELL_MIN_SCORE = int(os.getenv("MAX_VIEW_SELL_MIN_SCORE", "10"))
+
+# Permette SELL contro news bullish se è un vero top/exhaustion.
+MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
 OPEN_TRADES = []
@@ -400,6 +429,17 @@ def health():
         "session_lock_reset_enabled": SESSION_LOCK_RESET_ENABLED,
         "lock_ignore_previous_day": LOCK_IGNORE_PREVIOUS_DAY,
         "stale_trade_lock_seconds": STALE_TRADE_LOCK_SECONDS,
+        "max_view_sell_enabled": MAX_VIEW_SELL_ENABLED,
+        "max_view_buy_tp_level": MAX_VIEW_BUY_TP_LEVEL,
+        "max_view_buy_count": MAX_VIEW_BUY_COUNT,
+        "max_view_lookback_seconds": MAX_VIEW_LOOKBACK_SECONDS,
+        "max_view_sell_day_position_min": MAX_VIEW_SELL_DAY_POSITION_MIN,
+        "max_view_min_rsi": MAX_VIEW_MIN_RSI,
+        "max_view_event_mode": MAX_VIEW_EVENT_MODE,
+        "max_view_event_bonus": MAX_VIEW_EVENT_BONUS,
+        "max_view_sell_base_bonus": MAX_VIEW_SELL_BASE_BONUS,
+        "max_view_sell_min_score": MAX_VIEW_SELL_MIN_SCORE,
+        "max_view_allow_sell_against_bullish_news": MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -547,11 +587,18 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
     recent_low_touch = to_bool(data.get("recent_low_touch", "false"))
+
+    # v16: campi per Max View / NFP Exhaustion Sell
+    event_mode_from_pine = to_bool(data.get("event_mode", "false"))
+    near_day_high = to_bool(data.get("near_day_high", "false"))
+    near_day_low = to_bool(data.get("near_day_low", "false"))
+    day_position = to_float(data.get("day_position"), -1)
+    macro_event_mode = MAX_VIEW_EVENT_MODE or event_mode_from_pine or EVENT_RISK == "HIGH"
 
     # TradingView v29 manda già questi campi. Se ci sono, li uso.
     if data.get("near_psych_level") is not None:
@@ -572,6 +619,15 @@ def score_signal(data, signal):
         symbol,
         min_tp=RECOVERY_BUY_TP_LEVEL,
         lookback_seconds=RECOVERY_BUY_LOOKBACK_SECONDS
+    )
+
+    # v16 context:
+    # se la salita ha già pagato molto, Max spesso cerca SELL dai top/rimbalzi alti.
+    recent_big_buys_for_view = get_recent_tp_trades(
+        "BUY",
+        symbol,
+        min_tp=MAX_VIEW_BUY_TP_LEVEL,
+        lookback_seconds=MAX_VIEW_LOOKBACK_SECONDS
     )
 
     # =========================
@@ -608,6 +664,52 @@ def score_signal(data, signal):
             or upper_wick_strong
         )
         and rsi < 68
+    )
+
+    # MAX VIEW SELL v16:
+    # Questa è la lettura stile Max di oggi:
+    # dopo una salita forte e BUY già pagati, il rimbalzo alto diventa zona di SELL,
+    # specialmente con NFP / evento macro / Daily ancora SELL.
+    max_view_top_zone = (
+        near_m15_high
+        or near_day_high
+        or (day_position >= MAX_VIEW_SELL_DAY_POSITION_MIN if day_position >= 0 else False)
+    )
+
+    max_view_rejection = (
+        rejection == "UPPER_WICK"
+        or upper_wick_strong
+        or candle_dir == "BEAR"
+        or rsi >= MAX_VIEW_MIN_RSI
+        or volume_spike
+    )
+
+    max_view_confirmations = 0
+
+    if len(recent_big_buys_for_view) >= MAX_VIEW_BUY_COUNT:
+        max_view_confirmations += 1
+
+    if max_view_top_zone:
+        max_view_confirmations += 1
+
+    if max_view_rejection:
+        max_view_confirmations += 1
+
+    if day_bias == "SELL":
+        max_view_confirmations += 1
+
+    if macro_event_mode:
+        max_view_confirmations += 1
+
+    max_view_sell = (
+        MAX_VIEW_SELL_ENABLED
+        and signal == "SELL"
+        and day_bias == "SELL"
+        and len(recent_big_buys_for_view) >= MAX_VIEW_BUY_COUNT
+        and max_view_top_zone
+        and max_view_rejection
+        and structure in ["HH", "BEARISH", "LH"]
+        and rsi > 38
     )
 
     # MAX DIP BUY v11:
@@ -699,7 +801,27 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if max_recovery_buy:
+    if max_view_sell:
+        setup_type = "MAX_VIEW_SELL"
+        score += MAX_VIEW_SELL_BASE_BONUS
+        reasons.append(f"MAX VIEW SELL: top/rimbalzo alto dopo BUY profondi ({max_view_confirmations} conferme)")
+
+        if len(recent_big_buys_for_view) >= MAX_VIEW_BUY_COUNT:
+            score += 3
+            reasons.append(f"Contesto post BUY forti: {len(recent_big_buys_for_view)} BUY almeno TP{MAX_VIEW_BUY_TP_LEVEL}")
+
+        if max_view_top_zone:
+            score += 3
+            if day_position >= 0:
+                reasons.append(f"Prezzo in zona alta del giorno: day position {round(day_position, 2)}")
+            else:
+                reasons.append("Prezzo vicino massimo M15/giorno")
+
+        if macro_event_mode:
+            score += MAX_VIEW_EVENT_BONUS
+            reasons.append("Modalità evento/NFP: possibile exhaustion sell")
+
+    elif max_recovery_buy:
         setup_type = "MAX_RECOVERY_BUY"
         score += 9
         reasons.append(f"MAX RECOVERY BUY: recupero dopo grande discesa ({recovery_confirmations} conferme)")
@@ -766,8 +888,11 @@ def score_signal(data, signal):
             score += 1
             reasons.append("News bullish gold")
         else:
-            if max_fade_sell:
-                reasons.append("SELL contro news bullish permesso: setup fade Max")
+            if max_fade_sell or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS):
+                if max_view_sell:
+                    reasons.append("SELL contro news bullish permesso: MAX VIEW SELL da top")
+                else:
+                    reasons.append("SELL contro news bullish permesso: setup fade Max")
             else:
                 score -= 2
                 reasons.append("SELL contro news bullish gold")
@@ -945,8 +1070,11 @@ def score_signal(data, signal):
             reasons.append("Candela bearish")
 
         if candle_dir == "BULL":
-            if max_fade_sell and rejection == "UPPER_WICK":
-                reasons.append("Candela verde accettata: upper wick bearish da fade")
+            if (max_fade_sell and rejection == "UPPER_WICK") or (max_view_sell and max_view_top_zone):
+                if max_view_sell:
+                    reasons.append("Candela verde accettata: SELL da top/exhaustion")
+                else:
+                    reasons.append("Candela verde accettata: upper wick bearish da fade")
             else:
                 score -= 2
                 reasons.append("Candela verde contro SELL")
@@ -968,7 +1096,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or max_fade_sell:
+            if reversal_sell or max_fade_sell or max_view_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -976,7 +1104,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or max_fade_sell:
+            if reversal_sell or max_fade_sell or max_view_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -984,8 +1112,12 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            score -= 3
-            reasons.append("Volume spike bullish")
+            if max_view_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma SELL da exhaustion/top ancora valido")
+            else:
+                score -= 3
+                reasons.append("Volume spike bullish")
 
     return score, reasons, active_news_bias, news_reasons, setup_type
 
@@ -1230,6 +1362,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
 
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # v16: un MAX_VIEW_SELL è pensato proprio per ribaltare la lettura dopo BUY già maturi.
+    if setup_type == "MAX_VIEW_SELL":
+        dominance += 8
 
     # Se le news sono bullish gold, il BUY ha una priorità naturale.
     # Il SELL è permesso, ma deve essere davvero superiore.
@@ -1637,6 +1773,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "MAX_VIEW_SELL" and int(score) < MAX_VIEW_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"MAX_VIEW_SELL sotto soglia {MAX_VIEW_SELL_MIN_SCORE}"
+
     if int(score) < CHAOS_MIN_SCORE:
         return True, ctx, extreme_info, f"Chaos Mode: score sotto soglia {CHAOS_MIN_SCORE}"
 
@@ -1928,7 +2067,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v15:\n"
+        f"Lettura v16:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
