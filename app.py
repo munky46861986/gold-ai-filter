@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v17 Auto Event Mode + Max View"
+VERSION = "v18 NFP Spike Reversal + Event Memory"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "MAX_EVENT_SPIKE_SELL": 10,
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
     "MAX_DIP_BUY": 4,
@@ -158,6 +159,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "MAX_EVENT_SPIKE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FADE_SELL",
     "REVERSAL_SELL",
@@ -242,7 +244,39 @@ AUTO_EVENT_KEYWORDS = [
 ]
 
 NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
-AUTO_EVENT_CACHE = {"until": 0, "reasons": []}
+AUTO_EVENT_CACHE = {
+    "until": 0,
+    "reasons": [],
+    "start_time": 0,
+    "start_price": 0,
+    "high": 0,
+    "low": 0,
+    "high_time": 0,
+    "low_time": 0
+}
+
+# v18: NFP Spike Reversal + Event Memory
+# La v17 capiva che c'era evento, ma non capiva bene lo spike.
+# La v18 memorizza il prezzo pre-evento e cerca SELL da top dopo spike verticale.
+EVENT_SPIKE_REVERSAL_ENABLED = os.getenv("EVENT_SPIKE_REVERSAL_ENABLED", "TRUE").upper() == "TRUE"
+
+EVENT_SPIKE_LOOKBACK_SECONDS = int(os.getenv("EVENT_SPIKE_LOOKBACK_SECONDS", "7200"))
+EVENT_SPIKE_MIN_UP_POINTS = float(os.getenv("EVENT_SPIKE_MIN_UP_POINTS", "35"))
+EVENT_SPIKE_TOP_POSITION_MIN = float(os.getenv("EVENT_SPIKE_TOP_POSITION_MIN", "0.65"))
+EVENT_SPIKE_SELL_RETRACE_POINTS = float(os.getenv("EVENT_SPIKE_SELL_RETRACE_POINTS", "2.5"))
+
+EVENT_SPIKE_SELL_BASE_BONUS = int(os.getenv("EVENT_SPIKE_SELL_BASE_BONUS", "14"))
+EVENT_SPIKE_SELL_MIN_SCORE = int(os.getenv("EVENT_SPIKE_SELL_MIN_SCORE", "10"))
+EVENT_SPIKE_EVENT_BONUS = int(os.getenv("EVENT_SPIKE_EVENT_BONUS", "5"))
+
+# Durante uno spike-up da evento, blocca i BUY nella parte alta dello spike.
+EVENT_SPIKE_BLOCK_TOP_BUY_ENABLED = os.getenv("EVENT_SPIKE_BLOCK_TOP_BUY_ENABLED", "TRUE").upper() == "TRUE"
+EVENT_SPIKE_BLOCK_BUY_TOP_POSITION_MIN = float(os.getenv("EVENT_SPIKE_BLOCK_BUY_TOP_POSITION_MIN", "0.55"))
+EVENT_SPIKE_BLOCK_BUY_MIN_UP_POINTS = float(os.getenv("EVENT_SPIKE_BLOCK_BUY_MIN_UP_POINTS", "30"))
+EVENT_SPIKE_ALLOW_BUY_BELOW_POSITION = float(os.getenv("EVENT_SPIKE_ALLOW_BUY_BELOW_POSITION", "0.45"))
+
+# In questo setup accetto SELL anche se EMA20/EMA50 sono UP o news ancora bullish.
+EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 OPEN_TRADES = []
 
 try:
@@ -491,6 +525,20 @@ def health():
         "auto_event_active": now_ts() < AUTO_EVENT_CACHE.get("until", 0),
         "auto_event_until": AUTO_EVENT_CACHE.get("until", 0),
         "auto_event_reasons": AUTO_EVENT_CACHE.get("reasons", []),
+        "auto_event_start_price": AUTO_EVENT_CACHE.get("start_price", 0),
+        "auto_event_high": AUTO_EVENT_CACHE.get("high", 0),
+        "auto_event_low": AUTO_EVENT_CACHE.get("low", 0),
+        "auto_event_spike_up_points": max(0, AUTO_EVENT_CACHE.get("high", 0) - AUTO_EVENT_CACHE.get("start_price", 0)) if AUTO_EVENT_CACHE.get("start_price", 0) else 0,
+        "event_spike_reversal_enabled": EVENT_SPIKE_REVERSAL_ENABLED,
+        "event_spike_lookback_seconds": EVENT_SPIKE_LOOKBACK_SECONDS,
+        "event_spike_min_up_points": EVENT_SPIKE_MIN_UP_POINTS,
+        "event_spike_top_position_min": EVENT_SPIKE_TOP_POSITION_MIN,
+        "event_spike_sell_retrace_points": EVENT_SPIKE_SELL_RETRACE_POINTS,
+        "event_spike_sell_base_bonus": EVENT_SPIKE_SELL_BASE_BONUS,
+        "event_spike_sell_min_score": EVENT_SPIKE_SELL_MIN_SCORE,
+        "event_spike_block_top_buy_enabled": EVENT_SPIKE_BLOCK_TOP_BUY_ENABLED,
+        "event_spike_block_buy_top_position_min": EVENT_SPIKE_BLOCK_BUY_TOP_POSITION_MIN,
+        "event_spike_block_buy_min_up_points": EVENT_SPIKE_BLOCK_BUY_MIN_UP_POINTS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -550,7 +598,121 @@ def event_keyword_hits(text):
     return unique
 
 
-def activate_auto_event_mode(reasons):
+def reset_auto_event_memory_if_expired():
+    if now_ts() <= AUTO_EVENT_CACHE.get("until", 0):
+        return
+
+    AUTO_EVENT_CACHE["start_time"] = 0
+    AUTO_EVENT_CACHE["start_price"] = 0
+    AUTO_EVENT_CACHE["high"] = 0
+    AUTO_EVENT_CACHE["low"] = 0
+    AUTO_EVENT_CACHE["high_time"] = 0
+    AUTO_EVENT_CACHE["low_time"] = 0
+
+
+def update_auto_event_memory(data):
+    if not AUTO_EVENT_MODE_ENABLED:
+        return
+
+    if now_ts() > AUTO_EVENT_CACHE.get("until", 0):
+        reset_auto_event_memory_if_expired()
+        return
+
+    price = get_price_from_data(data)
+    if not price:
+        return
+
+    now = now_ts()
+
+    # Il primo prezzo dopo l'attivazione diventa il prezzo pre-evento / anchor.
+    if not AUTO_EVENT_CACHE.get("start_price", 0):
+        AUTO_EVENT_CACHE["start_price"] = price
+        AUTO_EVENT_CACHE["start_time"] = now
+        AUTO_EVENT_CACHE["high"] = price
+        AUTO_EVENT_CACHE["low"] = price
+        AUTO_EVENT_CACHE["high_time"] = now
+        AUTO_EVENT_CACHE["low_time"] = now
+
+    day_high = to_float(data.get("day_high"), 0)
+    day_low = to_float(data.get("day_low"), 0)
+
+    # Uso il massimo di giornata solo se è sopra l'anchor, perché nei giorni NFP
+    # spesso il Pine conosce il top intrabar anche se l'alert arriva qualche minuto dopo.
+    current_high = max(price, day_high) if day_high and day_high >= AUTO_EVENT_CACHE.get("start_price", 0) else price
+    current_low = min(price, day_low) if day_low and day_low <= AUTO_EVENT_CACHE.get("start_price", 0) else price
+
+    if not AUTO_EVENT_CACHE.get("high", 0) or current_high > AUTO_EVENT_CACHE.get("high", 0):
+        AUTO_EVENT_CACHE["high"] = current_high
+        AUTO_EVENT_CACHE["high_time"] = now
+
+    if not AUTO_EVENT_CACHE.get("low", 0) or current_low < AUTO_EVENT_CACHE.get("low", 0):
+        AUTO_EVENT_CACHE["low"] = current_low
+        AUTO_EVENT_CACHE["low_time"] = now
+
+
+def get_event_spike_context(data):
+    active, reasons = auto_event_cache_active()
+
+    if active:
+        update_auto_event_memory(data)
+
+    price = get_price_from_data(data)
+    start_price = AUTO_EVENT_CACHE.get("start_price", 0)
+    start_time = AUTO_EVENT_CACHE.get("start_time", 0)
+    high = AUTO_EVENT_CACHE.get("high", 0)
+    low = AUTO_EVENT_CACHE.get("low", 0)
+
+    up_points = max(0, high - start_price) if start_price and high else 0
+    down_points = max(0, start_price - low) if start_price and low else 0
+    age = now_ts() - start_time if start_time else 999999
+
+    top_position = 0
+    retrace_from_high = 0
+
+    if start_price and high and high > start_price and price:
+        top_position = (price - start_price) / (high - start_price)
+        top_position = max(0, min(1, top_position))
+        retrace_from_high = max(0, high - price)
+
+    ctx = {
+        "active": active,
+        "reasons": reasons,
+        "start_price": start_price,
+        "start_time": start_time,
+        "high": high,
+        "low": low,
+        "price": price,
+        "up_points": up_points,
+        "down_points": down_points,
+        "age": age,
+        "top_position": top_position,
+        "retrace_from_high": retrace_from_high,
+        "up_confirmed": (
+            active
+            and age <= EVENT_SPIKE_LOOKBACK_SECONDS
+            and up_points >= EVENT_SPIKE_MIN_UP_POINTS
+        )
+    }
+
+    return ctx
+
+
+def event_spike_status_text(ctx):
+    if not ctx:
+        return "Nessuna memoria evento"
+
+    return (
+        f"Event active: {ctx.get('active')} | "
+        f"Anchor: {round(ctx.get('start_price', 0), 3)} | "
+        f"High: {round(ctx.get('high', 0), 3)} | "
+        f"Low: {round(ctx.get('low', 0), 3)} | "
+        f"Up points: {round(ctx.get('up_points', 0), 2)} | "
+        f"Top position: {round(ctx.get('top_position', 0), 2)} | "
+        f"Retrace high: {round(ctx.get('retrace_from_high', 0), 2)}"
+    )
+
+
+def activate_auto_event_mode(reasons, data=None):
     if not AUTO_EVENT_MODE_ENABLED:
         return False, []
 
@@ -568,6 +730,9 @@ def activate_auto_event_mode(reasons):
         now_ts() + AUTO_EVENT_DURATION_SECONDS
     )
     AUTO_EVENT_CACHE["reasons"] = clean_reasons
+
+    if data is not None:
+        update_auto_event_memory(data)
 
     return True, clean_reasons
 
@@ -627,9 +792,13 @@ def detect_auto_event_from_data(data):
             reasons.append("Volume spike con volatilità sopra media")
 
     if reasons:
-        return activate_auto_event_mode(reasons)
+        return activate_auto_event_mode(reasons, data)
 
-    return auto_event_cache_active()
+    active, cached_reasons = auto_event_cache_active()
+    if active:
+        update_auto_event_memory(data)
+
+    return active, cached_reasons
 
 
 def auto_event_status_text(active, reasons):
@@ -783,7 +952,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -814,6 +983,17 @@ def score_signal(data, signal):
         psych_distance = to_float(data.get("psych_distance"), psych_distance or 999)
 
     active_news_bias, news_reasons = get_auto_news_bias()
+
+    # v18: dopo le news, aggiorno ancora Auto Event.
+    # Questo serve quando la keyword macro attiva l'evento proprio in questa candela.
+    auto_event_active, auto_event_reasons = detect_auto_event_from_data(data)
+    macro_event_mode = (
+        MAX_VIEW_EVENT_MODE
+        or event_mode_from_pine
+        or EVENT_RISK == "HIGH"
+        or auto_event_active
+    )
+    event_spike_ctx = get_event_spike_context(data)
 
     # v12 context:
     # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
@@ -869,6 +1049,56 @@ def score_signal(data, signal):
         and rsi < 68
     )
 
+    # MAX EVENT SPIKE SELL v18:
+    # Questa è la lettura stile Max durante NFP:
+    # il mercato esplode verso l'alto, prende liquidità sui massimi,
+    # poi il top diventa zona di SELL anche se news/EMA sono bullish.
+    event_spike_up_confirmed = bool(event_spike_ctx.get("up_confirmed"))
+    event_spike_top_zone = (
+        event_spike_up_confirmed
+        and (
+            event_spike_ctx.get("top_position", 0) >= EVENT_SPIKE_TOP_POSITION_MIN
+            or near_day_high
+            or near_m15_high
+        )
+    )
+
+    event_spike_reversal_confirmed = (
+        candle_dir == "BEAR"
+        or structure in ["BEARISH", "HH", "LH"]
+        or rejection == "UPPER_WICK"
+        or upper_wick_strong
+        or event_spike_ctx.get("retrace_from_high", 0) >= EVENT_SPIKE_SELL_RETRACE_POINTS
+    )
+
+    event_spike_confirmations = 0
+
+    if event_spike_up_confirmed:
+        event_spike_confirmations += 1
+
+    if event_spike_top_zone:
+        event_spike_confirmations += 1
+
+    if event_spike_reversal_confirmed:
+        event_spike_confirmations += 1
+
+    if day_bias == "SELL":
+        event_spike_confirmations += 1
+
+    if macro_event_mode:
+        event_spike_confirmations += 1
+
+    max_event_spike_sell = (
+        EVENT_SPIKE_REVERSAL_ENABLED
+        and signal == "SELL"
+        and macro_event_mode
+        and event_spike_up_confirmed
+        and event_spike_top_zone
+        and event_spike_reversal_confirmed
+        and day_bias == "SELL"
+        and structure in ["HH", "BEARISH", "LH"]
+    )
+
     # MAX VIEW SELL v16:
     # Questa è la lettura stile Max di oggi:
     # dopo una salita forte e BUY già pagati, il rimbalzo alto diventa zona di SELL,
@@ -904,11 +1134,17 @@ def score_signal(data, signal):
     if macro_event_mode:
         max_view_confirmations += 1
 
+    if event_spike_up_confirmed:
+        max_view_confirmations += 1
+
     max_view_sell = (
         MAX_VIEW_SELL_ENABLED
         and signal == "SELL"
         and day_bias == "SELL"
-        and len(recent_big_buys_for_view) >= MAX_VIEW_BUY_COUNT
+        and (
+            len(recent_big_buys_for_view) >= MAX_VIEW_BUY_COUNT
+            or event_spike_up_confirmed
+        )
         and max_view_top_zone
         and max_view_rejection
         and structure in ["HH", "BEARISH", "LH"]
@@ -1004,7 +1240,23 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if max_view_sell:
+    if max_event_spike_sell:
+        setup_type = "MAX_EVENT_SPIKE_SELL"
+        score += EVENT_SPIKE_SELL_BASE_BONUS
+        reasons.append(f"MAX EVENT SPIKE SELL: spike NFP/evento da top ({event_spike_confirmations} conferme)")
+
+        score += EVENT_SPIKE_EVENT_BONUS
+        reasons.append(event_spike_status_text(event_spike_ctx))
+
+        if near_day_high or near_m15_high:
+            score += 3
+            reasons.append("Prezzo in zona massimi / liquidity sweep")
+
+        if event_spike_ctx.get("retrace_from_high", 0) >= EVENT_SPIKE_SELL_RETRACE_POINTS:
+            score += 2
+            reasons.append(f"Rifiuto dal top: retrace {round(event_spike_ctx.get('retrace_from_high', 0), 2)} punti")
+
+    elif max_view_sell:
         setup_type = "MAX_VIEW_SELL"
         score += MAX_VIEW_SELL_BASE_BONUS
         reasons.append(f"MAX VIEW SELL: top/rimbalzo alto dopo BUY profondi ({max_view_confirmations} conferme)")
@@ -1070,6 +1322,25 @@ def score_signal(data, signal):
         reasons.append("MAX DIP SELL: vendita da eccesso bearish")
 
     # =========================
+    # EVENT SPIKE TOP BUY BLOCK v18
+    # =========================
+
+    if (
+        EVENT_SPIKE_BLOCK_TOP_BUY_ENABLED
+        and signal == "BUY"
+        and macro_event_mode
+        and event_spike_ctx.get("up_points", 0) >= EVENT_SPIKE_BLOCK_BUY_MIN_UP_POINTS
+        and event_spike_ctx.get("top_position", 0) >= EVENT_SPIKE_BLOCK_BUY_TOP_POSITION_MIN
+        and not near_day_low
+        and not near_m15_low
+    ):
+        return -999, [
+            "BUY bloccato: prezzo nella parte alta dello spike da evento/NFP",
+            event_spike_status_text(event_spike_ctx),
+            "La v18 non compra lo spike: cerca pullback basso o SELL da exhaustion"
+        ], active_news_bias, news_reasons, setup_type
+
+    # =========================
     # BIAS MANUALE
     # =========================
 
@@ -1094,8 +1365,14 @@ def score_signal(data, signal):
             score += 1
             reasons.append("News bullish gold")
         else:
-            if max_fade_sell or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS):
-                if max_view_sell:
+            if (
+                max_fade_sell
+                or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
+                or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
+            ):
+                if max_event_spike_sell:
+                    reasons.append("SELL contro news bullish permesso: MAX EVENT SPIKE SELL")
+                elif max_view_sell:
                     reasons.append("SELL contro news bullish permesso: MAX VIEW SELL da top")
                 else:
                     reasons.append("SELL contro news bullish permesso: setup fade Max")
@@ -1276,8 +1553,14 @@ def score_signal(data, signal):
             reasons.append("Candela bearish")
 
         if candle_dir == "BULL":
-            if (max_fade_sell and rejection == "UPPER_WICK") or (max_view_sell and max_view_top_zone):
-                if max_view_sell:
+            if (
+                (max_fade_sell and rejection == "UPPER_WICK")
+                or (max_view_sell and max_view_top_zone)
+                or (max_event_spike_sell and event_spike_top_zone)
+            ):
+                if max_event_spike_sell:
+                    reasons.append("Candela verde accettata: SELL post spike evento")
+                elif max_view_sell:
                     reasons.append("Candela verde accettata: SELL da top/exhaustion")
                 else:
                     reasons.append("Candela verde accettata: upper wick bearish da fade")
@@ -1302,7 +1585,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or max_fade_sell or max_view_sell:
+            if reversal_sell or max_fade_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -1310,7 +1593,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or max_fade_sell or max_view_sell:
+            if reversal_sell or max_fade_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -1318,7 +1601,10 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            if max_view_sell:
+            if max_event_spike_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma SELL post-evento ancora valido")
+            elif max_view_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma SELL da exhaustion/top ancora valido")
             else:
@@ -1569,7 +1855,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
 
-    # v16: un MAX_VIEW_SELL è pensato proprio per ribaltare la lettura dopo BUY già maturi.
+    # v18: MAX_EVENT_SPIKE_SELL e MAX_VIEW_SELL ribaltano la lettura dopo spike/top.
+    if setup_type == "MAX_EVENT_SPIKE_SELL":
+        dominance += 12
+
     if setup_type == "MAX_VIEW_SELL":
         dominance += 8
 
@@ -1979,6 +2268,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "MAX_EVENT_SPIKE_SELL" and int(score) < EVENT_SPIKE_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"MAX_EVENT_SPIKE_SELL sotto soglia {EVENT_SPIKE_SELL_MIN_SCORE}"
+
     if setup_type == "MAX_VIEW_SELL" and int(score) < MAX_VIEW_SELL_MIN_SCORE:
         return True, ctx, extreme_info, f"MAX_VIEW_SELL sotto soglia {MAX_VIEW_SELL_MIN_SCORE}"
 
@@ -2273,7 +2565,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v17:\n"
+        f"Lettura v18:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
