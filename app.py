@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v18 NFP Spike Reversal + Event Memory"
+VERSION = "v19 Max Failed Retest Sell"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "MAX_FAILED_RETEST_SELL": 14,
     "MAX_EVENT_SPIKE_SELL": 10,
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
@@ -159,6 +160,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "MAX_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FADE_SELL",
@@ -252,7 +254,10 @@ AUTO_EVENT_CACHE = {
     "high": 0,
     "low": 0,
     "high_time": 0,
-    "low_time": 0
+    "low_time": 0,
+    "pullback_low_after_high": 0,
+    "max_pullback_after_high": 0,
+    "pullback_time": 0
 }
 
 # v18: NFP Spike Reversal + Event Memory
@@ -277,6 +282,27 @@ EVENT_SPIKE_ALLOW_BUY_BELOW_POSITION = float(os.getenv("EVENT_SPIKE_ALLOW_BUY_BE
 
 # In questo setup accetto SELL anche se EMA20/EMA50 sono UP o news ancora bullish.
 EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
+
+# v19: Max Failed Retest Sell
+# La v18 capisce lo spike e blocca i BUY in alto.
+# La v19 aggiunge pazienza: vende il retest alto fallito, non il primo top casuale.
+FAILED_RETEST_SELL_ENABLED = os.getenv("FAILED_RETEST_SELL_ENABLED", "TRUE").upper() == "TRUE"
+FAILED_RETEST_MIN_PULLBACK_POINTS = float(os.getenv("FAILED_RETEST_MIN_PULLBACK_POINTS", "10"))
+FAILED_RETEST_TOP_POSITION_MIN = float(os.getenv("FAILED_RETEST_TOP_POSITION_MIN", "0.72"))
+FAILED_RETEST_TOP_POSITION_MAX = float(os.getenv("FAILED_RETEST_TOP_POSITION_MAX", "0.96"))
+FAILED_RETEST_NEAR_HIGH_DISTANCE = float(os.getenv("FAILED_RETEST_NEAR_HIGH_DISTANCE", "14"))
+FAILED_RETEST_MIN_DISTANCE_FROM_HIGH = float(os.getenv("FAILED_RETEST_MIN_DISTANCE_FROM_HIGH", "1.5"))
+FAILED_RETEST_MIN_SECONDS_AFTER_HIGH = int(os.getenv("FAILED_RETEST_MIN_SECONDS_AFTER_HIGH", "60"))
+
+FAILED_RETEST_REJECTION_REQUIRED = os.getenv("FAILED_RETEST_REJECTION_REQUIRED", "TRUE").upper() == "TRUE"
+FAILED_RETEST_SELL_BASE_BONUS = int(os.getenv("FAILED_RETEST_SELL_BASE_BONUS", "18"))
+FAILED_RETEST_SELL_MIN_SCORE = int(os.getenv("FAILED_RETEST_SELL_MIN_SCORE", "12"))
+FAILED_RETEST_EVENT_BONUS = int(os.getenv("FAILED_RETEST_EVENT_BONUS", "5"))
+
+# Se TRUE, evita i MAX_VIEW_SELL / MAX_EVENT_SPIKE_SELL troppo anticipati finché non c'è stato pullback.
+FAILED_RETEST_BLOCK_EARLY_SELLS = os.getenv("FAILED_RETEST_BLOCK_EARLY_SELLS", "TRUE").upper() == "TRUE"
+FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
+FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY = os.getenv("FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY", "TRUE").upper() == "TRUE"
 OPEN_TRADES = []
 
 try:
@@ -354,6 +380,11 @@ def get_price_from_data(data):
 
     if price:
         return price
+
+    close = to_float(data.get("close"), 0)
+
+    if close:
+        return close
 
     entry_low = to_float(data.get("entry_low"), 0)
     entry_high = to_float(data.get("entry_high"), 0)
@@ -539,6 +570,16 @@ def health():
         "event_spike_block_top_buy_enabled": EVENT_SPIKE_BLOCK_TOP_BUY_ENABLED,
         "event_spike_block_buy_top_position_min": EVENT_SPIKE_BLOCK_BUY_TOP_POSITION_MIN,
         "event_spike_block_buy_min_up_points": EVENT_SPIKE_BLOCK_BUY_MIN_UP_POINTS,
+        "failed_retest_sell_enabled": FAILED_RETEST_SELL_ENABLED,
+        "failed_retest_min_pullback_points": FAILED_RETEST_MIN_PULLBACK_POINTS,
+        "failed_retest_top_position_min": FAILED_RETEST_TOP_POSITION_MIN,
+        "failed_retest_top_position_max": FAILED_RETEST_TOP_POSITION_MAX,
+        "failed_retest_near_high_distance": FAILED_RETEST_NEAR_HIGH_DISTANCE,
+        "failed_retest_min_distance_from_high": FAILED_RETEST_MIN_DISTANCE_FROM_HIGH,
+        "failed_retest_min_seconds_after_high": FAILED_RETEST_MIN_SECONDS_AFTER_HIGH,
+        "failed_retest_sell_base_bonus": FAILED_RETEST_SELL_BASE_BONUS,
+        "failed_retest_sell_min_score": FAILED_RETEST_SELL_MIN_SCORE,
+        "failed_retest_block_early_sells": FAILED_RETEST_BLOCK_EARLY_SELLS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -608,6 +649,9 @@ def reset_auto_event_memory_if_expired():
     AUTO_EVENT_CACHE["low"] = 0
     AUTO_EVENT_CACHE["high_time"] = 0
     AUTO_EVENT_CACHE["low_time"] = 0
+    AUTO_EVENT_CACHE["pullback_low_after_high"] = 0
+    AUTO_EVENT_CACHE["max_pullback_after_high"] = 0
+    AUTO_EVENT_CACHE["pullback_time"] = 0
 
 
 def update_auto_event_memory(data):
@@ -632,18 +676,56 @@ def update_auto_event_memory(data):
         AUTO_EVENT_CACHE["low"] = price
         AUTO_EVENT_CACHE["high_time"] = now
         AUTO_EVENT_CACHE["low_time"] = now
+        AUTO_EVENT_CACHE["pullback_low_after_high"] = price
+        AUTO_EVENT_CACHE["max_pullback_after_high"] = 0
+        AUTO_EVENT_CACHE["pullback_time"] = 0
 
     day_high = to_float(data.get("day_high"), 0)
     day_low = to_float(data.get("day_low"), 0)
+    bar_high = to_float(data.get("high"), 0)
+    bar_low = to_float(data.get("low"), 0)
 
-    # Uso il massimo di giornata solo se è sopra l'anchor, perché nei giorni NFP
-    # spesso il Pine conosce il top intrabar anche se l'alert arriva qualche minuto dopo.
-    current_high = max(price, day_high) if day_high and day_high >= AUTO_EVENT_CACHE.get("start_price", 0) else price
-    current_low = min(price, day_low) if day_low and day_low <= AUTO_EVENT_CACHE.get("start_price", 0) else price
+    anchor = AUTO_EVENT_CACHE.get("start_price", 0)
 
-    if not AUTO_EVENT_CACHE.get("high", 0) or current_high > AUTO_EVENT_CACHE.get("high", 0):
+    high_candidates = [price]
+    low_candidates = [price]
+
+    if bar_high:
+        high_candidates.append(bar_high)
+
+    if bar_low:
+        low_candidates.append(bar_low)
+
+    if day_high and day_high >= anchor:
+        high_candidates.append(day_high)
+
+    if day_low and day_low <= anchor:
+        low_candidates.append(day_low)
+
+    current_high = max(high_candidates)
+    current_low = min(low_candidates)
+
+    old_high = AUTO_EVENT_CACHE.get("high", 0)
+
+    if not old_high or current_high > old_high:
         AUTO_EVENT_CACHE["high"] = current_high
         AUTO_EVENT_CACHE["high_time"] = now
+
+        # Nuovo massimo = il retest non è ancora confermato.
+        # Da questo punto aspettiamo prima un vero pullback e poi un ritorno vicino al top.
+        AUTO_EVENT_CACHE["pullback_low_after_high"] = current_high
+        AUTO_EVENT_CACHE["max_pullback_after_high"] = 0
+        AUTO_EVENT_CACHE["pullback_time"] = 0
+    else:
+        high_now = AUTO_EVENT_CACHE.get("high", 0)
+
+        if high_now:
+            current_pullback = max(0, high_now - current_low)
+
+            if current_pullback > AUTO_EVENT_CACHE.get("max_pullback_after_high", 0):
+                AUTO_EVENT_CACHE["max_pullback_after_high"] = current_pullback
+                AUTO_EVENT_CACHE["pullback_low_after_high"] = current_low
+                AUTO_EVENT_CACHE["pullback_time"] = now
 
     if not AUTO_EVENT_CACHE.get("low", 0) or current_low < AUTO_EVENT_CACHE.get("low", 0):
         AUTO_EVENT_CACHE["low"] = current_low
@@ -661,10 +743,15 @@ def get_event_spike_context(data):
     start_time = AUTO_EVENT_CACHE.get("start_time", 0)
     high = AUTO_EVENT_CACHE.get("high", 0)
     low = AUTO_EVENT_CACHE.get("low", 0)
+    high_time = AUTO_EVENT_CACHE.get("high_time", 0)
+    max_pullback_after_high = AUTO_EVENT_CACHE.get("max_pullback_after_high", 0)
+    pullback_low_after_high = AUTO_EVENT_CACHE.get("pullback_low_after_high", 0)
+    pullback_time = AUTO_EVENT_CACHE.get("pullback_time", 0)
 
     up_points = max(0, high - start_price) if start_price and high else 0
     down_points = max(0, start_price - low) if start_price and low else 0
     age = now_ts() - start_time if start_time else 999999
+    seconds_after_high = now_ts() - high_time if high_time else 999999
 
     top_position = 0
     retrace_from_high = 0
@@ -674,6 +761,17 @@ def get_event_spike_context(data):
         top_position = max(0, min(1, top_position))
         retrace_from_high = max(0, high - price)
 
+    pullback_done = max_pullback_after_high >= FAILED_RETEST_MIN_PULLBACK_POINTS
+
+    failed_retest_zone = (
+        pullback_done
+        and top_position >= FAILED_RETEST_TOP_POSITION_MIN
+        and top_position <= FAILED_RETEST_TOP_POSITION_MAX
+        and retrace_from_high <= FAILED_RETEST_NEAR_HIGH_DISTANCE
+        and retrace_from_high >= FAILED_RETEST_MIN_DISTANCE_FROM_HIGH
+        and seconds_after_high >= FAILED_RETEST_MIN_SECONDS_AFTER_HIGH
+    )
+
     ctx = {
         "active": active,
         "reasons": reasons,
@@ -681,12 +779,19 @@ def get_event_spike_context(data):
         "start_time": start_time,
         "high": high,
         "low": low,
+        "high_time": high_time,
         "price": price,
         "up_points": up_points,
         "down_points": down_points,
         "age": age,
         "top_position": top_position,
         "retrace_from_high": retrace_from_high,
+        "seconds_after_high": seconds_after_high,
+        "max_pullback_after_high": max_pullback_after_high,
+        "pullback_low_after_high": pullback_low_after_high,
+        "pullback_time": pullback_time,
+        "pullback_done": pullback_done,
+        "failed_retest_zone": failed_retest_zone,
         "up_confirmed": (
             active
             and age <= EVENT_SPIKE_LOOKBACK_SECONDS
@@ -708,7 +813,9 @@ def event_spike_status_text(ctx):
         f"Low: {round(ctx.get('low', 0), 3)} | "
         f"Up points: {round(ctx.get('up_points', 0), 2)} | "
         f"Top position: {round(ctx.get('top_position', 0), 2)} | "
-        f"Retrace high: {round(ctx.get('retrace_from_high', 0), 2)}"
+        f"Retrace high: {round(ctx.get('retrace_from_high', 0), 2)} | "
+        f"Pullback dopo high: {round(ctx.get('max_pullback_after_high', 0), 2)} | "
+        f"Failed retest zone: {ctx.get('failed_retest_zone')}"
     )
 
 
@@ -952,7 +1059,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1071,6 +1178,63 @@ def score_signal(data, signal):
         or event_spike_ctx.get("retrace_from_high", 0) >= EVENT_SPIKE_SELL_RETRACE_POINTS
     )
 
+    failed_retest_rejection = (
+        candle_dir == "BEAR"
+        or rejection == "UPPER_WICK"
+        or upper_wick_strong
+        or structure in ["BEARISH", "LH"]
+        or event_spike_ctx.get("retrace_from_high", 0) >= FAILED_RETEST_MIN_DISTANCE_FROM_HIGH
+    )
+
+    failed_retest_ready = (
+        FAILED_RETEST_SELL_ENABLED
+        and macro_event_mode
+        and event_spike_up_confirmed
+        and event_spike_ctx.get("pullback_done")
+        and event_spike_ctx.get("failed_retest_zone")
+        and (
+            failed_retest_rejection
+            or not FAILED_RETEST_REJECTION_REQUIRED
+        )
+    )
+
+    failed_retest_confirmations = 0
+
+    if event_spike_up_confirmed:
+        failed_retest_confirmations += 1
+
+    if event_spike_ctx.get("pullback_done"):
+        failed_retest_confirmations += 1
+
+    if event_spike_ctx.get("failed_retest_zone"):
+        failed_retest_confirmations += 1
+
+    if failed_retest_rejection:
+        failed_retest_confirmations += 1
+
+    if macro_event_mode:
+        failed_retest_confirmations += 1
+
+    max_failed_retest_sell = (
+        FAILED_RETEST_SELL_ENABLED
+        and signal == "SELL"
+        and failed_retest_ready
+        and (
+            structure in ["HH", "BEARISH", "LH"]
+            or candle_dir == "BEAR"
+            or rejection == "UPPER_WICK"
+            or upper_wick_strong
+        )
+    )
+
+    # Se v19 richiede retest, i SELL da top troppo anticipati vengono spenti.
+    # Così evitiamo di vendere il primo top casuale: prima pullback, poi retest alto fallito.
+    event_sell_retest_guard_ok = (
+        not FAILED_RETEST_BLOCK_EARLY_SELLS
+        or not event_spike_up_confirmed
+        or event_spike_ctx.get("pullback_done")
+    )
+
     event_spike_confirmations = 0
 
     if event_spike_up_confirmed:
@@ -1095,6 +1259,7 @@ def score_signal(data, signal):
         and event_spike_up_confirmed
         and event_spike_top_zone
         and event_spike_reversal_confirmed
+        and event_sell_retest_guard_ok
         and day_bias == "SELL"
         and structure in ["HH", "BEARISH", "LH"]
     )
@@ -1147,6 +1312,7 @@ def score_signal(data, signal):
         )
         and max_view_top_zone
         and max_view_rejection
+        and event_sell_retest_guard_ok
         and structure in ["HH", "BEARISH", "LH"]
         and rsi > 38
     )
@@ -1240,7 +1406,25 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if max_event_spike_sell:
+    if max_failed_retest_sell:
+        setup_type = "MAX_FAILED_RETEST_SELL"
+        score += FAILED_RETEST_SELL_BASE_BONUS
+        reasons.append(f"MAX FAILED RETEST SELL: retest alto fallito dopo spike ({failed_retest_confirmations} conferme)")
+
+        score += FAILED_RETEST_EVENT_BONUS
+        reasons.append(event_spike_status_text(event_spike_ctx))
+
+        if day_bias == "BUY" and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
+            reasons.append("Daily BUY ignorato: SELL da failed retest post-evento")
+
+        if active_news_bias == "BULLISH_GOLD" and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS:
+            reasons.append("News bullish ignorate: spike già maturo, retest alto fallito")
+
+        if failed_retest_rejection:
+            score += 3
+            reasons.append("Conferma rejection/fallimento retest")
+
+    elif max_event_spike_sell:
         setup_type = "MAX_EVENT_SPIKE_SELL"
         score += EVENT_SPIKE_SELL_BASE_BONUS
         reasons.append(f"MAX EVENT SPIKE SELL: spike NFP/evento da top ({event_spike_confirmations} conferme)")
@@ -1337,7 +1521,7 @@ def score_signal(data, signal):
         return -999, [
             "BUY bloccato: prezzo nella parte alta dello spike da evento/NFP",
             event_spike_status_text(event_spike_ctx),
-            "La v18 non compra lo spike: cerca pullback basso o SELL da exhaustion"
+            "La v19 non compra lo spike: aspetta pullback basso o SELL da failed retest"
         ], active_news_bias, news_reasons, setup_type
 
     # =========================
@@ -1367,10 +1551,13 @@ def score_signal(data, signal):
         else:
             if (
                 max_fade_sell
+                or (max_failed_retest_sell and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
             ):
-                if max_event_spike_sell:
+                if max_failed_retest_sell:
+                    reasons.append("SELL contro news bullish permesso: MAX FAILED RETEST SELL")
+                elif max_event_spike_sell:
                     reasons.append("SELL contro news bullish permesso: MAX EVENT SPIKE SELL")
                 elif max_view_sell:
                     reasons.append("SELL contro news bullish permesso: MAX VIEW SELL da top")
@@ -1521,7 +1708,10 @@ def score_signal(data, signal):
             reasons.append("Daily SELL")
 
         if day_bias == "BUY":
-            if reversal_sell:
+            if max_failed_retest_sell and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
+                score -= 1
+                reasons.append("Daily BUY ma failed retest SELL post-evento")
+            elif reversal_sell:
                 score -= 1
                 reasons.append("SELL reversal contro Daily BUY")
             else:
@@ -1555,10 +1745,13 @@ def score_signal(data, signal):
         if candle_dir == "BULL":
             if (
                 (max_fade_sell and rejection == "UPPER_WICK")
+                or (max_failed_retest_sell and event_spike_ctx.get("failed_retest_zone"))
                 or (max_view_sell and max_view_top_zone)
                 or (max_event_spike_sell and event_spike_top_zone)
             ):
-                if max_event_spike_sell:
+                if max_failed_retest_sell:
+                    reasons.append("Candela verde accettata: failed retest SELL")
+                elif max_event_spike_sell:
                     reasons.append("Candela verde accettata: SELL post spike evento")
                 elif max_view_sell:
                     reasons.append("Candela verde accettata: SELL da top/exhaustion")
@@ -1585,7 +1778,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or max_fade_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -1593,7 +1786,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or max_fade_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -1601,7 +1794,10 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            if max_event_spike_sell:
+            if max_failed_retest_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma failed retest SELL ancora valido")
+            elif max_event_spike_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma SELL post-evento ancora valido")
             elif max_view_sell:
@@ -1854,6 +2050,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
 
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # v19: MAX_FAILED_RETEST_SELL è il setup più forte per vendere top/retest post-evento.
+    if setup_type == "MAX_FAILED_RETEST_SELL":
+        dominance += 16
 
     # v18: MAX_EVENT_SPIKE_SELL e MAX_VIEW_SELL ribaltano la lettura dopo spike/top.
     if setup_type == "MAX_EVENT_SPIKE_SELL":
@@ -2268,6 +2468,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "MAX_FAILED_RETEST_SELL" and int(score) < FAILED_RETEST_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"MAX_FAILED_RETEST_SELL sotto soglia {FAILED_RETEST_SELL_MIN_SCORE}"
+
     if setup_type == "MAX_EVENT_SPIKE_SELL" and int(score) < EVENT_SPIKE_SELL_MIN_SCORE:
         return True, ctx, extreme_info, f"MAX_EVENT_SPIKE_SELL sotto soglia {EVENT_SPIKE_SELL_MIN_SCORE}"
 
@@ -2565,7 +2768,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v18:\n"
+        f"Lettura v19:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -2895,6 +3098,9 @@ def webhook():
     data = request.get_json(silent=True) or {}
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
+        # v19: aggiorna la memoria evento/spike anche sui PRICE_UPDATE.
+        # Questo permette di sapere se c'è stato pullback e retest anche senza nuovi segnali.
+        detect_auto_event_from_data(data)
         updates = handle_price_update(data)
 
         return jsonify({
