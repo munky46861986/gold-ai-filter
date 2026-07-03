@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v19 Max Failed Retest Sell"
+VERSION = "v20 Event State Machine + Synthetic Retest Sell"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "SYNTHETIC_FAILED_RETEST_SELL": 18,
     "MAX_FAILED_RETEST_SELL": 14,
     "MAX_EVENT_SPIKE_SELL": 10,
     "MAX_VIEW_SELL": 8,
@@ -160,6 +161,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
     "MAX_VIEW_SELL",
@@ -303,6 +305,43 @@ FAILED_RETEST_EVENT_BONUS = int(os.getenv("FAILED_RETEST_EVENT_BONUS", "5"))
 FAILED_RETEST_BLOCK_EARLY_SELLS = os.getenv("FAILED_RETEST_BLOCK_EARLY_SELLS", "TRUE").upper() == "TRUE"
 FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY = os.getenv("FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY", "TRUE").upper() == "TRUE"
+
+# v20: Event State Machine + Synthetic Failed Retest Sell
+# Il Python non aspetta più obbligatoriamente un SELL dal Pine.
+# I PRICE_UPDATE fanno avanzare una macchina a stati:
+# SPIKE_UP -> PULLBACK_CONFIRMED -> RETEST_ARMED -> SELL_TRIGGERED.
+SYNTHETIC_RETEST_ENGINE_ENABLED = os.getenv("SYNTHETIC_RETEST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
+
+SYNTHETIC_RETEST_SPIKE_MIN_UP_POINTS = float(os.getenv("SYNTHETIC_RETEST_SPIKE_MIN_UP_POINTS", "35"))
+SYNTHETIC_RETEST_PULLBACK_POINTS = float(os.getenv("SYNTHETIC_RETEST_PULLBACK_POINTS", "10"))
+SYNTHETIC_RETEST_ARM_POSITION_MIN = float(os.getenv("SYNTHETIC_RETEST_ARM_POSITION_MIN", "0.72"))
+SYNTHETIC_RETEST_ARM_POSITION_MAX = float(os.getenv("SYNTHETIC_RETEST_ARM_POSITION_MAX", "0.96"))
+SYNTHETIC_RETEST_NEAR_HIGH_DISTANCE = float(os.getenv("SYNTHETIC_RETEST_NEAR_HIGH_DISTANCE", "14"))
+SYNTHETIC_RETEST_MIN_SECONDS_AFTER_HIGH = int(os.getenv("SYNTHETIC_RETEST_MIN_SECONDS_AFTER_HIGH", "60"))
+SYNTHETIC_RETEST_FAILURE_POINTS = float(os.getenv("SYNTHETIC_RETEST_FAILURE_POINTS", "2.5"))
+SYNTHETIC_RETEST_REQUIRE_BEAR_CONFIRMATION = os.getenv("SYNTHETIC_RETEST_REQUIRE_BEAR_CONFIRMATION", "TRUE").upper() == "TRUE"
+
+SYNTHETIC_RETEST_BLOCK_BUYS_WHEN_ARMED = os.getenv("SYNTHETIC_RETEST_BLOCK_BUYS_WHEN_ARMED", "TRUE").upper() == "TRUE"
+SYNTHETIC_RETEST_COOLDOWN_SECONDS = int(os.getenv("SYNTHETIC_RETEST_COOLDOWN_SECONDS", "1800"))
+SYNTHETIC_RETEST_SCORE = int(os.getenv("SYNTHETIC_RETEST_SCORE", "28"))
+
+# Costruzione trade sintetico SELL
+SYNTHETIC_RETEST_ENTRY_HALF_ZONE = float(os.getenv("SYNTHETIC_RETEST_ENTRY_HALF_ZONE", "1.5"))
+SYNTHETIC_RETEST_HIGH_SL_BUFFER = float(os.getenv("SYNTHETIC_RETEST_HIGH_SL_BUFFER", "3"))
+SYNTHETIC_RETEST_MIN_SL_DISTANCE = float(os.getenv("SYNTHETIC_RETEST_MIN_SL_DISTANCE", "8"))
+SYNTHETIC_RETEST_MAX_RISK_POINTS = float(os.getenv("SYNTHETIC_RETEST_MAX_RISK_POINTS", "22"))
+
+SYNTHETIC_RETEST_TP1 = float(os.getenv("SYNTHETIC_RETEST_TP1", "3"))
+SYNTHETIC_RETEST_TP2 = float(os.getenv("SYNTHETIC_RETEST_TP2", "5"))
+SYNTHETIC_RETEST_TP3 = float(os.getenv("SYNTHETIC_RETEST_TP3", "8"))
+SYNTHETIC_RETEST_TP4 = float(os.getenv("SYNTHETIC_RETEST_TP4", "11"))
+SYNTHETIC_RETEST_TP5 = float(os.getenv("SYNTHETIC_RETEST_TP5", "14"))
+SYNTHETIC_RETEST_TP6 = float(os.getenv("SYNTHETIC_RETEST_TP6", "17"))
+SYNTHETIC_RETEST_TP7 = float(os.getenv("SYNTHETIC_RETEST_TP7", "20"))
+SYNTHETIC_RETEST_TP8 = float(os.getenv("SYNTHETIC_RETEST_TP8", "25"))
+
+# Stato runtime per simbolo. Viene alimentato da PRICE_UPDATE.
+EVENT_STATE_MACHINE = {}
 OPEN_TRADES = []
 
 try:
@@ -580,6 +619,16 @@ def health():
         "failed_retest_sell_base_bonus": FAILED_RETEST_SELL_BASE_BONUS,
         "failed_retest_sell_min_score": FAILED_RETEST_SELL_MIN_SCORE,
         "failed_retest_block_early_sells": FAILED_RETEST_BLOCK_EARLY_SELLS,
+        "synthetic_retest_engine_enabled": SYNTHETIC_RETEST_ENGINE_ENABLED,
+        "synthetic_retest_spike_min_up_points": SYNTHETIC_RETEST_SPIKE_MIN_UP_POINTS,
+        "synthetic_retest_pullback_points": SYNTHETIC_RETEST_PULLBACK_POINTS,
+        "synthetic_retest_arm_position_min": SYNTHETIC_RETEST_ARM_POSITION_MIN,
+        "synthetic_retest_arm_position_max": SYNTHETIC_RETEST_ARM_POSITION_MAX,
+        "synthetic_retest_near_high_distance": SYNTHETIC_RETEST_NEAR_HIGH_DISTANCE,
+        "synthetic_retest_failure_points": SYNTHETIC_RETEST_FAILURE_POINTS,
+        "synthetic_retest_block_buys_when_armed": SYNTHETIC_RETEST_BLOCK_BUYS_WHEN_ARMED,
+        "synthetic_retest_cooldown_seconds": SYNTHETIC_RETEST_COOLDOWN_SECONDS,
+        "synthetic_event_states": EVENT_STATE_MACHINE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1059,7 +1108,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -2051,6 +2100,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
 
+    # v20: il SELL sintetico nasce da una macchina a stati confermata sui PRICE_UPDATE.
+    if setup_type == "SYNTHETIC_FAILED_RETEST_SELL":
+        dominance += 20
+
     # v19: MAX_FAILED_RETEST_SELL è il setup più forte per vendere top/retest post-evento.
     if setup_type == "MAX_FAILED_RETEST_SELL":
         dominance += 16
@@ -2468,6 +2521,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "SYNTHETIC_FAILED_RETEST_SELL" and int(score) < SYNTHETIC_RETEST_SCORE:
+        return True, ctx, extreme_info, f"SYNTHETIC_FAILED_RETEST_SELL sotto score {SYNTHETIC_RETEST_SCORE}"
+
     if setup_type == "MAX_FAILED_RETEST_SELL" and int(score) < FAILED_RETEST_SELL_MIN_SCORE:
         return True, ctx, extreme_info, f"MAX_FAILED_RETEST_SELL sotto soglia {FAILED_RETEST_SELL_MIN_SCORE}"
 
@@ -2511,6 +2567,426 @@ def chaos_status_text(ctx, extreme_info, block_reason):
             )
 
     return "\n".join(lines)
+
+
+
+
+# =========================
+# EVENT STATE MACHINE + SYNTHETIC SELL v20
+# =========================
+
+def _new_event_state():
+    return {
+        "state": "IDLE",
+        "symbol": "",
+        "updated": 0,
+        "updated_local": "",
+        "retest_armed_at": 0,
+        "retest_peak": 0,
+        "retest_peak_time": 0,
+        "last_price": 0,
+        "last_trigger_time": 0,
+        "last_trigger_trade_id": None,
+        "reason": "Nessun pattern evento attivo"
+    }
+
+
+def get_event_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+
+    if symbol not in EVENT_STATE_MACHINE:
+        EVENT_STATE_MACHINE[symbol] = _new_event_state()
+        EVENT_STATE_MACHINE[symbol]["symbol"] = symbol
+
+    return EVENT_STATE_MACHINE[symbol]
+
+
+def set_event_state(symbol, new_state, reason):
+    state = get_event_state(symbol)
+    state["state"] = new_state
+    state["reason"] = reason
+    state["updated"] = now_ts()
+    state["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    return state
+
+
+def event_state_status_text(symbol):
+    state = get_event_state(symbol)
+
+    return (
+        f"State: {state.get('state')}\n"
+        f"Reason: {state.get('reason')}\n"
+        f"Retest peak: {round(to_float(state.get('retest_peak')), 3)}\n"
+        f"Armed at: {state.get('retest_armed_at')}\n"
+        f"Last trigger trade: {state.get('last_trigger_trade_id') or 'N/D'}"
+    )
+
+
+def has_recent_synthetic_sell(symbol):
+    symbol = str(symbol).upper()
+    now = now_ts()
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if trade.get("setup_type") != "SYNTHETIC_FAILED_RETEST_SELL":
+            continue
+
+        created = trade.get("created") or 0
+
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            return True, trade
+
+        if now - created <= SYNTHETIC_RETEST_COOLDOWN_SECONDS:
+            return True, trade
+
+    return False, None
+
+
+def build_synthetic_sell_data(data, ctx, state):
+    price = get_price_from_data(data)
+
+    if not price:
+        return None, "Prezzo non disponibile"
+
+    event_high = to_float(ctx.get("high"), 0)
+    entry_low = price - SYNTHETIC_RETEST_ENTRY_HALF_ZONE
+    entry_high = price + SYNTHETIC_RETEST_ENTRY_HALF_ZONE
+
+    sl_by_high = event_high + SYNTHETIC_RETEST_HIGH_SL_BUFFER if event_high else 0
+    sl_by_min_distance = price + SYNTHETIC_RETEST_MIN_SL_DISTANCE
+    sl = max(sl_by_high, sl_by_min_distance)
+
+    risk = sl - price
+
+    if risk <= 0:
+        return None, "Rischio sintetico non valido"
+
+    if risk > SYNTHETIC_RETEST_MAX_RISK_POINTS:
+        return None, (
+            f"Rischio troppo largo: {round(risk, 2)} > "
+            f"{SYNTHETIC_RETEST_MAX_RISK_POINTS}"
+        )
+
+    tp_distances = [
+        SYNTHETIC_RETEST_TP1,
+        SYNTHETIC_RETEST_TP2,
+        SYNTHETIC_RETEST_TP3,
+        SYNTHETIC_RETEST_TP4,
+        SYNTHETIC_RETEST_TP5,
+        SYNTHETIC_RETEST_TP6,
+        SYNTHETIC_RETEST_TP7,
+        SYNTHETIC_RETEST_TP8
+    ]
+
+    out = {
+        "signal": "SELL",
+        "symbol": data.get("symbol", "XAUUSD"),
+        "price": price,
+        "tf": data.get("tf", ""),
+        "entry_low": round(entry_low, 3),
+        "entry_high": round(entry_high, 3),
+        "sl": round(sl, 3),
+        "synthetic_source": "PRICE_UPDATE_STATE_MACHINE"
+    }
+
+    for i, dist in enumerate(tp_distances, start=1):
+        out[f"tp{i}"] = round(price - dist, 3)
+
+    return out, None
+
+
+def save_synthetic_sell_trade(data, ctx, state):
+    synthetic_data, error = build_synthetic_sell_data(data, ctx, state)
+
+    if error:
+        return None, error
+
+    trade = save_trade(
+        synthetic_data,
+        "SELL",
+        SYNTHETIC_RETEST_SCORE,
+        "SYNTHETIC_FAILED_RETEST_SELL"
+    )
+
+    # Il pattern è confermato sul close del PRICE_UPDATE:
+    # considero il trade attivato al prezzo di conferma, senza attendere un nuovo segnale Pine.
+    trade["status"] = "OPEN"
+    trade["entered"] = True
+    trade["activated"] = now_ts()
+    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    trade["synthetic"] = True
+    trade["synthetic_source"] = "PRICE_UPDATE_STATE_MACHINE"
+    trade["event_anchor"] = ctx.get("start_price")
+    trade["event_high"] = ctx.get("high")
+    trade["event_pullback"] = ctx.get("max_pullback_after_high")
+    trade["event_top_position"] = ctx.get("top_position")
+    trade["event_retest_peak"] = state.get("retest_peak")
+    save_trades()
+
+    return trade, None
+
+
+def synthetic_sell_message(trade, ctx, state, data):
+    return f"""🤖🔴 GOLD SELL AUTONOMO {VERSION}
+
+🆔 Trade ID: {trade.get('id')}
+📌 Setup: SYNTHETIC_FAILED_RETEST_SELL
+🧠 Origine: Python Event State Machine
+📍 Entry Zone: {trade.get('entry_low')} - {trade.get('entry_high')}
+🛑 SL: {trade.get('sl')}
+🎯 TP1: {trade.get('tp1')}
+🎯 TP2: {trade.get('tp2')}
+🎯 TP3: {trade.get('tp3')}
+🎯 TP4: {trade.get('tp4')}
+🎯 TP5: {trade.get('tp5')}
+🎯 TP6: {trade.get('tp6')}
+🎯 TP7: {trade.get('tp7')}
+🎯 TP8: {trade.get('tp8')}
+
+✅ Pattern:
+- Spike evento confermato
+- Pullback confermato
+- Retest alto armato
+- Retest fallito con conferma bearish
+
+📊 Event Memory:
+- Anchor: {round(to_float(ctx.get('start_price')), 3)}
+- High: {round(to_float(ctx.get('high')), 3)}
+- Spike up: {round(to_float(ctx.get('up_points')), 2)} punti
+- Pullback dopo high: {round(to_float(ctx.get('max_pullback_after_high')), 2)} punti
+- Top position: {round(to_float(ctx.get('top_position')), 2)}
+- Retest peak: {round(to_float(state.get('retest_peak')), 3)}
+- Prezzo conferma: {round(get_price_from_data(data), 3)}
+
+⚡ Il SELL è stato generato dal Python senza aspettare un segnale SELL del Pine.
+"""
+
+
+def process_event_state_machine(data):
+    result = {
+        "triggered": False,
+        "trade_id": None,
+        "state": "IDLE",
+        "reason": ""
+    }
+
+    if not SYNTHETIC_RETEST_ENGINE_ENABLED:
+        result["reason"] = "Synthetic engine disattivato"
+        return result
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    state = get_event_state(symbol)
+    ctx = get_event_spike_context(data)
+    price = get_price_from_data(data)
+    bar_high = to_float(data.get("high"), price)
+    bar_low = to_float(data.get("low"), price)
+    bar_open = to_float(data.get("open"), 0)
+    candle_dir = str(data.get("candle_dir", "")).upper()
+    rejection = str(data.get("rejection", "")).upper()
+    upper_wick_strong = to_bool(data.get("upper_wick_strong", "false"))
+    previous_price = to_float(state.get("last_price"), 0)
+
+    if price:
+        state["last_price"] = price
+
+    # Evento non attivo o spike insufficiente: reset logico.
+    spike_ok = (
+        ctx.get("active")
+        and ctx.get("age", 999999) <= EVENT_SPIKE_LOOKBACK_SECONDS
+        and ctx.get("up_points", 0) >= SYNTHETIC_RETEST_SPIKE_MIN_UP_POINTS
+    )
+
+    if not spike_ok:
+        if state.get("state") != "SELL_TRIGGERED":
+            set_event_state(symbol, "IDLE", "Evento/spike non abbastanza forte")
+            state["retest_armed_at"] = 0
+            state["retest_peak"] = 0
+            state["retest_peak_time"] = 0
+
+        result["state"] = state.get("state")
+        result["reason"] = state.get("reason")
+        return result
+
+    # 1) SPIKE_UP
+    if state.get("state") in ["IDLE", "SELL_TRIGGERED"]:
+        # Dopo un trigger, un nuovo massimo resetta il ciclo.
+        if (
+            state.get("state") == "IDLE"
+            or ctx.get("high_time", 0) > state.get("last_trigger_time", 0)
+        ):
+            set_event_state(
+                symbol,
+                "SPIKE_UP",
+                f"Spike up {round(ctx.get('up_points', 0), 2)} punti"
+            )
+            state["retest_armed_at"] = 0
+            state["retest_peak"] = 0
+            state["retest_peak_time"] = 0
+
+    # 2) PULLBACK_CONFIRMED
+    pullback_ok = ctx.get("max_pullback_after_high", 0) >= SYNTHETIC_RETEST_PULLBACK_POINTS
+
+    if pullback_ok and state.get("state") == "SPIKE_UP":
+        set_event_state(
+            symbol,
+            "PULLBACK_CONFIRMED",
+            f"Pullback {round(ctx.get('max_pullback_after_high', 0), 2)} punti"
+        )
+
+    # 3) RETEST_ARMED
+    retest_zone_ok = (
+        pullback_ok
+        and ctx.get("top_position", 0) >= SYNTHETIC_RETEST_ARM_POSITION_MIN
+        and ctx.get("top_position", 0) <= SYNTHETIC_RETEST_ARM_POSITION_MAX
+        and ctx.get("retrace_from_high", 999999) <= SYNTHETIC_RETEST_NEAR_HIGH_DISTANCE
+        and ctx.get("seconds_after_high", 0) >= SYNTHETIC_RETEST_MIN_SECONDS_AFTER_HIGH
+    )
+
+    if retest_zone_ok and state.get("state") in ["PULLBACK_CONFIRMED", "RETEST_ARMED"]:
+        if state.get("state") != "RETEST_ARMED":
+            set_event_state(
+                symbol,
+                "RETEST_ARMED",
+                "Prezzo tornato in zona retest alta dopo pullback"
+            )
+            state["retest_armed_at"] = now_ts()
+            state["retest_peak"] = max(price, bar_high)
+            state["retest_peak_time"] = now_ts()
+        else:
+            current_peak = max(price, bar_high)
+            if current_peak > to_float(state.get("retest_peak"), 0):
+                state["retest_peak"] = current_peak
+                state["retest_peak_time"] = now_ts()
+
+    # Se il retest produce un nuovo massimo evento, il ciclo torna SPIKE_UP.
+    if (
+        state.get("state") == "RETEST_ARMED"
+        and ctx.get("high_time", 0) > state.get("retest_armed_at", 0)
+        and ctx.get("max_pullback_after_high", 0) < SYNTHETIC_RETEST_PULLBACK_POINTS
+    ):
+        set_event_state(symbol, "SPIKE_UP", "Nuovo massimo: retest invalidato")
+        state["retest_armed_at"] = 0
+        state["retest_peak"] = 0
+        state["retest_peak_time"] = 0
+
+    # 4) FAILED RETEST CONFIRMATION
+    if state.get("state") == "RETEST_ARMED":
+        retest_peak = to_float(state.get("retest_peak"), 0)
+        failure_points = max(0, retest_peak - price) if retest_peak and price else 0
+
+        bearish_close = bool(bar_open and price < bar_open)
+        lower_than_previous = bool(previous_price and price < previous_price)
+        bearish_confirmation = (
+            candle_dir == "BEAR"
+            or rejection == "UPPER_WICK"
+            or upper_wick_strong
+            or bearish_close
+            or lower_than_previous
+        )
+
+        failure_ok = failure_points >= SYNTHETIC_RETEST_FAILURE_POINTS
+
+        if failure_ok and (
+            bearish_confirmation
+            or not SYNTHETIC_RETEST_REQUIRE_BEAR_CONFIRMATION
+        ):
+            duplicate, duplicate_trade = has_recent_synthetic_sell(symbol)
+
+            if duplicate:
+                set_event_state(
+                    symbol,
+                    "SELL_TRIGGERED",
+                    f"Trigger già presente: trade {duplicate_trade.get('id')}"
+                )
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            synthetic_data, risk_error = build_synthetic_sell_data(data, ctx, state)
+
+            if risk_error:
+                state["reason"] = f"Failed retest confermato ma trade non creato: {risk_error}"
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            # Safety 1: Daily Kill Switch resta sempre prioritario.
+            chaos_ctx = get_chaos_context(symbol, synthetic_data)
+            if chaos_ctx.get("kill"):
+                state["reason"] = "Failed retest confermato ma Daily Kill Switch attivo"
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            # Safety 2: rispetta il cooldown dopo SL diretti SELL.
+            block_sl_cooldown, recent_sell_losses = should_block_by_sl_cooldown("SELL", symbol)
+            if block_sl_cooldown:
+                state["reason"] = (
+                    f"Failed retest confermato ma SELL SL cooldown attivo "
+                    f"({len(recent_sell_losses)} SL diretti recenti)"
+                )
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            # Safety 3: evita un secondo SELL se esiste già un SELL recente attivo.
+            recent_same_sell = find_recent_same_trade("SELL", symbol)
+            if recent_same_sell:
+                state["reason"] = (
+                    f"Failed retest confermato ma SELL recente già attivo "
+                    f"(trade {recent_same_sell.get('id')})"
+                )
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            trade, error = save_synthetic_sell_trade(data, ctx, state)
+
+            if error:
+                state["reason"] = f"Errore creazione synthetic SELL: {error}"
+                result["state"] = state.get("state")
+                result["reason"] = state.get("reason")
+                return result
+
+            state["last_trigger_time"] = now_ts()
+            state["last_trigger_trade_id"] = trade.get("id")
+            set_event_state(
+                symbol,
+                "SELL_TRIGGERED",
+                f"Failed retest confermato: failure {round(failure_points, 2)} punti"
+            )
+
+            send_telegram(synthetic_sell_message(trade, ctx, state, data))
+
+            result["triggered"] = True
+            result["trade_id"] = trade.get("id")
+            result["state"] = state.get("state")
+            result["reason"] = state.get("reason")
+            return result
+
+    result["state"] = state.get("state")
+    result["reason"] = state.get("reason")
+    return result
+
+
+def should_block_buy_by_synthetic_state(signal, symbol):
+    if not SYNTHETIC_RETEST_ENGINE_ENABLED:
+        return False, get_event_state(symbol)
+
+    if not SYNTHETIC_RETEST_BLOCK_BUYS_WHEN_ARMED:
+        return False, get_event_state(symbol)
+
+    if str(signal).upper() != "BUY":
+        return False, get_event_state(symbol)
+
+    state = get_event_state(symbol)
+
+    if state.get("state") in ["RETEST_ARMED", "SELL_TRIGGERED"]:
+        return True, state
+
+    return False, state
 
 
 
@@ -2768,7 +3244,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v19:\n"
+        f"Lettura v20:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -3098,14 +3574,22 @@ def webhook():
     data = request.get_json(silent=True) or {}
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
-        # v19: aggiorna la memoria evento/spike anche sui PRICE_UPDATE.
-        # Questo permette di sapere se c'è stato pullback e retest anche senza nuovi segnali.
+        # v20:
+        # 1) aggiorna Auto Event + memoria spike;
+        # 2) gestisce i trade già esistenti;
+        # 3) fa avanzare la macchina a stati;
+        # 4) se il failed retest è confermato, Python può creare un SELL autonomo.
         detect_auto_event_from_data(data)
         updates = handle_price_update(data)
+        synthetic_result = process_event_state_machine(data)
 
         return jsonify({
             "status": "price_checked",
             "updates": len(updates),
+            "synthetic_triggered": synthetic_result.get("triggered"),
+            "synthetic_trade_id": synthetic_result.get("trade_id"),
+            "event_state": synthetic_result.get("state"),
+            "event_reason": synthetic_result.get("reason"),
             "active_trades": active_trades_count(),
             "total_trades": len(OPEN_TRADES)
         })
@@ -3150,6 +3634,42 @@ News:
             "reason": "score_below_min",
             "score": score,
             "setup_type": setup_type
+        })
+
+    # =========================
+    # SYNTHETIC EVENT STATE BUY BLOCK v20
+    # =========================
+
+    block_state_buy, synthetic_state = should_block_buy_by_synthetic_state(
+        signal,
+        symbol
+    )
+
+    if block_state_buy:
+        text = f"""🧠🔒 BUY BLOCCATO {VERSION}
+
+Motivo: Event State Machine
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{event_state_status_text(symbol)}
+
+Azione:
+Il Python ha già armato un retest alto post-evento.
+Non compro il rimbalzo mentre il pattern SELL è in preparazione/conferma.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_synthetic_event_state",
+            "score": score,
+            "setup_type": setup_type,
+            "event_state": synthetic_state.get("state"),
+            "event_reason": synthetic_state.get("reason")
         })
 
     # =========================
