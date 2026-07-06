@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v20 Event State Machine + Synthetic Retest Sell"
+VERSION = "v21 Bearish Continuation + Lower High State Machine"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,8 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "SYNTHETIC_BEAR_CONTINUATION_SELL": 20,
+    "BEAR_CONTINUATION_SELL": 16,
     "SYNTHETIC_FAILED_RETEST_SELL": 18,
     "MAX_FAILED_RETEST_SELL": 14,
     "MAX_EVENT_SPIKE_SELL": 10,
@@ -161,6 +163,8 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
@@ -342,6 +346,65 @@ SYNTHETIC_RETEST_TP8 = float(os.getenv("SYNTHETIC_RETEST_TP8", "25"))
 
 # Stato runtime per simbolo. Viene alimentato da PRICE_UPDATE.
 EVENT_STATE_MACHINE = {}
+
+# v21: Bearish Continuation + Lower High State Machine
+# Serve per il pattern visto con Max:
+# forte impulso ribassista -> rimbalzo tecnico -> lower high -> nuova continuazione SELL.
+BEAR_CONTINUATION_ENGINE_ENABLED = os.getenv("BEAR_CONTINUATION_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
+
+BEAR_HISTORY_SECONDS = int(os.getenv("BEAR_HISTORY_SECONDS", "5400"))
+BEAR_HISTORY_MAX_POINTS = int(os.getenv("BEAR_HISTORY_MAX_POINTS", "240"))
+BEAR_IMPULSE_LOOKBACK_SECONDS = int(os.getenv("BEAR_IMPULSE_LOOKBACK_SECONDS", "1800"))
+
+BEAR_IMPULSE_MIN_DROP_POINTS = float(os.getenv("BEAR_IMPULSE_MIN_DROP_POINTS", "12"))
+BEAR_IMPULSE_ATR_MULT = float(os.getenv("BEAR_IMPULSE_ATR_MULT", "4.0"))
+
+BEAR_RELIEF_MIN_POINTS = float(os.getenv("BEAR_RELIEF_MIN_POINTS", "4"))
+BEAR_RELIEF_MIN_RETRACE = float(os.getenv("BEAR_RELIEF_MIN_RETRACE", "0.15"))
+BEAR_RELIEF_MAX_RETRACE = float(os.getenv("BEAR_RELIEF_MAX_RETRACE", "0.65"))
+BEAR_LOWER_HIGH_MIN_GAP = float(os.getenv("BEAR_LOWER_HIGH_MIN_GAP", "4"))
+
+BEAR_CONTINUATION_FAILURE_POINTS = float(os.getenv("BEAR_CONTINUATION_FAILURE_POINTS", "2.5"))
+BEAR_CONTINUATION_MIN_SECONDS = int(os.getenv("BEAR_CONTINUATION_MIN_SECONDS", "30"))
+BEAR_STATE_TIMEOUT_SECONDS = int(os.getenv("BEAR_STATE_TIMEOUT_SECONDS", "5400"))
+
+BEAR_CONTINUATION_BASE_BONUS = int(os.getenv("BEAR_CONTINUATION_BASE_BONUS", "12"))
+BEAR_CONTINUATION_SELL_MIN_SCORE = int(os.getenv("BEAR_CONTINUATION_SELL_MIN_SCORE", "10"))
+BEAR_CONTINUATION_IGNORE_BULLISH_NEWS = os.getenv("BEAR_CONTINUATION_IGNORE_BULLISH_NEWS", "TRUE").upper() == "TRUE"
+BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY = os.getenv("BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY", "TRUE").upper() == "TRUE"
+
+# Blocca BUY dentro l'impulso/rimbalzo ribassista.
+BEAR_BLOCK_BUYS_ENABLED = os.getenv("BEAR_BLOCK_BUYS_ENABLED", "TRUE").upper() == "TRUE"
+BEAR_BLOCK_MAX_DIP_BUY = os.getenv("BEAR_BLOCK_MAX_DIP_BUY", "TRUE").upper() == "TRUE"
+BEAR_BLOCK_REVERSAL_BUY = os.getenv("BEAR_BLOCK_REVERSAL_BUY", "TRUE").upper() == "TRUE"
+
+# Eccezione molto selettiva per vero recovery BUY.
+BEAR_ALLOW_STRONG_RECOVERY_BUY = os.getenv("BEAR_ALLOW_STRONG_RECOVERY_BUY", "TRUE").upper() == "TRUE"
+BEAR_STRONG_RECOVERY_MIN_SCORE = int(os.getenv("BEAR_STRONG_RECOVERY_MIN_SCORE", "24"))
+
+# Synthetic SELL autonomo della seconda macchina a stati.
+BEAR_SYNTHETIC_SELL_ENABLED = os.getenv("BEAR_SYNTHETIC_SELL_ENABLED", "TRUE").upper() == "TRUE"
+BEAR_SYNTHETIC_SCORE = int(os.getenv("BEAR_SYNTHETIC_SCORE", "26"))
+BEAR_SYNTHETIC_COOLDOWN_SECONDS = int(os.getenv("BEAR_SYNTHETIC_COOLDOWN_SECONDS", "1800"))
+
+BEAR_SYNTHETIC_ENTRY_HALF_ZONE = float(os.getenv("BEAR_SYNTHETIC_ENTRY_HALF_ZONE", "1.5"))
+BEAR_SYNTHETIC_RALLY_SL_BUFFER = float(os.getenv("BEAR_SYNTHETIC_RALLY_SL_BUFFER", "3"))
+BEAR_SYNTHETIC_MIN_SL_DISTANCE = float(os.getenv("BEAR_SYNTHETIC_MIN_SL_DISTANCE", "8"))
+BEAR_SYNTHETIC_MAX_RISK_POINTS = float(os.getenv("BEAR_SYNTHETIC_MAX_RISK_POINTS", "20"))
+
+BEAR_SYNTHETIC_TP1 = float(os.getenv("BEAR_SYNTHETIC_TP1", "3"))
+BEAR_SYNTHETIC_TP2 = float(os.getenv("BEAR_SYNTHETIC_TP2", "5"))
+BEAR_SYNTHETIC_TP3 = float(os.getenv("BEAR_SYNTHETIC_TP3", "8"))
+BEAR_SYNTHETIC_TP4 = float(os.getenv("BEAR_SYNTHETIC_TP4", "11"))
+BEAR_SYNTHETIC_TP5 = float(os.getenv("BEAR_SYNTHETIC_TP5", "14"))
+BEAR_SYNTHETIC_TP6 = float(os.getenv("BEAR_SYNTHETIC_TP6", "17"))
+BEAR_SYNTHETIC_TP7 = float(os.getenv("BEAR_SYNTHETIC_TP7", "20"))
+BEAR_SYNTHETIC_TP8 = float(os.getenv("BEAR_SYNTHETIC_TP8", "25"))
+
+# Runtime memory, alimentata da PRICE_UPDATE.
+BEAR_CONTINUATION_STATE = {}
+PRICE_HISTORY = {}
+
 OPEN_TRADES = []
 
 try:
@@ -629,6 +692,23 @@ def health():
         "synthetic_retest_block_buys_when_armed": SYNTHETIC_RETEST_BLOCK_BUYS_WHEN_ARMED,
         "synthetic_retest_cooldown_seconds": SYNTHETIC_RETEST_COOLDOWN_SECONDS,
         "synthetic_event_states": EVENT_STATE_MACHINE,
+        "bear_continuation_engine_enabled": BEAR_CONTINUATION_ENGINE_ENABLED,
+        "bear_impulse_min_drop_points": BEAR_IMPULSE_MIN_DROP_POINTS,
+        "bear_impulse_atr_mult": BEAR_IMPULSE_ATR_MULT,
+        "bear_relief_min_points": BEAR_RELIEF_MIN_POINTS,
+        "bear_relief_min_retrace": BEAR_RELIEF_MIN_RETRACE,
+        "bear_relief_max_retrace": BEAR_RELIEF_MAX_RETRACE,
+        "bear_lower_high_min_gap": BEAR_LOWER_HIGH_MIN_GAP,
+        "bear_continuation_failure_points": BEAR_CONTINUATION_FAILURE_POINTS,
+        "bear_block_buys_enabled": BEAR_BLOCK_BUYS_ENABLED,
+        "bear_block_max_dip_buy": BEAR_BLOCK_MAX_DIP_BUY,
+        "bear_block_reversal_buy": BEAR_BLOCK_REVERSAL_BUY,
+        "bear_allow_strong_recovery_buy": BEAR_ALLOW_STRONG_RECOVERY_BUY,
+        "bear_strong_recovery_min_score": BEAR_STRONG_RECOVERY_MIN_SCORE,
+        "bear_synthetic_sell_enabled": BEAR_SYNTHETIC_SELL_ENABLED,
+        "bear_synthetic_score": BEAR_SYNTHETIC_SCORE,
+        "bear_synthetic_cooldown_seconds": BEAR_SYNTHETIC_COOLDOWN_SECONDS,
+        "bear_continuation_states": BEAR_CONTINUATION_STATE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1108,7 +1188,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1151,6 +1231,16 @@ def score_signal(data, signal):
     )
     event_spike_ctx = get_event_spike_context(data)
 
+    # v21: contesto bearish continuation già costruito dai PRICE_UPDATE.
+    bear_state_ctx = get_bear_continuation_state(symbol)
+    bear_state_name = str(bear_state_ctx.get("state", "IDLE")).upper()
+    bear_state_active = bear_state_name in [
+        "BEAR_IMPULSE",
+        "RELIEF_RALLY",
+        "LOWER_HIGH_ARMED",
+        "SELL_TRIGGERED"
+    ]
+
     # v12 context:
     # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
     recent_deep_sells = get_recent_tp_trades(
@@ -1175,6 +1265,7 @@ def score_signal(data, signal):
 
     reversal_buy = (
         signal == "BUY"
+        and not bear_state_active
         and active_news_bias == "BULLISH_GOLD"
         and structure in ["LL", "BULLISH"]
         and candle_dir == "BULL"
@@ -1366,6 +1457,30 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
+    # BEAR CONTINUATION SELL v21:
+    # Classifica i SELL normali come continuation SELL quando la macchina a stati
+    # ha già visto impulso/rally/lower-high.
+    bear_continuation_sell = (
+        BEAR_CONTINUATION_ENGINE_ENABLED
+        and signal == "SELL"
+        and bear_state_name in [
+            "BEAR_IMPULSE",
+            "RELIEF_RALLY",
+            "LOWER_HIGH_ARMED",
+            "SELL_TRIGGERED"
+        ]
+        and (
+            structure in ["BEARISH", "LH", "HH"]
+            or candle_dir == "BEAR"
+        )
+        and (
+            ema20_slope == "DOWN"
+            or ema50_slope == "DOWN"
+            or candle_dir == "BEAR"
+            or bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]
+        )
+    )
+
     # MAX DIP BUY v11:
     # Più selettivo della v10.
     # Richiede almeno 2 conferme tra:
@@ -1435,6 +1550,7 @@ def score_signal(data, signal):
 
     max_dip_buy = (
         signal == "BUY"
+        and not bear_state_active
         and active_news_bias == "BULLISH_GOLD"
         and structure in ["LL", "BULLISH"]
         and rsi > 26
@@ -1455,7 +1571,26 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if max_failed_retest_sell:
+    if bear_continuation_sell:
+        setup_type = "BEAR_CONTINUATION_SELL"
+        score += BEAR_CONTINUATION_BASE_BONUS
+        reasons.append(
+            f"BEAR CONTINUATION SELL: state {bear_state_name}"
+        )
+        reasons.append(
+            f"Impulse drop: {round(to_float(bear_state_ctx.get('impulse_drop')), 2)} | "
+            f"Rally peak: {round(to_float(bear_state_ctx.get('rally_peak')), 2)}"
+        )
+
+        if bear_state_name == "LOWER_HIGH_ARMED":
+            score += 4
+            reasons.append("Lower high armato")
+
+        if candle_dir == "BEAR":
+            score += 2
+            reasons.append("Conferma candela bearish su continuation")
+
+    elif max_failed_retest_sell:
         setup_type = "MAX_FAILED_RETEST_SELL"
         score += FAILED_RETEST_SELL_BASE_BONUS
         reasons.append(f"MAX FAILED RETEST SELL: retest alto fallito dopo spike ({failed_retest_confirmations} conferme)")
@@ -1555,6 +1690,27 @@ def score_signal(data, signal):
         reasons.append("MAX DIP SELL: vendita da eccesso bearish")
 
     # =========================
+    # BEARISH STATE SCORE CONTROL v21
+    # =========================
+
+    if signal == "BUY" and bear_state_active:
+        if setup_type == "MAX_RECOVERY_BUY":
+            score -= 4
+            reasons.append(
+                f"Bear state {bear_state_name}: recovery BUY penalizzato"
+            )
+        elif setup_type in ["MAX_DIP_BUY", "REVERSAL_BUY"]:
+            score -= 10
+            reasons.append(
+                f"Bear state {bear_state_name}: BUY speciale contro continuation"
+            )
+        else:
+            score -= 8
+            reasons.append(
+                f"Bear state {bear_state_name}: BUY contro impulso/continuazione"
+            )
+
+    # =========================
     # EVENT SPIKE TOP BUY BLOCK v18
     # =========================
 
@@ -1595,16 +1751,24 @@ def score_signal(data, signal):
 
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
-            score += 1
-            reasons.append("News bullish gold")
+            if bear_state_active:
+                reasons.append(
+                    f"News bullish declassate: bear state {bear_state_name} attivo"
+                )
+            else:
+                score += 1
+                reasons.append("News bullish gold")
         else:
             if (
-                max_fade_sell
+                bear_continuation_sell
+                or max_fade_sell
                 or (max_failed_retest_sell and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
             ):
-                if max_failed_retest_sell:
+                if bear_continuation_sell and BEAR_CONTINUATION_IGNORE_BULLISH_NEWS:
+                    reasons.append("SELL contro news bullish permesso: BEAR CONTINUATION")
+                elif max_failed_retest_sell:
                     reasons.append("SELL contro news bullish permesso: MAX FAILED RETEST SELL")
                 elif max_event_spike_sell:
                     reasons.append("SELL contro news bullish permesso: MAX EVENT SPIKE SELL")
@@ -1757,7 +1921,10 @@ def score_signal(data, signal):
             reasons.append("Daily SELL")
 
         if day_bias == "BUY":
-            if max_failed_retest_sell and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
+            if bear_continuation_sell and BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY:
+                score -= 1
+                reasons.append("Daily BUY ma bearish continuation già confermata")
+            elif max_failed_retest_sell and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
                 score -= 1
                 reasons.append("Daily BUY ma failed retest SELL post-evento")
             elif reversal_sell:
@@ -1793,12 +1960,15 @@ def score_signal(data, signal):
 
         if candle_dir == "BULL":
             if (
-                (max_fade_sell and rejection == "UPPER_WICK")
+                (bear_continuation_sell and bear_state_name in ["RELIEF_RALLY", "LOWER_HIGH_ARMED"])
+                or (max_fade_sell and rejection == "UPPER_WICK")
                 or (max_failed_retest_sell and event_spike_ctx.get("failed_retest_zone"))
                 or (max_view_sell and max_view_top_zone)
                 or (max_event_spike_sell and event_spike_top_zone)
             ):
-                if max_failed_retest_sell:
+                if bear_continuation_sell:
+                    reasons.append("Candela verde accettata: relief rally/lower high SELL")
+                elif max_failed_retest_sell:
                     reasons.append("Candela verde accettata: failed retest SELL")
                 elif max_event_spike_sell:
                     reasons.append("Candela verde accettata: SELL post spike evento")
@@ -1827,7 +1997,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -1835,7 +2005,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -1843,7 +2013,10 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            if max_failed_retest_sell:
+            if bear_continuation_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma bearish continuation ancora valida")
+            elif max_failed_retest_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma failed retest SELL ancora valido")
             elif max_event_spike_sell:
@@ -2019,6 +2192,13 @@ def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
     if len(recent_tp8_sells) < SELL_EXHAUSTION_COUNT:
         return False, recent_tp8_sells
 
+    # v21: un lower-high/continuation SELL confermato non è "inseguimento basso".
+    if setup_type in [
+        "BEAR_CONTINUATION_SELL",
+        "SYNTHETIC_BEAR_CONTINUATION_SELL"
+    ]:
+        return False, recent_tp8_sells
+
     # Dopo tanti TP8 SELL:
     # - blocca SELL NORMAL
     # - permette MAX_FADE_SELL solo se molto forte
@@ -2099,6 +2279,13 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
 
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # v21: seconda macchina a stati per bearish continuation / lower high.
+    if setup_type == "SYNTHETIC_BEAR_CONTINUATION_SELL":
+        dominance += 24
+
+    if setup_type == "BEAR_CONTINUATION_SELL":
+        dominance += 18
 
     # v20: il SELL sintetico nasce da una macchina a stati confermata sui PRICE_UPDATE.
     if setup_type == "SYNTHETIC_FAILED_RETEST_SELL":
@@ -2521,6 +2708,12 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "SYNTHETIC_BEAR_CONTINUATION_SELL" and int(score) < BEAR_SYNTHETIC_SCORE:
+        return True, ctx, extreme_info, f"SYNTHETIC_BEAR_CONTINUATION_SELL sotto score {BEAR_SYNTHETIC_SCORE}"
+
+    if setup_type == "BEAR_CONTINUATION_SELL" and int(score) < BEAR_CONTINUATION_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"BEAR_CONTINUATION_SELL sotto soglia {BEAR_CONTINUATION_SELL_MIN_SCORE}"
+
     if setup_type == "SYNTHETIC_FAILED_RETEST_SELL" and int(score) < SYNTHETIC_RETEST_SCORE:
         return True, ctx, extreme_info, f"SYNTHETIC_FAILED_RETEST_SELL sotto score {SYNTHETIC_RETEST_SCORE}"
 
@@ -2568,6 +2761,680 @@ def chaos_status_text(ctx, extreme_info, block_reason):
 
     return "\n".join(lines)
 
+
+
+
+
+# =========================
+# BEARISH CONTINUATION + LOWER HIGH STATE MACHINE v21
+# =========================
+
+def _new_bear_state():
+    return {
+        "state": "IDLE",
+        "symbol": "",
+        "updated": 0,
+        "updated_local": "",
+        "started": 0,
+        "impulse_high": 0,
+        "impulse_high_time": 0,
+        "impulse_low": 0,
+        "impulse_low_time": 0,
+        "impulse_drop": 0,
+        "rally_peak": 0,
+        "rally_peak_time": 0,
+        "relief_retrace": 0,
+        "last_price": 0,
+        "last_trigger_time": 0,
+        "last_trigger_trade_id": None,
+        "reason": "Nessuna continuazione bearish attiva"
+    }
+
+
+def get_bear_continuation_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+
+    if symbol not in BEAR_CONTINUATION_STATE:
+        BEAR_CONTINUATION_STATE[symbol] = _new_bear_state()
+        BEAR_CONTINUATION_STATE[symbol]["symbol"] = symbol
+
+    return BEAR_CONTINUATION_STATE[symbol]
+
+
+def set_bear_continuation_state(symbol, new_state, reason):
+    state = get_bear_continuation_state(symbol)
+    state["state"] = new_state
+    state["reason"] = reason
+    state["updated"] = now_ts()
+    state["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    if not state.get("started") and new_state != "IDLE":
+        state["started"] = now_ts()
+
+    return state
+
+
+def reset_bear_continuation_state(symbol, reason="Reset"):
+    symbol = str(symbol or "XAUUSD").upper()
+    old = get_bear_continuation_state(symbol)
+    last_trigger_time = old.get("last_trigger_time", 0)
+    last_trigger_trade_id = old.get("last_trigger_trade_id")
+
+    BEAR_CONTINUATION_STATE[symbol] = _new_bear_state()
+    BEAR_CONTINUATION_STATE[symbol]["symbol"] = symbol
+    BEAR_CONTINUATION_STATE[symbol]["last_trigger_time"] = last_trigger_time
+    BEAR_CONTINUATION_STATE[symbol]["last_trigger_trade_id"] = last_trigger_trade_id
+    BEAR_CONTINUATION_STATE[symbol]["reason"] = reason
+    BEAR_CONTINUATION_STATE[symbol]["updated"] = now_ts()
+    BEAR_CONTINUATION_STATE[symbol]["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    return BEAR_CONTINUATION_STATE[symbol]
+
+
+def bear_state_status_text(symbol):
+    state = get_bear_continuation_state(symbol)
+
+    return (
+        f"State: {state.get('state')}\n"
+        f"Reason: {state.get('reason')}\n"
+        f"Impulse high: {round(to_float(state.get('impulse_high')), 3)}\n"
+        f"Impulse low: {round(to_float(state.get('impulse_low')), 3)}\n"
+        f"Impulse drop: {round(to_float(state.get('impulse_drop')), 2)}\n"
+        f"Rally peak: {round(to_float(state.get('rally_peak')), 3)}\n"
+        f"Relief retrace: {round(to_float(state.get('relief_retrace')), 2)}"
+    )
+
+
+def record_price_history(data):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+
+    if not price:
+        return []
+
+    point = {
+        "time": now_ts(),
+        "open": to_float(data.get("open"), price),
+        "high": to_float(data.get("high"), price),
+        "low": to_float(data.get("low"), price),
+        "close": to_float(data.get("close"), price),
+        "price": price,
+        "atr": to_float(data.get("atr"), 0),
+        "candle_dir": str(data.get("candle_dir", "")).upper(),
+        "rejection": str(data.get("rejection", "")).upper(),
+        "upper_wick_strong": to_bool(data.get("upper_wick_strong", "false")),
+        "lower_wick_strong": to_bool(data.get("lower_wick_strong", "false")),
+        "ema20_slope": str(data.get("ema20_slope", "FLAT")).upper(),
+        "ema50_slope": str(data.get("ema50_slope", "FLAT")).upper(),
+        "h1_bias": str(data.get("h1_bias", "NEUTRAL")).upper(),
+        "h4_bias": str(data.get("h4_bias", "NEUTRAL")).upper(),
+        "day_bias": str(data.get("day_bias", "NEUTRAL")).upper(),
+        "bear_impulse_local": to_bool(data.get("bear_impulse_local", "false"))
+    }
+
+    history = PRICE_HISTORY.setdefault(symbol, [])
+    history.append(point)
+
+    cutoff = now_ts() - BEAR_HISTORY_SECONDS
+    history[:] = [
+        p for p in history
+        if p.get("time", 0) >= cutoff
+    ][-BEAR_HISTORY_MAX_POINTS:]
+
+    return history
+
+
+def recent_bear_history(symbol, seconds=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    history = PRICE_HISTORY.get(symbol, [])
+
+    if seconds is None:
+        return history
+
+    cutoff = now_ts() - seconds
+    return [p for p in history if p.get("time", 0) >= cutoff]
+
+
+def _bearish_context_from_data(data):
+    return (
+        str(data.get("ema20_slope", "")).upper() == "DOWN"
+        or str(data.get("ema50_slope", "")).upper() == "DOWN"
+        or str(data.get("candle_dir", "")).upper() == "BEAR"
+        or str(data.get("h1_bias", "")).upper() == "SELL"
+        or str(data.get("day_bias", "")).upper() == "SELL"
+        or to_bool(data.get("bear_impulse_local", "false"))
+    )
+
+
+def _bearish_confirmation_from_data(data, previous_price=0):
+    price = get_price_from_data(data)
+    bar_open = to_float(data.get("open"), 0)
+
+    return (
+        str(data.get("candle_dir", "")).upper() == "BEAR"
+        or str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+        or str(data.get("ema20_slope", "")).upper() == "DOWN"
+        or (bar_open and price < bar_open)
+        or (previous_price and price < previous_price)
+    )
+
+
+def detect_recent_bear_impulse(data):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    history = recent_bear_history(symbol, BEAR_IMPULSE_LOOKBACK_SECONDS)
+
+    if len(history) < 3:
+        return None
+
+    current = history[-1]
+    current_low = current.get("low", current.get("price", 0))
+
+    # Picco precedente più alto nella finestra.
+    peak = max(history[:-1], key=lambda p: p.get("high", 0), default=None)
+
+    if not peak:
+        return None
+
+    peak_high = to_float(peak.get("high"), 0)
+    peak_time = peak.get("time", 0)
+
+    # Minimo successivo al picco.
+    after_peak = [p for p in history if p.get("time", 0) >= peak_time]
+    if not after_peak:
+        return None
+
+    low_point = min(after_peak, key=lambda p: p.get("low", 999999))
+    impulse_low = to_float(low_point.get("low"), current_low)
+    impulse_low_time = low_point.get("time", 0)
+
+    drop = peak_high - impulse_low
+    atr = to_float(current.get("atr"), 0)
+    threshold = max(
+        BEAR_IMPULSE_MIN_DROP_POINTS,
+        atr * BEAR_IMPULSE_ATR_MULT if atr else 0
+    )
+
+    if (
+        drop >= threshold
+        and _bearish_context_from_data(data)
+        and impulse_low_time >= peak_time
+    ):
+        return {
+            "peak_high": peak_high,
+            "peak_time": peak_time,
+            "impulse_low": impulse_low,
+            "impulse_low_time": impulse_low_time,
+            "drop": drop,
+            "threshold": threshold
+        }
+
+    return None
+
+
+def has_recent_bear_synthetic_sell(symbol):
+    symbol = str(symbol).upper()
+    now = now_ts()
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+
+        if trade.get("setup_type") != "SYNTHETIC_BEAR_CONTINUATION_SELL":
+            continue
+
+        created = trade.get("created") or 0
+
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            return True, trade
+
+        if now - created <= BEAR_SYNTHETIC_COOLDOWN_SECONDS:
+            return True, trade
+
+    return False, None
+
+
+def build_bear_synthetic_sell_data(data, state):
+    price = get_price_from_data(data)
+
+    if not price:
+        return None, "Prezzo non disponibile"
+
+    rally_peak = to_float(state.get("rally_peak"), 0)
+    entry_low = price - BEAR_SYNTHETIC_ENTRY_HALF_ZONE
+    entry_high = price + BEAR_SYNTHETIC_ENTRY_HALF_ZONE
+
+    sl_by_rally = rally_peak + BEAR_SYNTHETIC_RALLY_SL_BUFFER if rally_peak else 0
+    sl_by_min_distance = price + BEAR_SYNTHETIC_MIN_SL_DISTANCE
+    sl = max(sl_by_rally, sl_by_min_distance)
+
+    risk = sl - price
+
+    if risk <= 0:
+        return None, "Rischio SELL non valido"
+
+    if risk > BEAR_SYNTHETIC_MAX_RISK_POINTS:
+        return None, (
+            f"Rischio troppo largo: {round(risk, 2)} > "
+            f"{BEAR_SYNTHETIC_MAX_RISK_POINTS}"
+        )
+
+    tp_distances = [
+        BEAR_SYNTHETIC_TP1,
+        BEAR_SYNTHETIC_TP2,
+        BEAR_SYNTHETIC_TP3,
+        BEAR_SYNTHETIC_TP4,
+        BEAR_SYNTHETIC_TP5,
+        BEAR_SYNTHETIC_TP6,
+        BEAR_SYNTHETIC_TP7,
+        BEAR_SYNTHETIC_TP8
+    ]
+
+    out = {
+        "signal": "SELL",
+        "symbol": data.get("symbol", "XAUUSD"),
+        "price": price,
+        "tf": data.get("tf", ""),
+        "entry_low": round(entry_low, 3),
+        "entry_high": round(entry_high, 3),
+        "sl": round(sl, 3),
+        "synthetic_source": "BEAR_CONTINUATION_STATE_MACHINE"
+    }
+
+    for i, dist in enumerate(tp_distances, start=1):
+        out[f"tp{i}"] = round(price - dist, 3)
+
+    return out, None
+
+
+def save_bear_synthetic_sell_trade(data, state):
+    synthetic_data, error = build_bear_synthetic_sell_data(data, state)
+
+    if error:
+        return None, error
+
+    trade = save_trade(
+        synthetic_data,
+        "SELL",
+        BEAR_SYNTHETIC_SCORE,
+        "SYNTHETIC_BEAR_CONTINUATION_SELL"
+    )
+
+    trade["status"] = "OPEN"
+    trade["entered"] = True
+    trade["activated"] = now_ts()
+    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    trade["synthetic"] = True
+    trade["synthetic_source"] = "BEAR_CONTINUATION_STATE_MACHINE"
+    trade["impulse_high"] = state.get("impulse_high")
+    trade["impulse_low"] = state.get("impulse_low")
+    trade["rally_peak"] = state.get("rally_peak")
+    trade["relief_retrace"] = state.get("relief_retrace")
+    save_trades()
+
+    return trade, None
+
+
+def bear_synthetic_sell_message(trade, state, data):
+    return f"""🐻🔴 GOLD SELL AUTONOMO {VERSION}
+
+🆔 Trade ID: {trade.get('id')}
+📌 Setup: SYNTHETIC_BEAR_CONTINUATION_SELL
+🧠 Origine: Python Bearish Continuation State Machine
+📍 Entry Zone: {trade.get('entry_low')} - {trade.get('entry_high')}
+🛑 SL: {trade.get('sl')}
+🎯 TP1: {trade.get('tp1')}
+🎯 TP2: {trade.get('tp2')}
+🎯 TP3: {trade.get('tp3')}
+🎯 TP4: {trade.get('tp4')}
+🎯 TP5: {trade.get('tp5')}
+🎯 TP6: {trade.get('tp6')}
+🎯 TP7: {trade.get('tp7')}
+🎯 TP8: {trade.get('tp8')}
+
+✅ Pattern:
+- Bear impulse confermato
+- Relief rally confermato
+- Lower high armato
+- Continuazione bearish confermata
+
+📊 State Memory:
+- Impulse high: {round(to_float(state.get('impulse_high')), 3)}
+- Impulse low: {round(to_float(state.get('impulse_low')), 3)}
+- Drop: {round(to_float(state.get('impulse_drop')), 2)} punti
+- Rally peak: {round(to_float(state.get('rally_peak')), 3)}
+- Relief retrace: {round(to_float(state.get('relief_retrace')), 2)}
+- Prezzo conferma: {round(get_price_from_data(data), 3)}
+
+⚡ Il SELL è stato generato dal Python senza aspettare un SELL del Pine.
+"""
+
+
+def process_bear_continuation_state_machine(data):
+    result = {
+        "triggered": False,
+        "trade_id": None,
+        "state": "IDLE",
+        "reason": ""
+    }
+
+    if not BEAR_CONTINUATION_ENGINE_ENABLED:
+        result["reason"] = "Bear continuation engine disattivato"
+        return result
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    history = record_price_history(data)
+    state = get_bear_continuation_state(symbol)
+
+    price = get_price_from_data(data)
+    bar_high = to_float(data.get("high"), price)
+    bar_low = to_float(data.get("low"), price)
+    previous_price = to_float(state.get("last_price"), 0)
+
+    if price:
+        state["last_price"] = price
+
+    # Timeout dello stato.
+    if (
+        state.get("state") != "IDLE"
+        and state.get("updated", 0)
+        and now_ts() - state.get("updated", 0) > BEAR_STATE_TIMEOUT_SECONDS
+    ):
+        state = reset_bear_continuation_state(symbol, "Timeout bearish state")
+
+    # Nuovo impulso rilevabile in IDLE oppure dopo un vecchio trigger.
+    impulse = detect_recent_bear_impulse(data)
+
+    if state.get("state") in ["IDLE", "SELL_TRIGGERED"] and impulse:
+        state = set_bear_continuation_state(
+            symbol,
+            "BEAR_IMPULSE",
+            f"Impulso bearish {round(impulse.get('drop', 0), 2)} punti"
+        )
+        state["impulse_high"] = impulse.get("peak_high")
+        state["impulse_high_time"] = impulse.get("peak_time")
+        state["impulse_low"] = impulse.get("impulse_low")
+        state["impulse_low_time"] = impulse.get("impulse_low_time")
+        state["impulse_drop"] = impulse.get("drop")
+        state["rally_peak"] = 0
+        state["rally_peak_time"] = 0
+        state["relief_retrace"] = 0
+
+    # Aggiorna nuovi minimi durante impulso/rally.
+    if state.get("state") in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED"]:
+        if not state.get("impulse_low") or bar_low < state.get("impulse_low"):
+            state["impulse_low"] = bar_low
+            state["impulse_low_time"] = now_ts()
+            state["impulse_drop"] = max(
+                0,
+                to_float(state.get("impulse_high")) - bar_low
+            )
+
+            # Nuovo minimo dopo un rally = nuova espansione, si riparte da BEAR_IMPULSE.
+            if state.get("state") != "BEAR_IMPULSE":
+                state = set_bear_continuation_state(
+                    symbol,
+                    "BEAR_IMPULSE",
+                    "Nuovo minimo: continuazione bearish ancora in espansione"
+                )
+                state["rally_peak"] = 0
+                state["rally_peak_time"] = 0
+                state["relief_retrace"] = 0
+
+    impulse_high = to_float(state.get("impulse_high"), 0)
+    impulse_low = to_float(state.get("impulse_low"), 0)
+    impulse_range = max(0, impulse_high - impulse_low)
+
+    # Invalidation: recupero completo sopra il massimo dell'impulso.
+    if (
+        state.get("state") in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED"]
+        and impulse_high
+        and price >= impulse_high
+    ):
+        state = reset_bear_continuation_state(
+            symbol,
+            "Invalidato: prezzo ha recuperato il massimo impulso"
+        )
+        result["state"] = state.get("state")
+        result["reason"] = state.get("reason")
+        return result
+
+    # 1) BEAR_IMPULSE -> RELIEF_RALLY
+    if state.get("state") == "BEAR_IMPULSE" and impulse_range > 0:
+        bounce = max(0, price - impulse_low)
+        retrace = bounce / impulse_range
+
+        if (
+            bounce >= BEAR_RELIEF_MIN_POINTS
+            and retrace >= BEAR_RELIEF_MIN_RETRACE
+            and retrace <= BEAR_RELIEF_MAX_RETRACE
+        ):
+            state = set_bear_continuation_state(
+                symbol,
+                "RELIEF_RALLY",
+                f"Relief rally {round(bounce, 2)} punti / retrace {round(retrace, 2)}"
+            )
+            state["rally_peak"] = max(price, bar_high)
+            state["rally_peak_time"] = now_ts()
+            state["relief_retrace"] = retrace
+
+    # 2) RELIEF_RALLY -> LOWER_HIGH_ARMED
+    if state.get("state") == "RELIEF_RALLY" and impulse_range > 0:
+        current_peak = max(price, bar_high)
+
+        if current_peak > to_float(state.get("rally_peak"), 0):
+            state["rally_peak"] = current_peak
+            state["rally_peak_time"] = now_ts()
+
+        rally_peak = to_float(state.get("rally_peak"), 0)
+        retrace = (rally_peak - impulse_low) / impulse_range if impulse_range else 0
+        lower_high_gap = impulse_high - rally_peak
+
+        state["relief_retrace"] = retrace
+
+        if retrace > BEAR_RELIEF_MAX_RETRACE:
+            state = reset_bear_continuation_state(
+                symbol,
+                f"Relief rally troppo profondo: retrace {round(retrace, 2)}"
+            )
+        elif (
+            retrace >= BEAR_RELIEF_MIN_RETRACE
+            and retrace <= BEAR_RELIEF_MAX_RETRACE
+            and lower_high_gap >= BEAR_LOWER_HIGH_MIN_GAP
+            and now_ts() - state.get("impulse_low_time", 0) >= BEAR_CONTINUATION_MIN_SECONDS
+        ):
+            state = set_bear_continuation_state(
+                symbol,
+                "LOWER_HIGH_ARMED",
+                (
+                    f"Lower high armato: rally peak {round(rally_peak, 2)}, "
+                    f"gap {round(lower_high_gap, 2)}"
+                )
+            )
+
+    # 3) LOWER_HIGH_ARMED -> SELL_TRIGGERED
+    if state.get("state") == "LOWER_HIGH_ARMED":
+        current_peak = max(price, bar_high)
+
+        # Il rally può migliorare leggermente, purché resti lower high valido.
+        if current_peak > to_float(state.get("rally_peak"), 0):
+            state["rally_peak"] = current_peak
+            state["rally_peak_time"] = now_ts()
+
+        rally_peak = to_float(state.get("rally_peak"), 0)
+        lower_high_gap = impulse_high - rally_peak if impulse_high else 0
+
+        if lower_high_gap < BEAR_LOWER_HIGH_MIN_GAP:
+            state = reset_bear_continuation_state(
+                symbol,
+                "Lower high invalidato: rally troppo vicino/sopra impulso high"
+            )
+        else:
+            failure_points = max(0, rally_peak - price)
+            bearish_confirmation = _bearish_confirmation_from_data(
+                data,
+                previous_price=previous_price
+            )
+
+            if (
+                failure_points >= BEAR_CONTINUATION_FAILURE_POINTS
+                and bearish_confirmation
+            ):
+                duplicate, duplicate_trade = has_recent_bear_synthetic_sell(symbol)
+
+                if duplicate:
+                    state["reason"] = (
+                        f"Trigger bear già presente: trade {duplicate_trade.get('id')}"
+                    )
+                elif BEAR_SYNTHETIC_SELL_ENABLED:
+                    synthetic_data, risk_error = build_bear_synthetic_sell_data(
+                        data,
+                        state
+                    )
+
+                    if risk_error:
+                        state["reason"] = (
+                            f"Lower high confermato ma trade non creato: {risk_error}"
+                        )
+                    else:
+                        # Safety 1: Kill Switch.
+                        chaos_ctx = get_chaos_context(symbol, synthetic_data)
+                        if chaos_ctx.get("kill"):
+                            state["reason"] = (
+                                "Lower high confermato ma Daily Kill Switch attivo"
+                            )
+                        else:
+                            # Safety 2: SELL SL cooldown.
+                            block_sl_cooldown, recent_sell_losses = should_block_by_sl_cooldown(
+                                "SELL",
+                                symbol
+                            )
+
+                            if block_sl_cooldown:
+                                state["reason"] = (
+                                    f"Lower high confermato ma SELL SL cooldown attivo "
+                                    f"({len(recent_sell_losses)} SL diretti recenti)"
+                                )
+                            else:
+                                # Safety 3: SELL recente già attivo.
+                                recent_same_sell = find_recent_same_trade(
+                                    "SELL",
+                                    symbol
+                                )
+
+                                if recent_same_sell:
+                                    state["reason"] = (
+                                        f"Lower high confermato ma SELL recente già attivo "
+                                        f"(trade {recent_same_sell.get('id')})"
+                                    )
+                                else:
+                                    trade, error = save_bear_synthetic_sell_trade(
+                                        data,
+                                        state
+                                    )
+
+                                    if error:
+                                        state["reason"] = (
+                                            f"Errore synthetic bear SELL: {error}"
+                                        )
+                                    else:
+                                        state["last_trigger_time"] = now_ts()
+                                        state["last_trigger_trade_id"] = trade.get("id")
+                                        state = set_bear_continuation_state(
+                                            symbol,
+                                            "SELL_TRIGGERED",
+                                            (
+                                                f"Bear continuation confermata: "
+                                                f"failure {round(failure_points, 2)} punti"
+                                            )
+                                        )
+
+                                        send_telegram(
+                                            bear_synthetic_sell_message(
+                                                trade,
+                                                state,
+                                                data
+                                            )
+                                        )
+
+                                        result["triggered"] = True
+                                        result["trade_id"] = trade.get("id")
+
+    result["state"] = state.get("state")
+    result["reason"] = state.get("reason")
+    return result
+
+
+def bear_state_blocks_dip_buy(symbol):
+    state = get_bear_continuation_state(symbol)
+    return state.get("state") in [
+        "BEAR_IMPULSE",
+        "RELIEF_RALLY",
+        "LOWER_HIGH_ARMED",
+        "SELL_TRIGGERED"
+    ]
+
+
+def should_block_buy_by_bear_state(signal, symbol, setup_type, score, data):
+    state = get_bear_continuation_state(symbol)
+
+    if not BEAR_CONTINUATION_ENGINE_ENABLED:
+        return False, state, "Bear engine disattivato"
+
+    if not BEAR_BLOCK_BUYS_ENABLED:
+        return False, state, "Bear BUY block disattivato"
+
+    if str(signal).upper() != "BUY":
+        return False, state, "Non è BUY"
+
+    active_states = [
+        "BEAR_IMPULSE",
+        "RELIEF_RALLY",
+        "LOWER_HIGH_ARMED",
+        "SELL_TRIGGERED"
+    ]
+
+    if state.get("state") not in active_states:
+        return False, state, "Bear state non attivo"
+
+    setup_type = str(setup_type).upper()
+
+    # Eccezione molto selettiva: vero recovery BUY da zona bassa con score alto.
+    if BEAR_ALLOW_STRONG_RECOVERY_BUY and setup_type == "MAX_RECOVERY_BUY":
+        near_day_low = to_bool(data.get("near_day_low", "false"))
+        near_m15_low = to_bool(data.get("near_m15_low", "false"))
+        candle_bull = str(data.get("candle_dir", "")).upper() == "BULL"
+        lower_rejection = (
+            str(data.get("rejection", "")).upper() == "LOWER_WICK"
+            or to_bool(data.get("lower_wick_strong", "false"))
+        )
+        reclaimed_ema20 = to_bool(data.get("close_above_ema20", "false"))
+
+        strong_recovery = (
+            int(score) >= BEAR_STRONG_RECOVERY_MIN_SCORE
+            and (near_day_low or near_m15_low)
+            and candle_bull
+            and (lower_rejection or reclaimed_ema20)
+        )
+
+        if strong_recovery:
+            return False, state, "Recovery BUY eccezionale ammesso"
+
+    if setup_type == "MAX_DIP_BUY" and BEAR_BLOCK_MAX_DIP_BUY:
+        return True, state, "MAX_DIP_BUY bloccato dentro bearish continuation"
+
+    if setup_type == "REVERSAL_BUY" and BEAR_BLOCK_REVERSAL_BUY:
+        return True, state, "REVERSAL_BUY bloccato dentro bearish continuation"
+
+    # Durante LOWER_HIGH_ARMED / SELL_TRIGGERED blocco qualsiasi BUY.
+    if state.get("state") in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        return True, state, "BUY bloccato: lower high / SELL continuation attivo"
+
+    # Durante impulso/rally blocco anche BUY normali.
+    if setup_type == "NORMAL":
+        return True, state, "BUY NORMAL bloccato durante bearish impulse/relief rally"
+
+    return False, state, "Setup BUY non bloccato"
 
 
 
@@ -3154,6 +4021,14 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
 
     setup_type = str(setup_type).upper()
 
+    # v21: se la seconda macchina a stati ha già confermato bearish continuation,
+    # il SELL non viene bloccato da un vecchio Recovery Lock BUY.
+    if setup_type in [
+        "BEAR_CONTINUATION_SELL",
+        "SYNTHETIC_BEAR_CONTINUATION_SELL"
+    ]:
+        return False, ctx
+
     # Durante Recovery Lock i SELL NORMAL non devono combattere il recupero.
     if setup_type == "NORMAL":
         return True, ctx
@@ -3244,7 +4119,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v20:\n"
+        f"Lettura v21:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -3581,7 +4456,12 @@ def webhook():
         # 4) se il failed retest è confermato, Python può creare un SELL autonomo.
         detect_auto_event_from_data(data)
         updates = handle_price_update(data)
+
+        # v20 state machine: event spike -> failed retest.
         synthetic_result = process_event_state_machine(data)
+
+        # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
+        bear_result = process_bear_continuation_state_machine(data)
 
         return jsonify({
             "status": "price_checked",
@@ -3590,6 +4470,10 @@ def webhook():
             "synthetic_trade_id": synthetic_result.get("trade_id"),
             "event_state": synthetic_result.get("state"),
             "event_reason": synthetic_result.get("reason"),
+            "bear_triggered": bear_result.get("triggered"),
+            "bear_trade_id": bear_result.get("trade_id"),
+            "bear_state": bear_result.get("state"),
+            "bear_reason": bear_result.get("reason"),
             "active_trades": active_trades_count(),
             "total_trades": len(OPEN_TRADES)
         })
@@ -3634,6 +4518,48 @@ News:
             "reason": "score_below_min",
             "score": score,
             "setup_type": setup_type
+        })
+
+    # =========================
+    # BEARISH CONTINUATION BUY BLOCK v21
+    # =========================
+
+    block_bear_buy, bear_state, bear_block_reason = should_block_buy_by_bear_state(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_bear_buy:
+        text = f"""🐻🔒 BUY BLOCCATO {VERSION}
+
+Motivo: Bearish Continuation / Lower High State
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{bear_state_status_text(symbol)}
+
+Dettaglio:
+{bear_block_reason}
+
+Azione:
+Il bot non compra ogni nuovo minimo/rimbalzo dentro una gamba ribassista.
+Aspetta invalidazione reale oppure recovery BUY eccezionale.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_bear_continuation_state",
+            "score": score,
+            "setup_type": setup_type,
+            "bear_state": bear_state.get("state"),
+            "bear_reason": bear_block_reason
         })
 
     # =========================
