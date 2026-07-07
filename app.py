@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v21 Bearish Continuation + Lower High State Machine"
+VERSION = "v22 Campaign Manager + Thesis Persistence"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "BEAR_CAMPAIGN_SELL": 22,
     "SYNTHETIC_BEAR_CONTINUATION_SELL": 20,
     "BEAR_CONTINUATION_SELL": 16,
     "SYNTHETIC_FAILED_RETEST_SELL": 18,
@@ -163,6 +164,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "BEAR_CAMPAIGN_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
@@ -405,6 +407,62 @@ BEAR_SYNTHETIC_TP8 = float(os.getenv("BEAR_SYNTHETIC_TP8", "25"))
 BEAR_CONTINUATION_STATE = {}
 PRICE_HISTORY = {}
 
+# v22: Campaign Manager / Thesis Persistence
+# Una campagna SELL gestisce una sola tesi ribassista con più leg controllate.
+# Non è un invito ad aumentare l'esposizione: ogni leg ha un peso rischio separato
+# e la somma resta sotto un cap totale configurabile.
+CAMPAIGN_MANAGER_ENABLED = os.getenv("CAMPAIGN_MANAGER_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_DIRECTION = "SELL"
+
+CAMPAIGN_MAX_LEGS = int(os.getenv("CAMPAIGN_MAX_LEGS", "3"))
+CAMPAIGN_TOTAL_RISK_CAP = float(os.getenv("CAMPAIGN_TOTAL_RISK_CAP", "1.0"))
+CAMPAIGN_LEG_WEIGHTS_RAW = os.getenv("CAMPAIGN_LEG_WEIGHTS", "0.40,0.35,0.25")
+
+CAMPAIGN_FIRST_LEG_MIN_SCORE = int(os.getenv("CAMPAIGN_FIRST_LEG_MIN_SCORE", "14"))
+CAMPAIGN_REENTRY_MIN_SCORE = int(os.getenv("CAMPAIGN_REENTRY_MIN_SCORE", "18"))
+CAMPAIGN_BETTER_PRICE_POINTS = float(os.getenv("CAMPAIGN_BETTER_PRICE_POINTS", "3"))
+CAMPAIGN_NEW_RETEST_POINTS = float(os.getenv("CAMPAIGN_NEW_RETEST_POINTS", "2"))
+CAMPAIGN_LEG_COOLDOWN_SECONDS = int(os.getenv("CAMPAIGN_LEG_COOLDOWN_SECONDS", "300"))
+CAMPAIGN_TIMEOUT_SECONDS = int(os.getenv("CAMPAIGN_TIMEOUT_SECONDS", "14400"))
+CAMPAIGN_INVALIDATION_BUFFER = float(os.getenv("CAMPAIGN_INVALIDATION_BUFFER", "3"))
+
+CAMPAIGN_ELIGIBLE_SETUPS = {
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FADE_SELL"
+}
+
+# Override controllato dei filtri vecchi.
+CAMPAIGN_KILL_SWITCH_OVERRIDE_ENABLED = os.getenv("CAMPAIGN_KILL_SWITCH_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_KILL_SWITCH_MIN_SCORE = int(os.getenv("CAMPAIGN_KILL_SWITCH_MIN_SCORE", "18"))
+CAMPAIGN_KILL_OVERRIDE_RISK_WEIGHT = float(os.getenv("CAMPAIGN_KILL_OVERRIDE_RISK_WEIGHT", "0.25"))
+
+CAMPAIGN_SL_COOLDOWN_OVERRIDE_ENABLED = os.getenv("CAMPAIGN_SL_COOLDOWN_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_SL_COOLDOWN_MIN_SCORE = int(os.getenv("CAMPAIGN_SL_COOLDOWN_MIN_SCORE", "20"))
+CAMPAIGN_MAX_SL_OVERRIDES = int(os.getenv("CAMPAIGN_MAX_SL_OVERRIDES", "1"))
+
+# Extreme-zone fallback quando day_position / day_high / day_low non arrivano.
+CAMPAIGN_EXTREME_FALLBACK_ENABLED = os.getenv("CAMPAIGN_EXTREME_FALLBACK_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_EXTREME_POSITION_MIN = float(os.getenv("CAMPAIGN_EXTREME_POSITION_MIN", "0.65"))
+CAMPAIGN_RALLY_PEAK_DISTANCE = float(os.getenv("CAMPAIGN_RALLY_PEAK_DISTANCE", "14"))
+
+# Promuove un SELL già coerente con la tesi della campagna.
+CAMPAIGN_SELL_PROMOTION_ENABLED = os.getenv("CAMPAIGN_SELL_PROMOTION_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_SELL_BASE_BONUS = int(os.getenv("CAMPAIGN_SELL_BASE_BONUS", "8"))
+CAMPAIGN_SELL_MIN_SCORE = int(os.getenv("CAMPAIGN_SELL_MIN_SCORE", "12"))
+
+# Gestione basket solo informativa: segnala quando proteggere le leg peggiori
+# e lasciare correre le entry migliori.
+CAMPAIGN_TRIM_ENABLED = os.getenv("CAMPAIGN_TRIM_ENABLED", "TRUE").upper() == "TRUE"
+CAMPAIGN_TRIM_TRIGGER_POINTS = float(os.getenv("CAMPAIGN_TRIM_TRIGGER_POINTS", "6"))
+
+BEAR_CAMPAIGN_STATE = {}
+
 OPEN_TRADES = []
 
 try:
@@ -527,6 +585,12 @@ def load_trades():
             OPEN_TRADES = data
         else:
             OPEN_TRADES = []
+
+        # v22: ricostruisce le campaign legs persistite nei trade.
+        try:
+            rebuild_bear_campaigns_from_trades()
+        except Exception as campaign_error:
+            print(f"Errore ricostruzione campaign: {campaign_error}")
 
     except Exception as e:
         print(f"Errore caricamento trades: {e}")
@@ -709,6 +773,19 @@ def health():
         "bear_synthetic_score": BEAR_SYNTHETIC_SCORE,
         "bear_synthetic_cooldown_seconds": BEAR_SYNTHETIC_COOLDOWN_SECONDS,
         "bear_continuation_states": BEAR_CONTINUATION_STATE,
+        "campaign_manager_enabled": CAMPAIGN_MANAGER_ENABLED,
+        "campaign_max_legs": CAMPAIGN_MAX_LEGS,
+        "campaign_total_risk_cap": CAMPAIGN_TOTAL_RISK_CAP,
+        "campaign_leg_weights": CAMPAIGN_LEG_WEIGHTS_RAW,
+        "campaign_first_leg_min_score": CAMPAIGN_FIRST_LEG_MIN_SCORE,
+        "campaign_reentry_min_score": CAMPAIGN_REENTRY_MIN_SCORE,
+        "campaign_better_price_points": CAMPAIGN_BETTER_PRICE_POINTS,
+        "campaign_new_retest_points": CAMPAIGN_NEW_RETEST_POINTS,
+        "campaign_kill_switch_override_enabled": CAMPAIGN_KILL_SWITCH_OVERRIDE_ENABLED,
+        "campaign_kill_switch_min_score": CAMPAIGN_KILL_SWITCH_MIN_SCORE,
+        "campaign_sl_cooldown_override_enabled": CAMPAIGN_SL_COOLDOWN_OVERRIDE_ENABLED,
+        "campaign_extreme_fallback_enabled": CAMPAIGN_EXTREME_FALLBACK_ENABLED,
+        "campaign_states": BEAR_CAMPAIGN_STATE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1188,7 +1265,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1240,6 +1317,10 @@ def score_signal(data, signal):
         "LOWER_HIGH_ARMED",
         "SELL_TRIGGERED"
     ]
+
+    # v22: tesi persistente della campagna.
+    campaign_ctx = sync_bear_campaign(symbol, data)
+    campaign_active = campaign_is_active(campaign_ctx)
 
     # v12 context:
     # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
@@ -1457,6 +1538,23 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
+    # BEAR CAMPAIGN SELL v22:
+    # Promuove un SELL coerente con una tesi ribassista già attiva,
+    # soprattutto su nuovo retest alto / lower high.
+    bear_campaign_sell = (
+        CAMPAIGN_MANAGER_ENABLED
+        and CAMPAIGN_SELL_PROMOTION_ENABLED
+        and signal == "SELL"
+        and campaign_active
+        and bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]
+        and (
+            structure in ["BEARISH", "LH", "HH"]
+            or candle_dir == "BEAR"
+            or rejection == "UPPER_WICK"
+            or upper_wick_strong
+        )
+    )
+
     # BEAR CONTINUATION SELL v21:
     # Classifica i SELL normali come continuation SELL quando la macchina a stati
     # ha già visto impulso/rally/lower-high.
@@ -1571,7 +1669,25 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if bear_continuation_sell:
+    if bear_campaign_sell:
+        setup_type = "BEAR_CAMPAIGN_SELL"
+        score += CAMPAIGN_SELL_BASE_BONUS
+        reasons.append(
+            f"BEAR CAMPAIGN SELL: tesi persistente {campaign_ctx.get('campaign_id')}"
+        )
+        reasons.append(
+            f"Campagna legs {len(campaign_ctx.get('legs', []))}/{CAMPAIGN_MAX_LEGS}"
+        )
+
+        if bear_state_name == "LOWER_HIGH_ARMED":
+            score += 4
+            reasons.append("Campaign: lower high armato")
+
+        if candle_dir == "BEAR":
+            score += 2
+            reasons.append("Campaign: conferma bearish")
+
+    elif bear_continuation_sell:
         setup_type = "BEAR_CONTINUATION_SELL"
         score += BEAR_CONTINUATION_BASE_BONUS
         reasons.append(
@@ -1760,13 +1876,16 @@ def score_signal(data, signal):
                 reasons.append("News bullish gold")
         else:
             if (
-                bear_continuation_sell
+                bear_campaign_sell
+                or bear_continuation_sell
                 or max_fade_sell
                 or (max_failed_retest_sell and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
             ):
-                if bear_continuation_sell and BEAR_CONTINUATION_IGNORE_BULLISH_NEWS:
+                if bear_campaign_sell:
+                    reasons.append("SELL contro news bullish permesso: BEAR CAMPAIGN")
+                elif bear_continuation_sell and BEAR_CONTINUATION_IGNORE_BULLISH_NEWS:
                     reasons.append("SELL contro news bullish permesso: BEAR CONTINUATION")
                 elif max_failed_retest_sell:
                     reasons.append("SELL contro news bullish permesso: MAX FAILED RETEST SELL")
@@ -1921,7 +2040,10 @@ def score_signal(data, signal):
             reasons.append("Daily SELL")
 
         if day_bias == "BUY":
-            if bear_continuation_sell and BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY:
+            if bear_campaign_sell:
+                score -= 1
+                reasons.append("Daily BUY ma campagna bearish persistente già confermata")
+            elif bear_continuation_sell and BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY:
                 score -= 1
                 reasons.append("Daily BUY ma bearish continuation già confermata")
             elif max_failed_retest_sell and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
@@ -1997,7 +2119,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -2005,7 +2127,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -2013,7 +2135,10 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            if bear_continuation_sell:
+            if bear_campaign_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma campagna bearish ancora valida")
+            elif bear_continuation_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma bearish continuation ancora valida")
             elif max_failed_retest_sell:
@@ -2194,6 +2319,7 @@ def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
 
     # v21: un lower-high/continuation SELL confermato non è "inseguimento basso".
     if setup_type in [
+        "BEAR_CAMPAIGN_SELL",
         "BEAR_CONTINUATION_SELL",
         "SYNTHETIC_BEAR_CONTINUATION_SELL"
     ]:
@@ -2279,6 +2405,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
 
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # v22: campaign manager / thesis persistence.
+    if setup_type == "BEAR_CAMPAIGN_SELL":
+        dominance += 26
 
     # v21: seconda macchina a stati per bearish continuation / lower high.
     if setup_type == "SYNTHETIC_BEAR_CONTINUATION_SELL":
@@ -2609,6 +2739,7 @@ def extreme_zone_info(signal, data):
 
     price = get_price_from_data(data)
     atr = to_float(data.get("atr"), 0)
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
 
     near_m15_high = to_bool(data.get("near_m15_high", "false"))
     near_m15_low = to_bool(data.get("near_m15_low", "false"))
@@ -2629,21 +2760,76 @@ def extreme_zone_info(signal, data):
         threshold = max(threshold, atr * CHAOS_EXTREME_ATR_MULT)
 
     if signal == "SELL":
-        computed_near_day_high = bool(day_high and price and (day_high - price) <= threshold)
-        high_position = bool(day_position >= CHAOS_SELL_DAY_POSITION_MIN) if day_position >= 0 else False
+        computed_near_day_high = bool(
+            day_high and price and (day_high - price) <= threshold
+        )
+        high_position = bool(
+            day_position >= CHAOS_SELL_DAY_POSITION_MIN
+        ) if day_position >= 0 else False
+
+        # v22 fallback: usa la struttura bearish runtime quando i campi day
+        # sono mancanti o inaffidabili.
+        bear_state = get_bear_continuation_state(symbol)
+        impulse_high = to_float(bear_state.get("impulse_high"), 0)
+        impulse_low = to_float(bear_state.get("impulse_low"), 0)
+        rally_peak = to_float(bear_state.get("rally_peak"), 0)
+
+        bear_position = -1
+        if (
+            CAMPAIGN_EXTREME_FALLBACK_ENABLED
+            and price
+            and impulse_high
+            and impulse_low
+            and impulse_high > impulse_low
+        ):
+            bear_position = (
+                (price - impulse_low)
+                / (impulse_high - impulse_low)
+            )
+
+        near_rally_peak = bool(
+            CAMPAIGN_EXTREME_FALLBACK_ENABLED
+            and price
+            and rally_peak
+            and abs(rally_peak - price) <= max(
+                threshold,
+                CAMPAIGN_RALLY_PEAK_DISTANCE
+            )
+        )
+
+        bear_high_position = bool(
+            bear_position >= CAMPAIGN_EXTREME_POSITION_MIN
+        ) if bear_position >= 0 else False
+
+        fallback_ok = near_rally_peak or bear_high_position
 
         ok = (
             near_m15_high
             or near_day_high
             or computed_near_day_high
             or high_position
+            or fallback_ok
+        )
+
+        side = (
+            "SELL_BEAR_FALLBACK"
+            if fallback_ok and not (
+                near_m15_high
+                or near_day_high
+                or computed_near_day_high
+                or high_position
+            )
+            else "SELL_HIGH"
         )
 
         details = {
-            "side": "SELL_HIGH",
+            "side": side,
             "near_m15_high": near_m15_high,
             "near_day_high": near_day_high or computed_near_day_high,
             "day_position": day_position,
+            "bear_position": bear_position,
+            "near_rally_peak": near_rally_peak,
+            "fallback_ok": fallback_ok,
             "threshold": threshold,
             "ok": ok
         }
@@ -2651,8 +2837,12 @@ def extreme_zone_info(signal, data):
         return ok, details
 
     if signal == "BUY":
-        computed_near_day_low = bool(day_low and price and (price - day_low) <= threshold)
-        low_position = bool(day_position <= CHAOS_BUY_DAY_POSITION_MAX) if day_position >= 0 else False
+        computed_near_day_low = bool(
+            day_low and price and (price - day_low) <= threshold
+        )
+        low_position = bool(
+            day_position <= CHAOS_BUY_DAY_POSITION_MAX
+        ) if day_position >= 0 else False
 
         ok = (
             near_m15_low
@@ -2673,22 +2863,49 @@ def extreme_zone_info(signal, data):
 
         return ok, details
 
-    return False, {"side": "UNKNOWN", "ok": False}
+    return False, {
+        "side": "UNKNOWN",
+        "day_position": day_position,
+        "threshold": threshold,
+        "ok": False
+    }
 
 
 def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
     ctx = get_chaos_context(symbol, data)
 
-    if not ctx.get("active"):
-        return False, ctx, {"ok": True}, "Chaos non attivo"
-
-    if ctx.get("kill"):
-        return True, ctx, {"ok": False}, "Daily Kill Switch attivo"
-
     setup_type = str(setup_type).upper()
     signal = str(signal).upper()
 
     extreme_ok, extreme_info = extreme_zone_info(signal, data)
+
+    if not ctx.get("active"):
+        return False, ctx, extreme_info, "Chaos non attivo"
+
+    # v22: Daily Kill Switch non viene eliminato.
+    # Può essere superato una sola volta da una campaign leg molto forte,
+    # con score alto e rischio ridotto.
+    if ctx.get("kill"):
+        campaign_decision = evaluate_campaign_leg(
+            signal,
+            symbol,
+            setup_type,
+            score,
+            data
+        )
+
+        if (
+            campaign_decision.get("allow")
+            and campaign_decision.get("kill_override")
+        ):
+            return (
+                False,
+                ctx,
+                extreme_info,
+                "Campaign override controllato del Daily Kill Switch"
+            )
+
+        return True, ctx, extreme_info, "Daily Kill Switch attivo"
 
     if CHAOS_EXTREME_ZONE_REQUIRED and not extreme_ok:
         return True, ctx, extreme_info, "No Mid-Range Trading: prezzo non in zona estrema"
@@ -2707,6 +2924,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
     if signal == "BUY":
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
+
+    if setup_type == "BEAR_CAMPAIGN_SELL" and int(score) < CAMPAIGN_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"BEAR_CAMPAIGN_SELL sotto soglia {CAMPAIGN_SELL_MIN_SCORE}"
 
     if setup_type == "SYNTHETIC_BEAR_CONTINUATION_SELL" and int(score) < BEAR_SYNTHETIC_SCORE:
         return True, ctx, extreme_info, f"SYNTHETIC_BEAR_CONTINUATION_SELL sotto score {BEAR_SYNTHETIC_SCORE}"
@@ -2748,6 +2968,8 @@ def chaos_status_text(ctx, extreme_info, block_reason):
         f"- Tipo: {extreme_info.get('side')}",
         f"- OK zona estrema: {extreme_info.get('ok')}",
         f"- Day position: {round(extreme_info.get('day_position', -1), 3) if isinstance(extreme_info.get('day_position', -1), (int, float)) else extreme_info.get('day_position')}",
+        f"- Bear position fallback: {round(extreme_info.get('bear_position', -1), 3) if isinstance(extreme_info.get('bear_position', -1), (int, float)) else extreme_info.get('bear_position')}",
+        f"- Near rally peak: {extreme_info.get('near_rally_peak', False)}",
         f"- Threshold: {round(extreme_info.get('threshold', 0), 2) if isinstance(extreme_info.get('threshold', 0), (int, float)) else extreme_info.get('threshold')}",
     ]
 
@@ -2762,6 +2984,613 @@ def chaos_status_text(ctx, extreme_info, block_reason):
     return "\n".join(lines)
 
 
+
+
+
+
+# =========================
+# CAMPAIGN MANAGER / THESIS PERSISTENCE v22
+# =========================
+
+def campaign_leg_weights():
+    values = []
+
+    for raw in str(CAMPAIGN_LEG_WEIGHTS_RAW).split(","):
+        try:
+            value = float(raw.strip())
+        except Exception:
+            continue
+
+        if value > 0:
+            values.append(value)
+
+    if not values:
+        values = [0.40, 0.35, 0.25]
+
+    return values
+
+
+def _new_bear_campaign():
+    return {
+        "status": "IDLE",
+        "direction": "SELL",
+        "symbol": "",
+        "campaign_id": "",
+        "started": 0,
+        "started_local": "",
+        "updated": 0,
+        "updated_local": "",
+        "thesis": "",
+        "bear_state": "IDLE",
+        "impulse_high": 0,
+        "impulse_low": 0,
+        "rally_peak": 0,
+        "invalidation_price": 0,
+        "legs": [],
+        "total_risk_weight": 0.0,
+        "last_leg_price": 0,
+        "last_leg_time": 0,
+        "last_retest_peak": 0,
+        "kill_override_used": False,
+        "sl_override_count": 0,
+        "trim_notified": False,
+        "reason": "Nessuna campagna ribassista attiva"
+    }
+
+
+def get_bear_campaign(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+
+    if symbol not in BEAR_CAMPAIGN_STATE:
+        BEAR_CAMPAIGN_STATE[symbol] = _new_bear_campaign()
+        BEAR_CAMPAIGN_STATE[symbol]["symbol"] = symbol
+
+    return BEAR_CAMPAIGN_STATE[symbol]
+
+
+def campaign_is_active(campaign):
+    return campaign.get("status") in [
+        "THESIS_ACTIVE",
+        "SCALING_READY",
+        "PAUSED"
+    ]
+
+
+def campaign_status_text(symbol):
+    campaign = get_bear_campaign(symbol)
+
+    return (
+        f"Campaign ID: {campaign.get('campaign_id') or 'N/D'}\n"
+        f"Status: {campaign.get('status')}\n"
+        f"Bear state: {campaign.get('bear_state')}\n"
+        f"Thesis: {campaign.get('thesis')}\n"
+        f"Impulse high: {round(to_float(campaign.get('impulse_high')), 3)}\n"
+        f"Impulse low: {round(to_float(campaign.get('impulse_low')), 3)}\n"
+        f"Rally peak: {round(to_float(campaign.get('rally_peak')), 3)}\n"
+        f"Invalidation: {round(to_float(campaign.get('invalidation_price')), 3)}\n"
+        f"Legs: {len(campaign.get('legs', []))}/{CAMPAIGN_MAX_LEGS}\n"
+        f"Risk weight usato: {round(to_float(campaign.get('total_risk_weight')), 2)}/{CAMPAIGN_TOTAL_RISK_CAP}"
+    )
+
+
+def start_bear_campaign(symbol, bear_state, reason):
+    symbol = str(symbol or "XAUUSD").upper()
+    campaign = get_bear_campaign(symbol)
+
+    now = now_ts()
+    campaign_id = f"BEAR-{symbol}-{int(now * 1000)}"
+
+    campaign.clear()
+    campaign.update(_new_bear_campaign())
+    campaign["symbol"] = symbol
+    campaign["status"] = "THESIS_ACTIVE"
+    campaign["campaign_id"] = campaign_id
+    campaign["started"] = now
+    campaign["started_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+    campaign["updated"] = now
+    campaign["updated_local"] = campaign["started_local"]
+    campaign["reason"] = reason
+    campaign["thesis"] = "Bear impulse -> relief rally -> lower high -> continuation"
+    campaign["bear_state"] = bear_state.get("state", "IDLE")
+    campaign["impulse_high"] = to_float(bear_state.get("impulse_high"), 0)
+    campaign["impulse_low"] = to_float(bear_state.get("impulse_low"), 0)
+    campaign["rally_peak"] = to_float(bear_state.get("rally_peak"), 0)
+
+    if campaign["impulse_high"]:
+        campaign["invalidation_price"] = (
+            campaign["impulse_high"] + CAMPAIGN_INVALIDATION_BUFFER
+        )
+
+    return campaign
+
+
+def sync_bear_campaign(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+
+    if not CAMPAIGN_MANAGER_ENABLED:
+        return get_bear_campaign(symbol)
+
+    bear_state = get_bear_continuation_state(symbol)
+    campaign = get_bear_campaign(symbol)
+
+    bear_state_name = str(bear_state.get("state", "IDLE")).upper()
+    active_bear_states = {
+        "BEAR_IMPULSE",
+        "RELIEF_RALLY",
+        "LOWER_HIGH_ARMED",
+        "SELL_TRIGGERED"
+    }
+
+    price = get_price_from_data(data or {})
+    now = now_ts()
+
+    # Invalidation dura: superamento dell'impulse high + buffer.
+    if campaign_is_active(campaign):
+        invalidation = to_float(campaign.get("invalidation_price"), 0)
+
+        if invalidation and price and price >= invalidation:
+            campaign["status"] = "INVALIDATED"
+            campaign["reason"] = "Tesi invalidata: prezzo sopra impulse high + buffer"
+            campaign["updated"] = now
+            campaign["updated_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+            return campaign
+
+        if (
+            campaign.get("started", 0)
+            and now - campaign.get("started", 0) > CAMPAIGN_TIMEOUT_SECONDS
+        ):
+            campaign["status"] = "EXPIRED"
+            campaign["reason"] = "Campagna scaduta per timeout"
+            campaign["updated"] = now
+            campaign["updated_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+            return campaign
+
+    # Avvio di una nuova tesi.
+    if bear_state_name in active_bear_states:
+        if not campaign_is_active(campaign):
+            campaign = start_bear_campaign(
+                symbol,
+                bear_state,
+                f"Bear state {bear_state_name} confermato"
+            )
+
+        campaign["bear_state"] = bear_state_name
+        campaign["impulse_high"] = to_float(
+            bear_state.get("impulse_high"),
+            campaign.get("impulse_high", 0)
+        )
+        campaign["impulse_low"] = to_float(
+            bear_state.get("impulse_low"),
+            campaign.get("impulse_low", 0)
+        )
+
+        new_rally_peak = to_float(bear_state.get("rally_peak"), 0)
+        if new_rally_peak:
+            campaign["rally_peak"] = max(
+                to_float(campaign.get("rally_peak"), 0),
+                new_rally_peak
+            )
+
+        if campaign.get("impulse_high"):
+            campaign["invalidation_price"] = (
+                campaign["impulse_high"] + CAMPAIGN_INVALIDATION_BUFFER
+            )
+
+        if bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+            campaign["status"] = "SCALING_READY"
+            campaign["reason"] = f"Campagna pronta: {bear_state_name}"
+        else:
+            campaign["status"] = "THESIS_ACTIVE"
+            campaign["reason"] = f"Tesi attiva: {bear_state_name}"
+
+        campaign["updated"] = now
+        campaign["updated_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+
+    return campaign
+
+
+def rebuild_bear_campaigns_from_trades():
+    if not CAMPAIGN_MANAGER_ENABLED:
+        return
+
+    recent_campaign_trades = [
+        t for t in OPEN_TRADES
+        if t.get("campaign_id")
+        and str(t.get("signal", "")).upper() == "SELL"
+        and t.get("status") in ["PENDING", "OPEN", "BE", "WIN"]
+        and now_ts() - (t.get("created") or 0) <= CAMPAIGN_TIMEOUT_SECONDS
+    ]
+
+    grouped = {}
+
+    for trade in recent_campaign_trades:
+        key = (
+            str(trade.get("symbol", "XAUUSD")).upper(),
+            str(trade.get("campaign_id"))
+        )
+        grouped.setdefault(key, []).append(trade)
+
+    for (symbol, campaign_id), trades in grouped.items():
+        trades = sorted(trades, key=lambda t: t.get("created", 0))
+        campaign = get_bear_campaign(symbol)
+
+        campaign["status"] = "THESIS_ACTIVE"
+        campaign["campaign_id"] = campaign_id
+        campaign["started"] = trades[0].get("created", now_ts())
+        campaign["started_local"] = trades[0].get("created_local", "")
+        campaign["updated"] = now_ts()
+        campaign["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        campaign["reason"] = "Ricostruita da trades.json"
+        campaign["legs"] = []
+
+        total_weight = 0.0
+
+        for trade in trades:
+            weight = to_float(trade.get("campaign_risk_weight"), 0)
+            total_weight += weight
+            campaign["legs"].append({
+                "trade_id": trade.get("id"),
+                "price": to_float(trade.get("campaign_leg_price"), 0),
+                "score": trade.get("score", 0),
+                "setup_type": trade.get("setup_type"),
+                "risk_weight": weight,
+                "created": trade.get("created", 0)
+            })
+
+        campaign["total_risk_weight"] = round(total_weight, 4)
+
+        if campaign["legs"]:
+            campaign["last_leg_price"] = campaign["legs"][-1].get("price", 0)
+            campaign["last_leg_time"] = campaign["legs"][-1].get("created", 0)
+
+
+def campaign_setup_is_eligible(setup_type):
+    return str(setup_type or "").upper() in CAMPAIGN_ELIGIBLE_SETUPS
+
+
+def evaluate_campaign_leg(signal, symbol, setup_type, score, data):
+    result = {
+        "allow": False,
+        "reason": "",
+        "campaign_id": None,
+        "leg_number": None,
+        "risk_weight": 0.0,
+        "kill_override": False,
+        "sl_override": False,
+        "better_price": False,
+        "new_retest": False
+    }
+
+    if not CAMPAIGN_MANAGER_ENABLED:
+        result["reason"] = "Campaign Manager disattivato"
+        return result
+
+    if str(signal).upper() != "SELL":
+        result["reason"] = "La campagna attuale gestisce solo SELL"
+        return result
+
+    symbol = str(symbol or "XAUUSD").upper()
+    campaign = sync_bear_campaign(symbol, data)
+    bear_state = get_bear_continuation_state(symbol)
+    bear_state_name = str(bear_state.get("state", "IDLE")).upper()
+
+    if not campaign_is_active(campaign):
+        result["reason"] = f"Campagna non attiva: {campaign.get('status')}"
+        return result
+
+    if not campaign_setup_is_eligible(setup_type):
+        result["reason"] = f"Setup {setup_type} non ammesso come campaign leg"
+        return result
+
+    # Le leg passano solo quando il lower high / continuation è realmente pronto.
+    if bear_state_name not in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        result["reason"] = f"Bear state non pronto per scaling: {bear_state_name}"
+        return result
+
+    legs = campaign.get("legs", [])
+
+    if len(legs) >= CAMPAIGN_MAX_LEGS:
+        result["reason"] = "Numero massimo di campaign legs raggiunto"
+        return result
+
+    min_score = (
+        CAMPAIGN_FIRST_LEG_MIN_SCORE
+        if len(legs) == 0
+        else CAMPAIGN_REENTRY_MIN_SCORE
+    )
+
+    if int(score) < min_score:
+        result["reason"] = f"Score {score} sotto soglia campaign {min_score}"
+        return result
+
+    price = get_price_from_data(data)
+
+    if not price:
+        result["reason"] = "Prezzo non disponibile"
+        return result
+
+    now = now_ts()
+
+    if (
+        campaign.get("last_leg_time", 0)
+        and now - campaign.get("last_leg_time", 0) < CAMPAIGN_LEG_COOLDOWN_SECONDS
+    ):
+        result["reason"] = "Cooldown tra campaign legs ancora attivo"
+        return result
+
+    last_leg_price = to_float(campaign.get("last_leg_price"), 0)
+    rally_peak = to_float(bear_state.get("rally_peak"), 0)
+    last_retest_peak = to_float(campaign.get("last_retest_peak"), 0)
+
+    better_price = bool(
+        last_leg_price
+        and price >= last_leg_price + CAMPAIGN_BETTER_PRICE_POINTS
+    )
+
+    new_retest = bool(
+        rally_peak
+        and (
+            not last_retest_peak
+            or rally_peak >= last_retest_peak + CAMPAIGN_NEW_RETEST_POINTS
+        )
+    )
+
+    # Prima leg: basta un lower high confermato.
+    if len(legs) == 0:
+        better_price = True
+
+    # Leg successive: prezzo migliore oppure nuovo retest reale.
+    if len(legs) > 0 and not (better_price or new_retest):
+        result["reason"] = "Nuova leg non migliora il prezzo e non c'è un nuovo retest"
+        return result
+
+    weights = campaign_leg_weights()
+    index = min(len(legs), len(weights) - 1)
+    risk_weight = weights[index]
+
+    if campaign.get("total_risk_weight", 0) + risk_weight > CAMPAIGN_TOTAL_RISK_CAP + 1e-9:
+        result["reason"] = "Risk cap totale campagna superato"
+        return result
+
+    # Daily Kill Switch: un solo override molto controllato.
+    today_losses = get_today_direct_losses(symbol)
+    kill_active = (
+        DAILY_KILL_SWITCH_ENABLED
+        and len(today_losses) >= DAILY_MAX_DIRECT_SL
+    )
+
+    if kill_active:
+        if not CAMPAIGN_KILL_SWITCH_OVERRIDE_ENABLED:
+            result["reason"] = "Daily Kill Switch attivo e override campaign disattivato"
+            return result
+
+        if campaign.get("kill_override_used"):
+            result["reason"] = "Override Daily Kill Switch già usato in questa campagna"
+            return result
+
+        if int(score) < CAMPAIGN_KILL_SWITCH_MIN_SCORE:
+            result["reason"] = (
+                f"Kill override richiede score >= {CAMPAIGN_KILL_SWITCH_MIN_SCORE}"
+            )
+            return result
+
+        result["kill_override"] = True
+        risk_weight = min(
+            risk_weight,
+            CAMPAIGN_KILL_OVERRIDE_RISK_WEIGHT
+        )
+
+    result.update({
+        "allow": True,
+        "reason": "Campaign leg qualificata",
+        "campaign_id": campaign.get("campaign_id"),
+        "leg_number": len(legs) + 1,
+        "risk_weight": round(risk_weight, 4),
+        "better_price": better_price,
+        "new_retest": new_retest
+    })
+
+    return result
+
+
+def campaign_sl_override_eligible(signal, symbol, setup_type, score, data):
+    if not CAMPAIGN_SL_COOLDOWN_OVERRIDE_ENABLED:
+        return False, None
+
+    decision = evaluate_campaign_leg(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if not decision.get("allow"):
+        return False, decision
+
+    campaign = get_bear_campaign(symbol)
+
+    if campaign.get("sl_override_count", 0) >= CAMPAIGN_MAX_SL_OVERRIDES:
+        decision["reason"] = "Numero massimo override SL cooldown raggiunto"
+        return False, decision
+
+    if int(score) < CAMPAIGN_SL_COOLDOWN_MIN_SCORE:
+        decision["reason"] = (
+            f"SL override richiede score >= {CAMPAIGN_SL_COOLDOWN_MIN_SCORE}"
+        )
+        return False, decision
+
+    decision["sl_override"] = True
+    return True, decision
+
+
+def register_campaign_leg(trade, decision):
+    if not decision or not decision.get("allow"):
+        return trade
+
+    symbol = str(trade.get("symbol", "XAUUSD")).upper()
+    campaign = get_bear_campaign(symbol)
+
+    leg_price = (
+        to_float(trade.get("entry_low"), 0)
+        + to_float(trade.get("entry_high"), 0)
+    ) / 2
+
+    if not leg_price:
+        leg_price = to_float(trade.get("price"), 0)
+
+    leg = {
+        "trade_id": trade.get("id"),
+        "price": leg_price,
+        "score": trade.get("score", 0),
+        "setup_type": trade.get("setup_type"),
+        "risk_weight": decision.get("risk_weight", 0),
+        "created": trade.get("created", now_ts())
+    }
+
+    campaign.setdefault("legs", []).append(leg)
+    campaign["total_risk_weight"] = round(
+        to_float(campaign.get("total_risk_weight"), 0)
+        + to_float(decision.get("risk_weight"), 0),
+        4
+    )
+    campaign["last_leg_price"] = leg_price
+    campaign["last_leg_time"] = leg["created"]
+
+    bear_state = get_bear_continuation_state(symbol)
+    campaign["last_retest_peak"] = to_float(
+        bear_state.get("rally_peak"),
+        campaign.get("last_retest_peak", 0)
+    )
+
+    if decision.get("kill_override"):
+        campaign["kill_override_used"] = True
+
+    if decision.get("sl_override"):
+        campaign["sl_override_count"] = (
+            int(campaign.get("sl_override_count", 0)) + 1
+        )
+
+    campaign["updated"] = now_ts()
+    campaign["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    campaign["reason"] = (
+        f"Campaign leg {decision.get('leg_number')} registrata"
+    )
+
+    trade["campaign_id"] = campaign.get("campaign_id")
+    trade["campaign_leg"] = decision.get("leg_number")
+    trade["campaign_risk_weight"] = decision.get("risk_weight")
+    trade["campaign_leg_price"] = leg_price
+    trade["campaign_kill_override"] = bool(decision.get("kill_override"))
+    trade["campaign_sl_override"] = bool(decision.get("sl_override"))
+
+    save_trades()
+
+    return trade
+
+
+def campaign_trim_message(symbol, price):
+    campaign = get_bear_campaign(symbol)
+    legs = campaign.get("legs", [])
+
+    if len(legs) < 2:
+        return None
+
+    open_leg_trades = []
+
+    for leg in legs:
+        trade = next(
+            (
+                t for t in OPEN_TRADES
+                if str(t.get("id")) == str(leg.get("trade_id"))
+                and t.get("status") in ["PENDING", "OPEN"]
+            ),
+            None
+        )
+
+        if trade:
+            open_leg_trades.append(trade)
+
+    if len(open_leg_trades) < 2:
+        return None
+
+    entries = []
+
+    for trade in open_leg_trades:
+        midpoint = (
+            to_float(trade.get("entry_low"), 0)
+            + to_float(trade.get("entry_high"), 0)
+        ) / 2
+        entries.append((midpoint, trade))
+
+    entries = sorted(entries, key=lambda item: item[0])
+
+    worst_entry = entries[0][0]
+    best_entry = entries[-1][0]
+
+    if (
+        price <= worst_entry - CAMPAIGN_TRIM_TRIGGER_POINTS
+        and not campaign.get("trim_notified")
+    ):
+        campaign["trim_notified"] = True
+
+        return f"""🧺 BEAR CAMPAIGN MANAGEMENT {VERSION}
+
+Campaign ID: {campaign.get('campaign_id')}
+Leg attive: {len(open_leg_trades)}
+
+Prezzo attuale: {round(price, 3)}
+Entry più bassa / peggiore: {round(worst_entry, 3)}
+Entry più alta / migliore: {round(best_entry, 3)}
+
+Lettura:
+La campagna SELL è in profitto sufficiente per proteggere il basket.
+Il bot segnala di proteggere/chiudere prima le leg peggiori e lasciare più spazio alle entry migliori.
+
+Risk weight totale: {campaign.get('total_risk_weight')}
+"""
+
+    return None
+
+
+def manage_bear_campaign_on_price_update(data):
+    if not CAMPAIGN_MANAGER_ENABLED:
+        return []
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+
+    campaign = sync_bear_campaign(symbol, data)
+    messages = []
+
+    if not campaign_is_active(campaign):
+        return messages
+
+    if CAMPAIGN_TRIM_ENABLED and price:
+        message = campaign_trim_message(symbol, price)
+
+        if message:
+            messages.append(message)
+
+    return messages
+
+
+def campaign_duplicate_override_allowed(
+    signal,
+    symbol,
+    setup_type,
+    score,
+    data
+):
+    decision = evaluate_campaign_leg(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    return bool(decision.get("allow")), decision
 
 
 
@@ -3282,47 +4111,76 @@ def process_bear_continuation_state_machine(data):
             ):
                 duplicate, duplicate_trade = has_recent_bear_synthetic_sell(symbol)
 
-                if duplicate:
+                synthetic_data, risk_error = build_bear_synthetic_sell_data(
+                    data,
+                    state
+                )
+
+                campaign_decision = evaluate_campaign_leg(
+                    "SELL",
+                    symbol,
+                    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+                    BEAR_SYNTHETIC_SCORE,
+                    synthetic_data or data
+                )
+
+                if duplicate and not campaign_decision.get("allow"):
                     state["reason"] = (
                         f"Trigger bear già presente: trade {duplicate_trade.get('id')}"
                     )
                 elif BEAR_SYNTHETIC_SELL_ENABLED:
-                    synthetic_data, risk_error = build_bear_synthetic_sell_data(
-                        data,
-                        state
-                    )
+
 
                     if risk_error:
                         state["reason"] = (
                             f"Lower high confermato ma trade non creato: {risk_error}"
                         )
                     else:
-                        # Safety 1: Kill Switch.
+                        # Safety 1: Kill Switch con override campaign controllato.
                         chaos_ctx = get_chaos_context(symbol, synthetic_data)
-                        if chaos_ctx.get("kill"):
+                        kill_block = bool(chaos_ctx.get("kill"))
+
+                        if (
+                            kill_block
+                            and not (
+                                campaign_decision.get("allow")
+                                and campaign_decision.get("kill_override")
+                            )
+                        ):
                             state["reason"] = (
                                 "Lower high confermato ma Daily Kill Switch attivo"
                             )
                         else:
-                            # Safety 2: SELL SL cooldown.
+                            # Safety 2: SELL SL cooldown con massimo un override campaign.
                             block_sl_cooldown, recent_sell_losses = should_block_by_sl_cooldown(
                                 "SELL",
                                 symbol
                             )
 
-                            if block_sl_cooldown:
+                            sl_override, sl_decision = campaign_sl_override_eligible(
+                                "SELL",
+                                symbol,
+                                "SYNTHETIC_BEAR_CONTINUATION_SELL",
+                                BEAR_SYNTHETIC_SCORE,
+                                synthetic_data
+                            )
+
+                            if block_sl_cooldown and not sl_override:
                                 state["reason"] = (
                                     f"Lower high confermato ma SELL SL cooldown attivo "
                                     f"({len(recent_sell_losses)} SL diretti recenti)"
                                 )
                             else:
-                                # Safety 3: SELL recente già attivo.
+                                if sl_override:
+                                    campaign_decision = sl_decision
+
+                                # Safety 3: un SELL recente è ammesso solo come nuova campaign leg qualificata.
                                 recent_same_sell = find_recent_same_trade(
                                     "SELL",
                                     symbol
                                 )
 
-                                if recent_same_sell:
+                                if recent_same_sell and not campaign_decision.get("allow"):
                                     state["reason"] = (
                                         f"Lower high confermato ma SELL recente già attivo "
                                         f"(trade {recent_same_sell.get('id')})"
@@ -3338,6 +4196,12 @@ def process_bear_continuation_state_machine(data):
                                             f"Errore synthetic bear SELL: {error}"
                                         )
                                     else:
+                                        if campaign_decision.get("allow"):
+                                            register_campaign_leg(
+                                                trade,
+                                                campaign_decision
+                                            )
+
                                         state["last_trigger_time"] = now_ts()
                                         state["last_trigger_trade_id"] = trade.get("id")
                                         state = set_bear_continuation_state(
@@ -4024,6 +4888,7 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
     # v21: se la seconda macchina a stati ha già confermato bearish continuation,
     # il SELL non viene bloccato da un vecchio Recovery Lock BUY.
     if setup_type in [
+        "BEAR_CAMPAIGN_SELL",
         "BEAR_CONTINUATION_SELL",
         "SYNTHETIC_BEAR_CONTINUATION_SELL"
     ]:
@@ -4119,7 +4984,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v21:\n"
+        f"Lettura v22:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -4463,6 +5328,16 @@ def webhook():
         # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
         bear_result = process_bear_continuation_state_machine(data)
 
+        # v22: persiste la tesi e gestisce il basket/campaign.
+        campaign = sync_bear_campaign(
+            data.get("symbol", "XAUUSD"),
+            data
+        )
+
+        campaign_messages = manage_bear_campaign_on_price_update(data)
+        for campaign_message in campaign_messages:
+            send_telegram(campaign_message)
+
         return jsonify({
             "status": "price_checked",
             "updates": len(updates),
@@ -4474,6 +5349,10 @@ def webhook():
             "bear_trade_id": bear_result.get("trade_id"),
             "bear_state": bear_result.get("state"),
             "bear_reason": bear_result.get("reason"),
+            "campaign_id": campaign.get("campaign_id"),
+            "campaign_status": campaign.get("status"),
+            "campaign_legs": len(campaign.get("legs", [])),
+            "campaign_risk_weight": campaign.get("total_risk_weight"),
             "active_trades": active_trades_count(),
             "total_trades": len(OPEN_TRADES)
         })
@@ -4487,6 +5366,15 @@ def webhook():
         return jsonify({"error": "invalid signal", "received": data}), 400
 
     score, reasons, active_news_bias, news_reasons, setup_type = score_signal(data, signal)
+
+    # v22: valuta una eventuale nuova leg della campagna.
+    campaign_decision = evaluate_campaign_leg(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
 
     # =========================
     # SCORE BLOCK
@@ -4604,7 +5492,15 @@ Non compro il rimbalzo mentre il pattern SELL è in preparazione/conferma.
 
     block_sl_cooldown, recent_losses = should_block_by_sl_cooldown(signal, symbol)
 
-    if block_sl_cooldown:
+    campaign_sl_override, campaign_sl_decision = campaign_sl_override_eligible(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_sl_cooldown and not campaign_sl_override:
         last_loss = recent_losses[0]
         last_loss_time = last_loss.get("closed_local") or "N/D"
 
@@ -4636,6 +5532,12 @@ Il bot può ancora accettare BUY da fondo / reversal.
             "setup_type": setup_type,
             "recent_direct_losses": len(recent_losses)
         })
+
+    if block_sl_cooldown and campaign_sl_override:
+        campaign_decision = campaign_sl_decision
+        reasons.append(
+            "Campaign override controllato del SELL SL cooldown"
+        )
 
     # =========================
     # BUY SL COOLDOWN BLOCK v14
@@ -4899,7 +5801,15 @@ Favorisco MAX_DIP_BUY se il fondo viene confermato.
 
     block_duplicate, recent = should_block_duplicate(signal, symbol, score)
 
-    if block_duplicate:
+    duplicate_campaign_override, duplicate_campaign_decision = campaign_duplicate_override_allowed(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_duplicate and not duplicate_campaign_override:
         text = f"""🚫 SEGNALE BLOCCATO {VERSION}
 
 Motivo: duplicato stesso movimento
@@ -4930,11 +5840,24 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
             "recent_trade_id": recent.get("id")
         })
 
+    if block_duplicate and duplicate_campaign_override:
+        campaign_decision = duplicate_campaign_decision
+        reasons.append(
+            "Nuovo retest/prezzo migliore: duplicato trasformato in campaign leg"
+        )
+
     # =========================
     # SAVE TRADE
     # =========================
 
     trade = save_trade(data, signal, score, setup_type)
+
+    if campaign_decision.get("allow"):
+        register_campaign_leg(
+            trade,
+            campaign_decision
+        )
+
     emoji = "🟢" if signal == "BUY" else "🔴"
 
     entry_low = data.get("entry_low", "")
@@ -4947,6 +5870,14 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
         f"🆔 Trade ID: {trade['id']}",
         f"📌 Setup: {setup_type}"
     ]
+
+    if trade.get("campaign_id"):
+        lines.extend([
+            f"🧠 Campaign ID: {trade.get('campaign_id')}",
+            f"🪜 Campaign Leg: {trade.get('campaign_leg')}/{CAMPAIGN_MAX_LEGS}",
+            f"⚖️ Risk Weight Leg: {trade.get('campaign_risk_weight')}",
+            f"📦 Risk Weight Totale: {get_bear_campaign(symbol).get('total_risk_weight')}/{CAMPAIGN_TOTAL_RISK_CAP}"
+        ])
 
     if entry_low and entry_high:
         lines.append(f"📍 Entry Zone: {entry_low} - {entry_high}")
@@ -4986,6 +5917,9 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
         "score": score,
         "setup_type": setup_type,
         "trade_id": trade["id"],
+        "campaign_id": trade.get("campaign_id"),
+        "campaign_leg": trade.get("campaign_leg"),
+        "campaign_risk_weight": trade.get("campaign_risk_weight"),
         "telegram_sent": telegram_sent
     })
 
