@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v23 Pre-Bear Thesis + Deep Extension Flip"
+VERSION = "v24 Trigger Maturity + Persistent Runtime State"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -510,6 +510,50 @@ DEEP_EXTENSION_ALWAYS_ALLOW_SELL_SETUPS = {
     "PRE_BEAR_SELL"
 }
 
+# v24: Persistent Runtime State
+# Salva la memoria di mercato costruita dai PRICE_UPDATE.
+# Per sopravvivere a un deploy/restart su Render, RUNTIME_STATE_FILE deve puntare
+# a uno storage realmente persistente. Se il file non sopravvive, interviene il warmup.
+RUNTIME_STATE_ENABLED = os.getenv("RUNTIME_STATE_ENABLED", "TRUE").upper() == "TRUE"
+RUNTIME_STATE_FILE = os.getenv("RUNTIME_STATE_FILE", "runtime_state.json")
+RUNTIME_STATE_MAX_AGE_SECONDS = int(os.getenv("RUNTIME_STATE_MAX_AGE_SECONDS", "21600"))
+RUNTIME_STATE_SAVE_INTERVAL_SECONDS = int(os.getenv("RUNTIME_STATE_SAVE_INTERVAL_SECONDS", "15"))
+
+# v24: Cold Start Warmup
+STATE_WARMUP_ENABLED = os.getenv("STATE_WARMUP_ENABLED", "TRUE").upper() == "TRUE"
+STATE_WARMUP_SECONDS = int(os.getenv("STATE_WARMUP_SECONDS", "900"))
+STATE_WARMUP_MIN_PRICE_UPDATES = int(os.getenv("STATE_WARMUP_MIN_PRICE_UPDATES", "20"))
+STATE_WARMUP_NORMAL_SELL_MIN_SCORE = int(os.getenv("STATE_WARMUP_NORMAL_SELL_MIN_SCORE", "10"))
+STATE_WARMUP_BLOCK_AUTONOMOUS = os.getenv("STATE_WARMUP_BLOCK_AUTONOMOUS", "TRUE").upper() == "TRUE"
+
+# v24: Trigger Maturity per Bear Continuation
+# Non vende più il primo micro-cedimento dopo il rally peak.
+BEAR_RALLY_PEAK_STABILITY_SECONDS = int(os.getenv("BEAR_RALLY_PEAK_STABILITY_SECONDS", "90"))
+BEAR_CONTINUATION_DYNAMIC_FAILURE_ENABLED = os.getenv("BEAR_CONTINUATION_DYNAMIC_FAILURE_ENABLED", "TRUE").upper() == "TRUE"
+BEAR_CONTINUATION_FAILURE_MIN_POINTS = float(os.getenv("BEAR_CONTINUATION_FAILURE_MIN_POINTS", "4.0"))
+BEAR_CONTINUATION_FAILURE_ATR_MULT = float(os.getenv("BEAR_CONTINUATION_FAILURE_ATR_MULT", "0.8"))
+BEAR_CONTINUATION_MIN_CONFIRMATIONS = int(os.getenv("BEAR_CONTINUATION_MIN_CONFIRMATIONS", "2"))
+BEAR_CONTINUATION_MICRO_BOS_REQUIRED = os.getenv("BEAR_CONTINUATION_MICRO_BOS_REQUIRED", "TRUE").upper() == "TRUE"
+
+# v24: Trigger Maturity anche per Event Failed Retest
+SYNTHETIC_RETEST_PEAK_STABILITY_SECONDS = int(os.getenv("SYNTHETIC_RETEST_PEAK_STABILITY_SECONDS", "90"))
+SYNTHETIC_RETEST_DYNAMIC_FAILURE_ENABLED = os.getenv("SYNTHETIC_RETEST_DYNAMIC_FAILURE_ENABLED", "TRUE").upper() == "TRUE"
+SYNTHETIC_RETEST_FAILURE_MIN_POINTS = float(os.getenv("SYNTHETIC_RETEST_FAILURE_MIN_POINTS", "4.0"))
+SYNTHETIC_RETEST_FAILURE_ATR_MULT = float(os.getenv("SYNTHETIC_RETEST_FAILURE_ATR_MULT", "0.8"))
+SYNTHETIC_RETEST_MIN_CONFIRMATIONS = int(os.getenv("SYNTHETIC_RETEST_MIN_CONFIRMATIONS", "2"))
+SYNTHETIC_RETEST_MICRO_BOS_REQUIRED = os.getenv("SYNTHETIC_RETEST_MICRO_BOS_REQUIRED", "TRUE").upper() == "TRUE"
+
+# v24: Micro Break of Structure M1
+MICRO_BOS_LOOKBACK_UPDATES = int(os.getenv("MICRO_BOS_LOOKBACK_UPDATES", "5"))
+MICRO_BOS_BUFFER_POINTS = float(os.getenv("MICRO_BOS_BUFFER_POINTS", "0.1"))
+
+# Runtime meta
+RUNTIME_STATE_LAST_SAVE = 0
+RUNTIME_STATE_RESTORED = False
+RUNTIME_STATE_RESTORED_AT = 0
+RUNTIME_STATE_SAVED_AT = 0
+WARMUP_TRACKER = {}
+
 OPEN_TRADES = []
 
 try:
@@ -616,6 +660,214 @@ def psych_info(price):
 # =========================
 # PERSISTENCE
 # =========================
+
+def _restore_dict(target, value):
+    if isinstance(value, dict):
+        target.clear()
+        target.update(value)
+
+
+def runtime_state_payload():
+    return {
+        "version": VERSION,
+        "saved_at": now_ts(),
+        "auto_event_cache": AUTO_EVENT_CACHE,
+        "event_state_machine": EVENT_STATE_MACHINE,
+        "bear_continuation_state": BEAR_CONTINUATION_STATE,
+        "price_history": PRICE_HISTORY,
+        "bear_campaign_state": BEAR_CAMPAIGN_STATE,
+        "pre_bear_state": PRE_BEAR_STATE,
+        "warmup_tracker": WARMUP_TRACKER
+    }
+
+
+def save_runtime_state(force=False):
+    global RUNTIME_STATE_LAST_SAVE, RUNTIME_STATE_SAVED_AT
+
+    if not RUNTIME_STATE_ENABLED:
+        return False
+
+    now = now_ts()
+
+    if (
+        not force
+        and RUNTIME_STATE_LAST_SAVE
+        and now - RUNTIME_STATE_LAST_SAVE < RUNTIME_STATE_SAVE_INTERVAL_SECONDS
+    ):
+        return False
+
+    try:
+        payload = runtime_state_payload()
+        tmp_file = RUNTIME_STATE_FILE + ".tmp"
+
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+        os.replace(tmp_file, RUNTIME_STATE_FILE)
+
+        RUNTIME_STATE_LAST_SAVE = now
+        RUNTIME_STATE_SAVED_AT = payload.get("saved_at", now)
+        return True
+
+    except Exception as e:
+        print(f"Errore salvataggio runtime state: {e}")
+        return False
+
+
+def load_runtime_state():
+    global RUNTIME_STATE_RESTORED
+    global RUNTIME_STATE_RESTORED_AT
+    global RUNTIME_STATE_SAVED_AT
+    global RUNTIME_STATE_LAST_SAVE
+
+    RUNTIME_STATE_RESTORED = False
+
+    if not RUNTIME_STATE_ENABLED:
+        return False
+
+    if not os.path.exists(RUNTIME_STATE_FILE):
+        return False
+
+    try:
+        with open(RUNTIME_STATE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        if not isinstance(payload, dict):
+            return False
+
+        saved_at = to_float(payload.get("saved_at"), 0)
+        age = now_ts() - saved_at if saved_at else 999999999
+
+        if age > RUNTIME_STATE_MAX_AGE_SECONDS:
+            print(
+                f"Runtime state ignorato: troppo vecchio "
+                f"({round(age, 1)}s > {RUNTIME_STATE_MAX_AGE_SECONDS}s)"
+            )
+            return False
+
+        # Mantengo i default nuovi e sovrascrivo solo i campi salvati.
+        saved_auto_event = payload.get("auto_event_cache")
+        if isinstance(saved_auto_event, dict):
+            AUTO_EVENT_CACHE.update(saved_auto_event)
+
+        _restore_dict(
+            EVENT_STATE_MACHINE,
+            payload.get("event_state_machine")
+        )
+        _restore_dict(
+            BEAR_CONTINUATION_STATE,
+            payload.get("bear_continuation_state")
+        )
+        _restore_dict(
+            PRICE_HISTORY,
+            payload.get("price_history")
+        )
+        _restore_dict(
+            BEAR_CAMPAIGN_STATE,
+            payload.get("bear_campaign_state")
+        )
+        _restore_dict(
+            PRE_BEAR_STATE,
+            payload.get("pre_bear_state")
+        )
+        _restore_dict(
+            WARMUP_TRACKER,
+            payload.get("warmup_tracker")
+        )
+
+        # Pruning difensivo dello storico.
+        cutoff = now_ts() - BEAR_HISTORY_SECONDS
+        for symbol, history in list(PRICE_HISTORY.items()):
+            if not isinstance(history, list):
+                PRICE_HISTORY[symbol] = []
+                continue
+
+            PRICE_HISTORY[symbol] = [
+                p for p in history
+                if isinstance(p, dict)
+                and p.get("time", 0) >= cutoff
+            ][-BEAR_HISTORY_MAX_POINTS:]
+
+        RUNTIME_STATE_RESTORED = True
+        RUNTIME_STATE_RESTORED_AT = now_ts()
+        RUNTIME_STATE_SAVED_AT = saved_at
+        RUNTIME_STATE_LAST_SAVE = now_ts()
+
+        print(
+            f"Runtime state ripristinato da {RUNTIME_STATE_FILE} "
+            f"(age {round(age, 1)}s)"
+        )
+        return True
+
+    except Exception as e:
+        print(f"Errore caricamento runtime state: {e}")
+        return False
+
+
+def note_price_update_for_warmup(data):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    tracker = WARMUP_TRACKER.setdefault(
+        symbol,
+        {
+            "first_update": now_ts(),
+            "last_update": 0,
+            "update_count": 0
+        }
+    )
+
+    if not tracker.get("first_update"):
+        tracker["first_update"] = now_ts()
+
+    tracker["last_update"] = now_ts()
+    tracker["update_count"] = int(tracker.get("update_count", 0)) + 1
+
+    return tracker
+
+
+def warmup_status(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    tracker = WARMUP_TRACKER.setdefault(
+        symbol,
+        {
+            "first_update": now_ts(),
+            "last_update": 0,
+            "update_count": 0
+        }
+    )
+
+    first_update = to_float(tracker.get("first_update"), now_ts())
+    elapsed = max(0, now_ts() - first_update)
+    count = int(tracker.get("update_count", 0))
+
+    history = PRICE_HISTORY.get(symbol, [])
+    history_count = len(history) if isinstance(history, list) else 0
+
+    restored_ready = bool(
+        RUNTIME_STATE_RESTORED
+        and history_count >= STATE_WARMUP_MIN_PRICE_UPDATES
+    )
+
+    warm = bool(
+        not STATE_WARMUP_ENABLED
+        or restored_ready
+        or count >= STATE_WARMUP_MIN_PRICE_UPDATES
+        or elapsed >= STATE_WARMUP_SECONDS
+    )
+
+    return {
+        "warm": warm,
+        "restored_ready": restored_ready,
+        "elapsed_seconds": elapsed,
+        "update_count": count,
+        "history_count": history_count,
+        "required_seconds": STATE_WARMUP_SECONDS,
+        "required_updates": STATE_WARMUP_MIN_PRICE_UPDATES
+    }
+
+
+def is_state_warm(symbol):
+    return bool(warmup_status(symbol).get("warm"))
+
 
 def load_trades():
     global OPEN_TRADES
@@ -846,6 +1098,25 @@ def health():
         "deep_extension_min_drop_points": DEEP_EXTENSION_MIN_DROP_POINTS,
         "deep_extension_low_position_max": DEEP_EXTENSION_LOW_POSITION_MAX,
         "deep_extension_rearm_rebound_points": DEEP_EXTENSION_REARM_REBOUND_POINTS,
+        "runtime_state_enabled": RUNTIME_STATE_ENABLED,
+        "runtime_state_file": RUNTIME_STATE_FILE,
+        "runtime_state_restored": RUNTIME_STATE_RESTORED,
+        "runtime_state_saved_at": RUNTIME_STATE_SAVED_AT,
+        "runtime_state_max_age_seconds": RUNTIME_STATE_MAX_AGE_SECONDS,
+        "state_warmup_enabled": STATE_WARMUP_ENABLED,
+        "state_warmup_seconds": STATE_WARMUP_SECONDS,
+        "state_warmup_min_price_updates": STATE_WARMUP_MIN_PRICE_UPDATES,
+        "warmup_xauusd": warmup_status("XAUUSD"),
+        "bear_rally_peak_stability_seconds": BEAR_RALLY_PEAK_STABILITY_SECONDS,
+        "bear_continuation_failure_min_points": BEAR_CONTINUATION_FAILURE_MIN_POINTS,
+        "bear_continuation_failure_atr_mult": BEAR_CONTINUATION_FAILURE_ATR_MULT,
+        "bear_continuation_min_confirmations": BEAR_CONTINUATION_MIN_CONFIRMATIONS,
+        "bear_continuation_micro_bos_required": BEAR_CONTINUATION_MICRO_BOS_REQUIRED,
+        "synthetic_retest_peak_stability_seconds": SYNTHETIC_RETEST_PEAK_STABILITY_SECONDS,
+        "synthetic_retest_failure_min_points": SYNTHETIC_RETEST_FAILURE_MIN_POINTS,
+        "synthetic_retest_min_confirmations": SYNTHETIC_RETEST_MIN_CONFIRMATIONS,
+        "micro_bos_lookback_updates": MICRO_BOS_LOOKBACK_UPDATES,
+        "micro_bos_buffer_points": MICRO_BOS_BUFFER_POINTS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1325,7 +1596,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -3847,6 +4118,14 @@ def evaluate_campaign_leg(signal, symbol, setup_type, score, data):
         return result
 
     symbol = str(symbol or "XAUUSD").upper()
+
+    if (
+        STATE_WARMUP_ENABLED
+        and not is_state_warm(symbol)
+    ):
+        result["reason"] = "Campaign leg bloccata durante cold-start warmup"
+        return result
+
     campaign = sync_bear_campaign(symbol, data)
     bear_state = get_bear_continuation_state(symbol)
     bear_state_name = str(bear_state.get("state", "IDLE")).upper()
@@ -4062,6 +4341,7 @@ def register_campaign_leg(trade, decision):
     trade["campaign_sl_override"] = bool(decision.get("sl_override"))
 
     save_trades()
+    save_runtime_state(force=True)
 
     return trade
 
@@ -4324,6 +4604,116 @@ def _bearish_confirmation_from_data(data, previous_price=0):
         or (bar_open and price < bar_open)
         or (previous_price and price < previous_price)
     )
+
+
+def bearish_confirmation_details(data, previous_price=0):
+    """Conta conferme indipendenti, evitando di contare due volte la stessa candela rossa."""
+    price = get_price_from_data(data)
+    bar_open = to_float(data.get("open"), 0)
+
+    confirmations = []
+
+    bearish_candle = bool(
+        str(data.get("candle_dir", "")).upper() == "BEAR"
+        or (bar_open and price < bar_open)
+    )
+    if bearish_candle:
+        confirmations.append("bearish_candle")
+
+    upper_rejection = bool(
+        str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+    )
+    if upper_rejection:
+        confirmations.append("upper_rejection")
+
+    if str(data.get("ema20_slope", "")).upper() == "DOWN":
+        confirmations.append("ema20_down")
+
+    if previous_price and price < previous_price:
+        confirmations.append("lower_close")
+
+    return {
+        "count": len(confirmations),
+        "items": confirmations
+    }
+
+
+def effective_failure_threshold(
+    data,
+    legacy_threshold,
+    minimum_points,
+    atr_mult,
+    dynamic_enabled=True
+):
+    threshold = max(
+        to_float(legacy_threshold, 0),
+        to_float(minimum_points, 0)
+    )
+
+    if dynamic_enabled:
+        atr = to_float(data.get("atr"), 0)
+        if atr:
+            threshold = max(threshold, atr * atr_mult)
+
+    return threshold
+
+
+def micro_bos_bear_context(symbol, data):
+    symbol = str(symbol or "XAUUSD").upper()
+    price = get_price_from_data(data)
+
+    pine_confirmed = to_bool(data.get("micro_bos_bear", "false"))
+    pine_reference = to_float(data.get("micro_bos_reference_low"), 0)
+
+    if pine_confirmed:
+        return {
+            "confirmed": True,
+            "source": "PINE",
+            "reference_low": pine_reference
+        }
+
+    history = PRICE_HISTORY.get(symbol, [])
+    if not isinstance(history, list):
+        history = []
+
+    # Se l'ultimo punto è appena stato registrato con lo stesso close,
+    # lo escludo: il BOS deve rompere minimi precedenti.
+    prior_history = history
+    if history:
+        last = history[-1]
+        same_close = abs(
+            to_float(last.get("close"), 0) - to_float(price, 0)
+        ) < 1e-9
+        very_recent = now_ts() - to_float(last.get("time"), 0) <= 5
+
+        if same_close and very_recent:
+            prior_history = history[:-1]
+
+    prior = prior_history[-MICRO_BOS_LOOKBACK_UPDATES:]
+
+    if not price or len(prior) < max(2, MICRO_BOS_LOOKBACK_UPDATES // 2):
+        return {
+            "confirmed": False,
+            "source": "PYTHON",
+            "reference_low": 0
+        }
+
+    reference_low = min(
+        to_float(p.get("low"), 999999)
+        for p in prior
+    )
+
+    confirmed = bool(
+        reference_low < 999999
+        and price <= reference_low - MICRO_BOS_BUFFER_POINTS
+    )
+
+    return {
+        "confirmed": confirmed,
+        "source": "PYTHON",
+        "reference_low": reference_low
+    }
 
 
 def detect_recent_bear_impulse(data):
@@ -4677,15 +5067,65 @@ def process_bear_continuation_state_machine(data):
             )
         else:
             failure_points = max(0, rally_peak - price)
-            bearish_confirmation = _bearish_confirmation_from_data(
+
+            stability_age = (
+                now_ts() - to_float(state.get("rally_peak_time"), 0)
+                if state.get("rally_peak_time")
+                else 0
+            )
+            stability_ok = (
+                stability_age >= BEAR_RALLY_PEAK_STABILITY_SECONDS
+            )
+
+            failure_threshold = effective_failure_threshold(
+                data,
+                BEAR_CONTINUATION_FAILURE_POINTS,
+                BEAR_CONTINUATION_FAILURE_MIN_POINTS,
+                BEAR_CONTINUATION_FAILURE_ATR_MULT,
+                BEAR_CONTINUATION_DYNAMIC_FAILURE_ENABLED
+            )
+            failure_ok = failure_points >= failure_threshold
+
+            confirmation_ctx = bearish_confirmation_details(
                 data,
                 previous_price=previous_price
             )
+            confirmations_ok = (
+                confirmation_ctx.get("count", 0)
+                >= BEAR_CONTINUATION_MIN_CONFIRMATIONS
+            )
 
-            if (
-                failure_points >= BEAR_CONTINUATION_FAILURE_POINTS
-                and bearish_confirmation
-            ):
+            micro_bos_ctx = micro_bos_bear_context(symbol, data)
+            micro_bos_ok = (
+                micro_bos_ctx.get("confirmed")
+                or not BEAR_CONTINUATION_MICRO_BOS_REQUIRED
+            )
+
+            warmup_ctx = warmup_status(symbol)
+            warmup_ok = (
+                warmup_ctx.get("warm")
+                or not STATE_WARMUP_BLOCK_AUTONOMOUS
+            )
+
+            mature_trigger = (
+                stability_ok
+                and failure_ok
+                and confirmations_ok
+                and micro_bos_ok
+                and warmup_ok
+            )
+
+            if not mature_trigger:
+                state["reason"] = (
+                    f"Lower high armato ma trigger non maturo | "
+                    f"stability {round(stability_age, 1)}/{BEAR_RALLY_PEAK_STABILITY_SECONDS}s | "
+                    f"failure {round(failure_points, 2)}/{round(failure_threshold, 2)} | "
+                    f"confirm {confirmation_ctx.get('count', 0)}/{BEAR_CONTINUATION_MIN_CONFIRMATIONS} | "
+                    f"microBOS {micro_bos_ctx.get('confirmed')} | "
+                    f"warm {warmup_ctx.get('warm')}"
+                )
+
+            if mature_trigger:
                 deep_ctx = get_deep_extension_context(symbol, data)
                 if (
                     deep_ctx.get("active")
@@ -4798,8 +5238,11 @@ def process_bear_continuation_state_machine(data):
                                             symbol,
                                             "SELL_TRIGGERED",
                                             (
-                                                f"Bear continuation confermata: "
-                                                f"failure {round(failure_points, 2)} punti"
+                                                f"Bear continuation matura: "
+                                                f"failure {round(failure_points, 2)}/{round(failure_threshold, 2)}, "
+                                                f"stability {round(stability_age, 1)}s, "
+                                                f"confirm {confirmation_ctx.get('count', 0)}, "
+                                                f"microBOS {micro_bos_ctx.get('confirmed')}"
                                             )
                                         )
 
@@ -5192,27 +5635,72 @@ def process_event_state_machine(data):
         state["retest_peak"] = 0
         state["retest_peak_time"] = 0
 
-    # 4) FAILED RETEST CONFIRMATION
+    # 4) FAILED RETEST CONFIRMATION v24: trigger maturo
     if state.get("state") == "RETEST_ARMED":
         retest_peak = to_float(state.get("retest_peak"), 0)
         failure_points = max(0, retest_peak - price) if retest_peak and price else 0
 
-        bearish_close = bool(bar_open and price < bar_open)
-        lower_than_previous = bool(previous_price and price < previous_price)
-        bearish_confirmation = (
-            candle_dir == "BEAR"
-            or rejection == "UPPER_WICK"
-            or upper_wick_strong
-            or bearish_close
-            or lower_than_previous
+        stability_age = (
+            now_ts() - to_float(state.get("retest_peak_time"), 0)
+            if state.get("retest_peak_time")
+            else 0
+        )
+        stability_ok = (
+            stability_age >= SYNTHETIC_RETEST_PEAK_STABILITY_SECONDS
         )
 
-        failure_ok = failure_points >= SYNTHETIC_RETEST_FAILURE_POINTS
+        failure_threshold = effective_failure_threshold(
+            data,
+            SYNTHETIC_RETEST_FAILURE_POINTS,
+            SYNTHETIC_RETEST_FAILURE_MIN_POINTS,
+            SYNTHETIC_RETEST_FAILURE_ATR_MULT,
+            SYNTHETIC_RETEST_DYNAMIC_FAILURE_ENABLED
+        )
+        failure_ok = failure_points >= failure_threshold
 
-        if failure_ok and (
-            bearish_confirmation
-            or not SYNTHETIC_RETEST_REQUIRE_BEAR_CONFIRMATION
-        ):
+        confirmation_ctx = bearish_confirmation_details(
+            data,
+            previous_price=previous_price
+        )
+        confirmations_ok = (
+            confirmation_ctx.get("count", 0)
+            >= SYNTHETIC_RETEST_MIN_CONFIRMATIONS
+        )
+
+        micro_bos_ctx = micro_bos_bear_context(symbol, data)
+        micro_bos_ok = (
+            micro_bos_ctx.get("confirmed")
+            or not SYNTHETIC_RETEST_MICRO_BOS_REQUIRED
+        )
+
+        warmup_ctx = warmup_status(symbol)
+        warmup_ok = (
+            warmup_ctx.get("warm")
+            or not STATE_WARMUP_BLOCK_AUTONOMOUS
+        )
+
+        mature_trigger = (
+            stability_ok
+            and failure_ok
+            and (
+                confirmations_ok
+                or not SYNTHETIC_RETEST_REQUIRE_BEAR_CONFIRMATION
+            )
+            and micro_bos_ok
+            and warmup_ok
+        )
+
+        if not mature_trigger:
+            state["reason"] = (
+                f"Retest armato ma trigger non maturo | "
+                f"stability {round(stability_age, 1)}/{SYNTHETIC_RETEST_PEAK_STABILITY_SECONDS}s | "
+                f"failure {round(failure_points, 2)}/{round(failure_threshold, 2)} | "
+                f"confirm {confirmation_ctx.get('count', 0)}/{SYNTHETIC_RETEST_MIN_CONFIRMATIONS} | "
+                f"microBOS {micro_bos_ctx.get('confirmed')} | "
+                f"warm {warmup_ctx.get('warm')}"
+            )
+
+        if mature_trigger:
             duplicate, duplicate_trade = has_recent_synthetic_sell(symbol)
 
             if duplicate:
@@ -5276,7 +5764,13 @@ def process_event_state_machine(data):
             set_event_state(
                 symbol,
                 "SELL_TRIGGERED",
-                f"Failed retest confermato: failure {round(failure_points, 2)} punti"
+                (
+                    f"Failed retest maturo: "
+                    f"failure {round(failure_points, 2)}/{round(failure_threshold, 2)}, "
+                    f"stability {round(stability_age, 1)}s, "
+                    f"confirm {confirmation_ctx.get('count', 0)}, "
+                    f"microBOS {micro_bos_ctx.get('confirmed')}"
+                )
             )
 
             send_telegram(synthetic_sell_message(trade, ctx, state, data))
@@ -5578,7 +6072,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v23:\n"
+        f"Lettura v24:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -5908,6 +6402,9 @@ def webhook():
     data = request.get_json(silent=True) or {}
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
+        # v24: ogni update alimenta il warmup prima di valutare trigger autonomi.
+        note_price_update_for_warmup(data)
+
         # v20:
         # 1) aggiorna Auto Event + memoria spike;
         # 2) gestisce i trade già esistenti;
@@ -5939,6 +6436,10 @@ def webhook():
         for campaign_message in campaign_messages:
             send_telegram(campaign_message)
 
+        # v24: snapshot periodico della memoria runtime.
+        save_runtime_state(force=False)
+        warmup_ctx = warmup_status(data.get("symbol", "XAUUSD"))
+
         return jsonify({
             "status": "price_checked",
             "updates": len(updates),
@@ -5956,6 +6457,10 @@ def webhook():
             "deep_extension_active": deep_extension_ctx.get("active"),
             "deep_extension_position": deep_extension_ctx.get("position"),
             "deep_extension_rebound": deep_extension_ctx.get("rebound_from_low"),
+            "state_warm": warmup_ctx.get("warm"),
+            "warmup_elapsed_seconds": warmup_ctx.get("elapsed_seconds"),
+            "warmup_update_count": warmup_ctx.get("update_count"),
+            "runtime_state_restored": RUNTIME_STATE_RESTORED,
             "campaign_id": campaign.get("campaign_id"),
             "campaign_status": campaign.get("status"),
             "campaign_legs": len(campaign.get("legs", [])),
@@ -6024,6 +6529,48 @@ News:
             "reason": "score_below_min",
             "score": score,
             "setup_type": setup_type
+        })
+
+    # =========================
+    # COLD START WARMUP BLOCK v24
+    # =========================
+
+    warmup_ctx = warmup_status(symbol)
+
+    if (
+        STATE_WARMUP_ENABLED
+        and not warmup_ctx.get("warm")
+        and signal == "SELL"
+        and setup_type == "NORMAL"
+        and int(score) < STATE_WARMUP_NORMAL_SELL_MIN_SCORE
+    ):
+        text = f"""🧊⏳ SELL BLOCCATO {VERSION}
+
+Motivo: Cold Start Warmup
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+Score minimo temporaneo NORMAL SELL: {STATE_WARMUP_NORMAL_SELL_MIN_SCORE}
+
+Warmup:
+- Update ricevuti: {warmup_ctx.get('update_count')}/{STATE_WARMUP_MIN_PRICE_UPDATES}
+- Secondi osservati: {round(warmup_ctx.get('elapsed_seconds', 0), 1)}/{STATE_WARMUP_SECONDS}
+- Storico runtime: {warmup_ctx.get('history_count')}
+- Runtime ripristinato: {RUNTIME_STATE_RESTORED}
+
+Azione:
+Durante il cold start il bot non apre NORMAL SELL deboli senza memoria sufficiente.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_cold_start_warmup",
+            "score": score,
+            "setup_type": setup_type,
+            "warmup": warmup_ctx
         })
 
     # =========================
@@ -6629,6 +7176,7 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
 # STARTUP
 # =========================
 
+load_runtime_state()
 load_trades()
 
 if __name__ == "__main__":
