@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v22 Campaign Manager + Thesis Persistence"
+VERSION = "v23 Pre-Bear Thesis + Deep Extension Flip"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -121,6 +121,7 @@ CONFLICT_WINDOW_SECONDS = int(os.getenv("CONFLICT_WINDOW_SECONDS", "300"))
 CONFLICT_DOMINANCE_MARGIN = int(os.getenv("CONFLICT_DOMINANCE_MARGIN", "4"))
 
 SETUP_WEIGHTS = {
+    "PRE_BEAR_SELL": 24,
     "BEAR_CAMPAIGN_SELL": 22,
     "SYNTHETIC_BEAR_CONTINUATION_SELL": 20,
     "BEAR_CONTINUATION_SELL": 16,
@@ -164,6 +165,7 @@ CHAOS_ALLOW_NORMAL_EXTREME = os.getenv("CHAOS_ALLOW_NORMAL_EXTREME", "FALSE").up
 CHAOS_NORMAL_MIN_SCORE = int(os.getenv("CHAOS_NORMAL_MIN_SCORE", "18"))
 
 CHAOS_SELL_SETUPS = {
+    "PRE_BEAR_SELL",
     "BEAR_CAMPAIGN_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "BEAR_CONTINUATION_SELL",
@@ -462,6 +464,51 @@ CAMPAIGN_TRIM_ENABLED = os.getenv("CAMPAIGN_TRIM_ENABLED", "TRUE").upper() == "T
 CAMPAIGN_TRIM_TRIGGER_POINTS = float(os.getenv("CAMPAIGN_TRIM_TRIGGER_POINTS", "6"))
 
 BEAR_CAMPAIGN_STATE = {}
+
+# v23: Pre-Bear Thesis
+# Anticipa il grande SELL quando il recupero fallisce prima che il bear impulse
+# sia già completamente visibile. Pattern:
+# prior drop -> recovery rally -> lower high / failed recovery -> SELL thesis.
+PRE_BEAR_THESIS_ENABLED = os.getenv("PRE_BEAR_THESIS_ENABLED", "TRUE").upper() == "TRUE"
+PRE_BEAR_LOOKBACK_SECONDS = int(os.getenv("PRE_BEAR_LOOKBACK_SECONDS", "3600"))
+PRE_BEAR_MIN_PRIOR_DROP_POINTS = float(os.getenv("PRE_BEAR_MIN_PRIOR_DROP_POINTS", "10"))
+PRE_BEAR_MIN_RECOVERY_POINTS = float(os.getenv("PRE_BEAR_MIN_RECOVERY_POINTS", "6"))
+PRE_BEAR_MIN_RETRACE = float(os.getenv("PRE_BEAR_MIN_RETRACE", "0.25"))
+PRE_BEAR_MAX_RETRACE = float(os.getenv("PRE_BEAR_MAX_RETRACE", "0.88"))
+PRE_BEAR_LOWER_HIGH_GAP = float(os.getenv("PRE_BEAR_LOWER_HIGH_GAP", "3"))
+PRE_BEAR_FAILURE_POINTS = float(os.getenv("PRE_BEAR_FAILURE_POINTS", "2.5"))
+PRE_BEAR_MACRO_VOTES = int(os.getenv("PRE_BEAR_MACRO_VOTES", "3"))
+PRE_BEAR_TIMEOUT_SECONDS = int(os.getenv("PRE_BEAR_TIMEOUT_SECONDS", "3600"))
+PRE_BEAR_INVALIDATION_BUFFER = float(os.getenv("PRE_BEAR_INVALIDATION_BUFFER", "2.5"))
+PRE_BEAR_SELL_BASE_BONUS = int(os.getenv("PRE_BEAR_SELL_BASE_BONUS", "12"))
+PRE_BEAR_SELL_MIN_SCORE = int(os.getenv("PRE_BEAR_SELL_MIN_SCORE", "12"))
+PRE_BEAR_BLOCK_BUYS_ENABLED = os.getenv("PRE_BEAR_BLOCK_BUYS_ENABLED", "TRUE").upper() == "TRUE"
+PRE_BEAR_ALLOW_RECOVERY_BUY_SCORE = int(os.getenv("PRE_BEAR_ALLOW_RECOVERY_BUY_SCORE", "24"))
+PRE_BEAR_STATE = {}
+
+# v23: Deep Extension Flip
+# Dopo TP8 / drop enorme il bot smette di vendere il minimo e aumenta la priorità
+# del recovery BUY. I SELL possono riarmarsi solo dopo un rimbalzo reale.
+DEEP_EXTENSION_FLIP_ENABLED = os.getenv("DEEP_EXTENSION_FLIP_ENABLED", "TRUE").upper() == "TRUE"
+DEEP_EXTENSION_TP_LEVEL = int(os.getenv("DEEP_EXTENSION_TP_LEVEL", "8"))
+DEEP_EXTENSION_SELL_COUNT = int(os.getenv("DEEP_EXTENSION_SELL_COUNT", "1"))
+DEEP_EXTENSION_LOOKBACK_SECONDS = int(os.getenv("DEEP_EXTENSION_LOOKBACK_SECONDS", "7200"))
+DEEP_EXTENSION_MIN_DROP_POINTS = float(os.getenv("DEEP_EXTENSION_MIN_DROP_POINTS", "35"))
+DEEP_EXTENSION_LOW_POSITION_MAX = float(os.getenv("DEEP_EXTENSION_LOW_POSITION_MAX", "0.28"))
+DEEP_EXTENSION_NEAR_LOW_POINTS = float(os.getenv("DEEP_EXTENSION_NEAR_LOW_POINTS", "10"))
+DEEP_EXTENSION_REARM_REBOUND_POINTS = float(os.getenv("DEEP_EXTENSION_REARM_REBOUND_POINTS", "3.5"))
+DEEP_EXTENSION_BLOCK_LOW_SELLS = os.getenv("DEEP_EXTENSION_BLOCK_LOW_SELLS", "TRUE").upper() == "TRUE"
+DEEP_EXTENSION_RECOVERY_BONUS = int(os.getenv("DEEP_EXTENSION_RECOVERY_BONUS", "8"))
+DEEP_EXTENSION_SELL_PENALTY = int(os.getenv("DEEP_EXTENSION_SELL_PENALTY", "10"))
+
+DEEP_EXTENSION_ALWAYS_ALLOW_SELL_SETUPS = {
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "MAX_FADE_SELL",
+    "PRE_BEAR_SELL"
+}
 
 OPEN_TRADES = []
 
@@ -786,6 +833,19 @@ def health():
         "campaign_sl_cooldown_override_enabled": CAMPAIGN_SL_COOLDOWN_OVERRIDE_ENABLED,
         "campaign_extreme_fallback_enabled": CAMPAIGN_EXTREME_FALLBACK_ENABLED,
         "campaign_states": BEAR_CAMPAIGN_STATE,
+        "pre_bear_thesis_enabled": PRE_BEAR_THESIS_ENABLED,
+        "pre_bear_min_prior_drop_points": PRE_BEAR_MIN_PRIOR_DROP_POINTS,
+        "pre_bear_min_recovery_points": PRE_BEAR_MIN_RECOVERY_POINTS,
+        "pre_bear_min_retrace": PRE_BEAR_MIN_RETRACE,
+        "pre_bear_max_retrace": PRE_BEAR_MAX_RETRACE,
+        "pre_bear_failure_points": PRE_BEAR_FAILURE_POINTS,
+        "pre_bear_macro_votes": PRE_BEAR_MACRO_VOTES,
+        "pre_bear_states": PRE_BEAR_STATE,
+        "deep_extension_flip_enabled": DEEP_EXTENSION_FLIP_ENABLED,
+        "deep_extension_tp_level": DEEP_EXTENSION_TP_LEVEL,
+        "deep_extension_min_drop_points": DEEP_EXTENSION_MIN_DROP_POINTS,
+        "deep_extension_low_position_max": DEEP_EXTENSION_LOW_POSITION_MAX,
+        "deep_extension_rearm_rebound_points": DEEP_EXTENSION_REARM_REBOUND_POINTS,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1265,7 +1325,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1321,6 +1381,12 @@ def score_signal(data, signal):
     # v22: tesi persistente della campagna.
     campaign_ctx = sync_bear_campaign(symbol, data)
     campaign_active = campaign_is_active(campaign_ctx)
+
+    # v23: pre-bear thesis e deep extension flip.
+    pre_bear_ctx = get_pre_bear_state(symbol)
+    pre_bear_status = str(pre_bear_ctx.get("status", "IDLE")).upper()
+    pre_bear_active = pre_bear_status in ["FAILED_RECOVERY_ARMED", "CONFIRMED"]
+    deep_extension_ctx = get_deep_extension_context(symbol, data)
 
     # v12 context:
     # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
@@ -1538,6 +1604,22 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
+    # PRE-BEAR SELL v23:
+    # Vende il failed recovery prima che il bear impulse completo sia già evidente.
+    pre_bear_sell = (
+        PRE_BEAR_THESIS_ENABLED
+        and signal == "SELL"
+        and pre_bear_active
+        and not bear_state_active
+        and (
+            str(data.get("pre_bear_sell_candidate", "false")).lower() == "true"
+            or candle_dir == "BEAR"
+            or rejection == "UPPER_WICK"
+            or upper_wick_strong
+            or structure in ["LH", "BEARISH", "HH"]
+        )
+    )
+
     # BEAR CAMPAIGN SELL v22:
     # Promuove un SELL coerente con una tesi ribassista già attiva,
     # soprattutto su nuovo retest alto / lower high.
@@ -1629,11 +1711,17 @@ def score_signal(data, signal):
     if structure in ["LL", "BULLISH", "HL"]:
         recovery_confirmations += 1
 
+    if deep_extension_ctx.get("active"):
+        recovery_confirmations += 1
+
     max_recovery_buy = (
         RECOVERY_BUY_ENABLED
         and signal == "BUY"
         and active_news_bias == "BULLISH_GOLD"
-        and len(recent_deep_sells) >= RECOVERY_BUY_DEEP_SELL_COUNT
+        and (
+            len(recent_deep_sells) >= RECOVERY_BUY_DEEP_SELL_COUNT
+            or deep_extension_ctx.get("active")
+        )
         and structure in ["LL", "BULLISH", "HL"]
         and rsi > 34
         and rsi < 70
@@ -1669,7 +1757,25 @@ def score_signal(data, signal):
         and rsi > 38
     )
 
-    if bear_campaign_sell:
+    if pre_bear_sell:
+        setup_type = "PRE_BEAR_SELL"
+        score += PRE_BEAR_SELL_BASE_BONUS
+        reasons.append(
+            f"PRE-BEAR SELL: failed recovery prima del bear impulse ({pre_bear_status})"
+        )
+        reasons.append(
+            f"Prior drop {round(to_float(pre_bear_ctx.get('prior_drop')), 2)} | "
+            f"Retrace {round(to_float(pre_bear_ctx.get('retrace')), 2)} | "
+            f"Lower-high gap {round(to_float(pre_bear_ctx.get('lower_high_gap')), 2)}"
+        )
+        if rejection == "UPPER_WICK" or upper_wick_strong:
+            score += 3
+            reasons.append("Pre-Bear: upper rejection confermata")
+        if candle_dir == "BEAR":
+            score += 2
+            reasons.append("Pre-Bear: candela bearish di fallimento")
+
+    elif bear_campaign_sell:
         setup_type = "BEAR_CAMPAIGN_SELL"
         score += CAMPAIGN_SELL_BASE_BONUS
         reasons.append(
@@ -1776,6 +1882,12 @@ def score_signal(data, signal):
             score += 3
             reasons.append(f"Recupero vicino livello psicologico {nearest_psych}")
 
+        if deep_extension_ctx.get("active"):
+            score += DEEP_EXTENSION_RECOVERY_BONUS
+            reasons.append(
+                f"DEEP EXTENSION FLIP: SELL già molto pagato / prezzo vicino low (+{DEEP_EXTENSION_RECOVERY_BONUS})"
+            )
+
     elif max_dip_buy:
         setup_type = "MAX_DIP_BUY"
         score += 8
@@ -1811,10 +1923,15 @@ def score_signal(data, signal):
 
     if signal == "BUY" and bear_state_active:
         if setup_type == "MAX_RECOVERY_BUY":
-            score -= 4
-            reasons.append(
-                f"Bear state {bear_state_name}: recovery BUY penalizzato"
-            )
+            if deep_extension_ctx.get("active"):
+                reasons.append(
+                    f"Bear state {bear_state_name} declassato: Deep Extension Flip attivo"
+                )
+            else:
+                score -= 4
+                reasons.append(
+                    f"Bear state {bear_state_name}: recovery BUY penalizzato"
+                )
         elif setup_type in ["MAX_DIP_BUY", "REVERSAL_BUY"]:
             score -= 10
             reasons.append(
@@ -1824,6 +1941,17 @@ def score_signal(data, signal):
             score -= 8
             reasons.append(
                 f"Bear state {bear_state_name}: BUY contro impulso/continuazione"
+            )
+
+    # =========================
+    # DEEP EXTENSION SCORE CONTROL v23
+    # =========================
+
+    if signal == "SELL" and deep_extension_ctx.get("active"):
+        if setup_type not in DEEP_EXTENSION_ALWAYS_ALLOW_SELL_SETUPS:
+            score -= DEEP_EXTENSION_SELL_PENALTY
+            reasons.append(
+                f"Deep Extension: nuovo SELL basso penalizzato (-{DEEP_EXTENSION_SELL_PENALTY})"
             )
 
     # =========================
@@ -1876,14 +2004,17 @@ def score_signal(data, signal):
                 reasons.append("News bullish gold")
         else:
             if (
-                bear_campaign_sell
+                pre_bear_sell
+                or bear_campaign_sell
                 or bear_continuation_sell
                 or max_fade_sell
                 or (max_failed_retest_sell and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
             ):
-                if bear_campaign_sell:
+                if pre_bear_sell:
+                    reasons.append("SELL contro news bullish permesso: PRE-BEAR FAILED RECOVERY")
+                elif bear_campaign_sell:
                     reasons.append("SELL contro news bullish permesso: BEAR CAMPAIGN")
                 elif bear_continuation_sell and BEAR_CONTINUATION_IGNORE_BULLISH_NEWS:
                     reasons.append("SELL contro news bullish permesso: BEAR CONTINUATION")
@@ -2040,7 +2171,10 @@ def score_signal(data, signal):
             reasons.append("Daily SELL")
 
         if day_bias == "BUY":
-            if bear_campaign_sell:
+            if pre_bear_sell:
+                score -= 1
+                reasons.append("Daily BUY ma failed recovery pre-bear confermato")
+            elif bear_campaign_sell:
                 score -= 1
                 reasons.append("Daily BUY ma campagna bearish persistente già confermata")
             elif bear_continuation_sell and BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY:
@@ -2082,13 +2216,16 @@ def score_signal(data, signal):
 
         if candle_dir == "BULL":
             if (
-                (bear_continuation_sell and bear_state_name in ["RELIEF_RALLY", "LOWER_HIGH_ARMED"])
+                (pre_bear_sell and pre_bear_active)
+                or (bear_continuation_sell and bear_state_name in ["RELIEF_RALLY", "LOWER_HIGH_ARMED"])
                 or (max_fade_sell and rejection == "UPPER_WICK")
                 or (max_failed_retest_sell and event_spike_ctx.get("failed_retest_zone"))
                 or (max_view_sell and max_view_top_zone)
                 or (max_event_spike_sell and event_spike_top_zone)
             ):
-                if bear_continuation_sell:
+                if pre_bear_sell:
+                    reasons.append("Candela verde accettata: failed recovery / upper rejection pre-bear")
+                elif bear_continuation_sell:
                     reasons.append("Candela verde accettata: relief rally/lower high SELL")
                 elif max_failed_retest_sell:
                     reasons.append("Candela verde accettata: failed retest SELL")
@@ -2119,7 +2256,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -2127,7 +2264,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -2135,7 +2272,10 @@ def score_signal(data, signal):
                 reasons.append("EMA50 UP")
 
         if volume_spike and candle_dir == "BULL":
-            if bear_campaign_sell:
+            if pre_bear_sell:
+                score -= 1
+                reasons.append("Volume spike bullish ma pre-bear failed recovery ancora valido")
+            elif bear_campaign_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma campagna bearish ancora valida")
             elif bear_continuation_sell:
@@ -2317,6 +2457,10 @@ def should_block_by_sell_exhaustion(signal, symbol, setup_type, score):
     if len(recent_tp8_sells) < SELL_EXHAUSTION_COUNT:
         return False, recent_tp8_sells
 
+    # v23: PRE_BEAR_SELL nasce da un recovery alto fallito, non da inseguimento basso.
+    if setup_type == "PRE_BEAR_SELL":
+        return False, recent_tp8_sells
+
     # v21: un lower-high/continuation SELL confermato non è "inseguimento basso".
     if setup_type in [
         "BEAR_CAMPAIGN_SELL",
@@ -2405,6 +2549,10 @@ def directional_dominance_score(signal, setup_type, score, active_news_bias):
 
     dominance = int(score)
     dominance += SETUP_WEIGHTS.get(setup_type, 1) * 2
+
+    # v23: pre-bear thesis anticipa il failed recovery.
+    if setup_type == "PRE_BEAR_SELL":
+        dominance += 28
 
     # v22: campaign manager / thesis persistence.
     if setup_type == "BEAR_CAMPAIGN_SELL":
@@ -2925,6 +3073,9 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
         if setup_type not in CHAOS_BUY_SETUPS and setup_type != "NORMAL":
             return True, ctx, extreme_info, "Chaos Mode: BUY non è setup speciale da zona bassa"
 
+    if setup_type == "PRE_BEAR_SELL" and int(score) < PRE_BEAR_SELL_MIN_SCORE:
+        return True, ctx, extreme_info, f"PRE_BEAR_SELL sotto soglia {PRE_BEAR_SELL_MIN_SCORE}"
+
     if setup_type == "BEAR_CAMPAIGN_SELL" and int(score) < CAMPAIGN_SELL_MIN_SCORE:
         return True, ctx, extreme_info, f"BEAR_CAMPAIGN_SELL sotto soglia {CAMPAIGN_SELL_MIN_SCORE}"
 
@@ -2986,6 +3137,432 @@ def chaos_status_text(ctx, extreme_info, block_reason):
 
 
 
+
+
+
+# =========================
+# PRE-BEAR THESIS + DEEP EXTENSION FLIP v23
+# =========================
+
+def _new_pre_bear_state():
+    return {
+        "status": "IDLE",
+        "symbol": "",
+        "started": 0,
+        "updated": 0,
+        "updated_local": "",
+        "prior_high": 0,
+        "prior_high_time": 0,
+        "swing_low": 0,
+        "swing_low_time": 0,
+        "recovery_peak": 0,
+        "recovery_peak_time": 0,
+        "prior_drop": 0,
+        "recovery_points": 0,
+        "retrace": 0,
+        "lower_high_gap": 0,
+        "macro_votes": 0,
+        "invalidation_price": 0,
+        "reason": "Nessuna pre-bear thesis attiva"
+    }
+
+
+def get_pre_bear_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+
+    if symbol not in PRE_BEAR_STATE:
+        PRE_BEAR_STATE[symbol] = _new_pre_bear_state()
+        PRE_BEAR_STATE[symbol]["symbol"] = symbol
+
+    return PRE_BEAR_STATE[symbol]
+
+
+def reset_pre_bear_state(symbol, reason="Reset"):
+    symbol = str(symbol or "XAUUSD").upper()
+    PRE_BEAR_STATE[symbol] = _new_pre_bear_state()
+    PRE_BEAR_STATE[symbol]["symbol"] = symbol
+    PRE_BEAR_STATE[symbol]["reason"] = reason
+    PRE_BEAR_STATE[symbol]["updated"] = now_ts()
+    PRE_BEAR_STATE[symbol]["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    return PRE_BEAR_STATE[symbol]
+
+
+def pre_bear_status_text(symbol):
+    state = get_pre_bear_state(symbol)
+
+    return (
+        f"Status: {state.get('status')}\n"
+        f"Reason: {state.get('reason')}\n"
+        f"Prior high: {round(to_float(state.get('prior_high')), 3)}\n"
+        f"Swing low: {round(to_float(state.get('swing_low')), 3)}\n"
+        f"Recovery peak: {round(to_float(state.get('recovery_peak')), 3)}\n"
+        f"Prior drop: {round(to_float(state.get('prior_drop')), 2)}\n"
+        f"Recovery: {round(to_float(state.get('recovery_points')), 2)}\n"
+        f"Retrace: {round(to_float(state.get('retrace')), 2)}\n"
+        f"Lower-high gap: {round(to_float(state.get('lower_high_gap')), 2)}\n"
+        f"Macro votes: {state.get('macro_votes', 0)}"
+    )
+
+
+def pre_bear_macro_votes(data):
+    votes = 0
+
+    if str(data.get("h1_bias", "")).upper() == "SELL":
+        votes += 1
+    if str(data.get("h4_bias", "")).upper() == "SELL":
+        votes += 1
+    if str(data.get("day_bias", "")).upper() == "SELL":
+        votes += 1
+    if str(data.get("ema20_slope", "")).upper() == "DOWN":
+        votes += 1
+    if str(data.get("ema50_slope", "")).upper() == "DOWN":
+        votes += 1
+    if not to_bool(data.get("close_above_ema200", "true")):
+        votes += 1
+    if to_bool(data.get("pre_bear_sell_candidate", "false")):
+        votes += 1
+
+    return votes
+
+
+def process_pre_bear_thesis(data):
+    result = {
+        "active": False,
+        "confirmed": False,
+        "status": "IDLE",
+        "reason": ""
+    }
+
+    if not PRE_BEAR_THESIS_ENABLED:
+        result["reason"] = "Pre-Bear Thesis disattivata"
+        return result
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    state = get_pre_bear_state(symbol)
+    price = get_price_from_data(data)
+    now = now_ts()
+
+    # Se la bear continuation completa è già attiva, la pre-thesis ha fatto il suo lavoro.
+    bear_state_name = str(get_bear_continuation_state(symbol).get("state", "IDLE")).upper()
+    if bear_state_name in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        if state.get("status") in ["RECOVERY_RALLY", "FAILED_RECOVERY_ARMED", "CONFIRMED"]:
+            state["status"] = "HANDED_TO_BEAR"
+            state["reason"] = f"Passaggio alla Bear State Machine: {bear_state_name}"
+            state["updated"] = now
+            state["updated_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+
+        result.update({
+            "active": False,
+            "confirmed": False,
+            "status": state.get("status"),
+            "reason": state.get("reason")
+        })
+        return result
+
+    # Timeout / invalidation.
+    if state.get("status") in ["RECOVERY_RALLY", "FAILED_RECOVERY_ARMED", "CONFIRMED"]:
+        if state.get("started", 0) and now - state.get("started", 0) > PRE_BEAR_TIMEOUT_SECONDS:
+            state = reset_pre_bear_state(symbol, "Pre-bear scaduta per timeout")
+
+        invalidation = to_float(state.get("invalidation_price"), 0)
+        if invalidation and price and price >= invalidation:
+            state = reset_pre_bear_state(symbol, "Pre-bear invalidata sopra prior high + buffer")
+
+    history = recent_bear_history(symbol, PRE_BEAR_LOOKBACK_SECONDS)
+
+    if len(history) < 8:
+        result.update({
+            "status": state.get("status"),
+            "reason": "Storico prezzo insufficiente per pre-bear"
+        })
+        return result
+
+    # Trovo un minimo recente e il massimo che lo precede: è il downswing di riferimento.
+    search_points = history[:-1] if len(history) > 1 else history
+    low_point = min(search_points, key=lambda p: p.get("low", 999999))
+    low_time = low_point.get("time", 0)
+    swing_low = to_float(low_point.get("low"), 0)
+
+    preceding = [p for p in history if p.get("time", 0) < low_time]
+    if len(preceding) < 3:
+        result.update({
+            "status": state.get("status"),
+            "reason": "Manca prior high prima del swing low"
+        })
+        return result
+
+    high_point = max(preceding, key=lambda p: p.get("high", 0))
+    prior_high = to_float(high_point.get("high"), 0)
+    prior_high_time = high_point.get("time", 0)
+
+    after_low = [p for p in history if p.get("time", 0) >= low_time]
+    recovery_point = max(after_low, key=lambda p: p.get("high", 0))
+    recovery_peak = to_float(recovery_point.get("high"), price)
+    recovery_peak_time = recovery_point.get("time", 0)
+
+    prior_drop = max(0, prior_high - swing_low)
+    recovery_points = max(0, recovery_peak - swing_low)
+    retrace = recovery_points / prior_drop if prior_drop > 0 else 0
+    lower_high_gap = max(0, prior_high - recovery_peak)
+    macro_votes = pre_bear_macro_votes(data)
+
+    recovery_zone = (
+        prior_drop >= PRE_BEAR_MIN_PRIOR_DROP_POINTS
+        and recovery_points >= PRE_BEAR_MIN_RECOVERY_POINTS
+        and retrace >= PRE_BEAR_MIN_RETRACE
+        and retrace <= PRE_BEAR_MAX_RETRACE
+        and lower_high_gap >= PRE_BEAR_LOWER_HIGH_GAP
+        and macro_votes >= PRE_BEAR_MACRO_VOTES
+    )
+
+    if recovery_zone:
+        if state.get("status") not in ["FAILED_RECOVERY_ARMED", "CONFIRMED"]:
+            state["status"] = "RECOVERY_RALLY"
+            state["started"] = state.get("started") or now
+
+        state["prior_high"] = prior_high
+        state["prior_high_time"] = prior_high_time
+        state["swing_low"] = swing_low
+        state["swing_low_time"] = low_time
+        state["recovery_peak"] = recovery_peak
+        state["recovery_peak_time"] = recovery_peak_time
+        state["prior_drop"] = prior_drop
+        state["recovery_points"] = recovery_points
+        state["retrace"] = retrace
+        state["lower_high_gap"] = lower_high_gap
+        state["macro_votes"] = macro_votes
+        state["invalidation_price"] = prior_high + PRE_BEAR_INVALIDATION_BUFFER
+        state["reason"] = (
+            f"Failed recovery in preparazione: drop {round(prior_drop, 2)}, "
+            f"retrace {round(retrace, 2)}, gap {round(lower_high_gap, 2)}"
+        )
+        state["updated"] = now
+        state["updated_local"] = local_datetime(now).strftime("%Y-%m-%d %H:%M:%S")
+
+        failure_points = max(0, recovery_peak - price) if price else 0
+        bearish_confirmation = _bearish_confirmation_from_data(
+            data,
+            previous_price=to_float(history[-2].get("price"), 0) if len(history) >= 2 else 0
+        )
+        pine_candidate = to_bool(data.get("pre_bear_sell_candidate", "false"))
+
+        if failure_points >= PRE_BEAR_FAILURE_POINTS or pine_candidate:
+            state["status"] = "FAILED_RECOVERY_ARMED"
+            state["reason"] = (
+                f"Failed recovery armato: failure {round(failure_points, 2)} punti"
+            )
+
+        if (
+            state.get("status") == "FAILED_RECOVERY_ARMED"
+            and bearish_confirmation
+            and (failure_points >= PRE_BEAR_FAILURE_POINTS or pine_candidate)
+        ):
+            state["status"] = "CONFIRMED"
+            state["reason"] = (
+                f"Pre-Bear confermata: failed recovery {round(failure_points, 2)} punti"
+            )
+
+    active = state.get("status") in ["RECOVERY_RALLY", "FAILED_RECOVERY_ARMED", "CONFIRMED"]
+    confirmed = state.get("status") == "CONFIRMED"
+
+    result.update({
+        "active": active,
+        "confirmed": confirmed,
+        "status": state.get("status"),
+        "reason": state.get("reason")
+    })
+    return result
+
+
+def should_block_buy_by_pre_bear(signal, symbol, setup_type, score, data):
+    state = get_pre_bear_state(symbol)
+
+    if not PRE_BEAR_THESIS_ENABLED or not PRE_BEAR_BLOCK_BUYS_ENABLED:
+        return False, state, "Pre-bear BUY block disattivato"
+
+    if str(signal).upper() != "BUY":
+        return False, state, "Non è BUY"
+
+    if state.get("status") not in ["FAILED_RECOVERY_ARMED", "CONFIRMED"]:
+        return False, state, "Pre-bear non abbastanza avanzata"
+
+    # Un vero recovery BUY profondo può ancora passare, ma solo dopo deep extension.
+    deep_ctx = get_deep_extension_context(symbol, data)
+    if (
+        str(setup_type).upper() == "MAX_RECOVERY_BUY"
+        and deep_ctx.get("active")
+        and int(score) >= PRE_BEAR_ALLOW_RECOVERY_BUY_SCORE
+    ):
+        return False, state, "Recovery BUY profondo ammesso dopo deep extension"
+
+    return True, state, "BUY bloccato: failed recovery / pre-bear thesis attiva"
+
+
+def get_deep_extension_context(symbol, data):
+    symbol = str(symbol or "XAUUSD").upper()
+    price = get_price_from_data(data)
+    state = get_bear_continuation_state(symbol)
+
+    recent_tp_sells = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=DEEP_EXTENSION_TP_LEVEL,
+        lookback_seconds=DEEP_EXTENSION_LOOKBACK_SECONDS
+    )
+
+    recent_runner_sells = [
+        t for t in OPEN_TRADES
+        if str(t.get("symbol", "")).upper() == symbol
+        and str(t.get("signal", "")).upper() == "SELL"
+        and bool(t.get("runner"))
+        and now_ts() - (t.get("created") or 0) <= DEEP_EXTENSION_LOOKBACK_SECONDS
+    ]
+
+    impulse_high = to_float(state.get("impulse_high"), 0)
+    impulse_low = to_float(state.get("impulse_low"), 0)
+
+    # Fallback sulla price history se lo state non è completo.
+    history = recent_bear_history(symbol, BEAR_IMPULSE_LOOKBACK_SECONDS)
+    if history:
+        if not impulse_high:
+            impulse_high = max(to_float(p.get("high"), 0) for p in history)
+        if not impulse_low:
+            impulse_low = min(to_float(p.get("low"), 999999) for p in history)
+
+    impulse_range = max(0, impulse_high - impulse_low)
+    position = -1
+    distance_to_low = 999999
+    rebound_from_low = 0
+
+    if price and impulse_high and impulse_low and impulse_range > 0:
+        position = (price - impulse_low) / impulse_range
+        position = max(0, min(1, position))
+        distance_to_low = max(0, price - impulse_low)
+        rebound_from_low = distance_to_low
+
+    impulse_drop = max(
+        to_float(state.get("impulse_drop"), 0),
+        impulse_range
+    )
+
+    near_low = (
+        to_bool(data.get("near_m15_low", "false"))
+        or to_bool(data.get("near_day_low", "false"))
+        or distance_to_low <= DEEP_EXTENSION_NEAR_LOW_POINTS
+        or (position >= 0 and position <= DEEP_EXTENSION_LOW_POSITION_MAX)
+    )
+
+    paid = (
+        len(recent_tp_sells) >= DEEP_EXTENSION_SELL_COUNT
+        or len(recent_runner_sells) > 0
+        or impulse_drop >= DEEP_EXTENSION_MIN_DROP_POINTS
+    )
+
+    active = bool(
+        DEEP_EXTENSION_FLIP_ENABLED
+        and paid
+        and near_low
+    )
+
+    return {
+        "active": active,
+        "paid": paid,
+        "near_low": near_low,
+        "recent_tp_sells": recent_tp_sells,
+        "recent_runner_sells": recent_runner_sells,
+        "impulse_high": impulse_high,
+        "impulse_low": impulse_low,
+        "impulse_drop": impulse_drop,
+        "position": position,
+        "distance_to_low": distance_to_low,
+        "rebound_from_low": rebound_from_low
+    }
+
+
+def deep_extension_status_text(ctx):
+    return (
+        f"Deep Extension active: {ctx.get('active')}\n"
+        f"Recent SELL TP{DEEP_EXTENSION_TP_LEVEL}+: {len(ctx.get('recent_tp_sells', []))}\n"
+        f"Runner SELL recenti: {len(ctx.get('recent_runner_sells', []))}\n"
+        f"Impulse drop: {round(to_float(ctx.get('impulse_drop')), 2)}\n"
+        f"Impulse position: {round(to_float(ctx.get('position')), 2)}\n"
+        f"Distance low: {round(to_float(ctx.get('distance_to_low')), 2)}\n"
+        f"Rebound low: {round(to_float(ctx.get('rebound_from_low')), 2)}"
+    )
+
+
+def should_block_sell_by_deep_extension(signal, symbol, setup_type, data):
+    ctx = get_deep_extension_context(symbol, data)
+
+    if not DEEP_EXTENSION_FLIP_ENABLED or not DEEP_EXTENSION_BLOCK_LOW_SELLS:
+        return False, ctx, "Deep Extension block disattivato"
+
+    if str(signal).upper() != "SELL":
+        return False, ctx, "Non è SELL"
+
+    if not ctx.get("active"):
+        return False, ctx, "Deep Extension non attiva"
+
+    setup_type = str(setup_type or "NORMAL").upper()
+
+    if setup_type in DEEP_EXTENSION_ALWAYS_ALLOW_SELL_SETUPS:
+        return False, ctx, f"Setup {setup_type} ammesso anche in deep extension"
+
+    # Una campaign può riarmarsi solo dopo un rimbalzo reale dal minimo.
+    if (
+        setup_type == "BEAR_CAMPAIGN_SELL"
+        and ctx.get("rebound_from_low", 0) >= DEEP_EXTENSION_REARM_REBOUND_POINTS
+    ):
+        return False, ctx, "Campaign SELL riarmato dopo rimbalzo dal minimo"
+
+    return True, ctx, "SELL basso bloccato: movimento già troppo esteso"
+
+
+def reconcile_campaign_setup(signal, symbol, setup_type, score, reasons, data, decision):
+    """Garantisce coerenza tra nome BEAR_CAMPAIGN_SELL e leg realmente contabilizzata."""
+    if str(setup_type).upper() != "BEAR_CAMPAIGN_SELL":
+        return setup_type, score, reasons, decision
+
+    if decision and decision.get("allow"):
+        return setup_type, score, reasons, decision
+
+    bear_state_name = str(get_bear_continuation_state(symbol).get("state", "IDLE")).upper()
+    candle_dir = str(data.get("candle_dir", "")).upper()
+
+    # Rimuove il bonus campaign e ricostruisce il bonus continuation.
+    score -= CAMPAIGN_SELL_BASE_BONUS
+    if bear_state_name == "LOWER_HIGH_ARMED":
+        score -= 4
+    if candle_dir == "BEAR":
+        score -= 2
+
+    if bear_state_name in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        setup_type = "BEAR_CONTINUATION_SELL"
+        score += BEAR_CONTINUATION_BASE_BONUS
+        if bear_state_name == "LOWER_HIGH_ARMED":
+            score += 4
+        if candle_dir == "BEAR":
+            score += 2
+
+        reasons.append(
+            "Campaign accounting fix: non qualificato come nuova leg; "
+            "riclassificato BEAR_CONTINUATION_SELL"
+        )
+    else:
+        setup_type = "NORMAL"
+        reasons.append(
+            "Campaign accounting fix: setup campaign non contabilizzabile; riclassificato NORMAL"
+        )
+
+    decision = evaluate_campaign_leg(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    return setup_type, score, reasons, decision
 
 
 # =========================
@@ -4109,6 +4686,19 @@ def process_bear_continuation_state_machine(data):
                 failure_points >= BEAR_CONTINUATION_FAILURE_POINTS
                 and bearish_confirmation
             ):
+                deep_ctx = get_deep_extension_context(symbol, data)
+                if (
+                    deep_ctx.get("active")
+                    and deep_ctx.get("rebound_from_low", 0) < DEEP_EXTENSION_REARM_REBOUND_POINTS
+                ):
+                    state["reason"] = (
+                        "Synthetic bear SELL bloccato da Deep Extension Flip: "
+                        "prezzo troppo vicino al minimo dopo drop già pagato"
+                    )
+                    result["state"] = state.get("state")
+                    result["reason"] = state.get("reason")
+                    return result
+
                 duplicate, duplicate_trade = has_recent_bear_synthetic_sell(symbol)
 
                 synthetic_data, risk_error = build_bear_synthetic_sell_data(
@@ -4885,6 +5475,10 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
 
     setup_type = str(setup_type).upper()
 
+    # v23: failed recovery confermato può superare il Recovery Lock solo con score forte.
+    if setup_type == "PRE_BEAR_SELL" and int(score) >= PRE_BEAR_SELL_MIN_SCORE:
+        return False, ctx
+
     # v21: se la seconda macchina a stati ha già confermato bearish continuation,
     # il SELL non viene bloccato da un vecchio Recovery Lock BUY.
     if setup_type in [
@@ -4984,7 +5578,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v22:\n"
+        f"Lettura v23:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -5328,6 +5922,13 @@ def webhook():
         # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
         bear_result = process_bear_continuation_state_machine(data)
 
+        # v23: failed recovery prima del bear impulse completo.
+        pre_bear_result = process_pre_bear_thesis(data)
+        deep_extension_ctx = get_deep_extension_context(
+            data.get("symbol", "XAUUSD"),
+            data
+        )
+
         # v22: persiste la tesi e gestisce il basket/campaign.
         campaign = sync_bear_campaign(
             data.get("symbol", "XAUUSD"),
@@ -5349,6 +5950,12 @@ def webhook():
             "bear_trade_id": bear_result.get("trade_id"),
             "bear_state": bear_result.get("state"),
             "bear_reason": bear_result.get("reason"),
+            "pre_bear_status": pre_bear_result.get("status"),
+            "pre_bear_confirmed": pre_bear_result.get("confirmed"),
+            "pre_bear_reason": pre_bear_result.get("reason"),
+            "deep_extension_active": deep_extension_ctx.get("active"),
+            "deep_extension_position": deep_extension_ctx.get("position"),
+            "deep_extension_rebound": deep_extension_ctx.get("rebound_from_low"),
             "campaign_id": campaign.get("campaign_id"),
             "campaign_status": campaign.get("status"),
             "campaign_legs": len(campaign.get("legs", [])),
@@ -5374,6 +5981,17 @@ def webhook():
         setup_type,
         score,
         data
+    )
+
+    # v23: se si chiama BEAR_CAMPAIGN_SELL deve essere davvero una leg contabilizzata.
+    setup_type, score, reasons, campaign_decision = reconcile_campaign_setup(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        reasons,
+        data,
+        campaign_decision
     )
 
     # =========================
@@ -5406,6 +6024,47 @@ News:
             "reason": "score_below_min",
             "score": score,
             "setup_type": setup_type
+        })
+
+    # =========================
+    # PRE-BEAR BUY BLOCK v23
+    # =========================
+
+    block_pre_bear_buy, pre_bear_state, pre_bear_block_reason = should_block_buy_by_pre_bear(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_pre_bear_buy:
+        text = f"""🐻🟠 BUY BLOCCATO {VERSION}
+
+Motivo: Pre-Bear Thesis / Failed Recovery
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{pre_bear_status_text(symbol)}
+
+Dettaglio:
+{pre_bear_block_reason}
+
+Azione:
+Il bot non compra il rimbalzo quando il recupero sta fallendo prima del bear impulse completo.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_pre_bear_thesis",
+            "score": score,
+            "setup_type": setup_type,
+            "pre_bear_status": pre_bear_state.get("status"),
+            "pre_bear_reason": pre_bear_block_reason
         })
 
     # =========================
@@ -5578,6 +6237,48 @@ Il bot evita di insistere sul recupero se il mercato ha appena negato più BUY.
             "recent_buy_direct_losses": len(recent_buy_losses)
         })
 
+
+    # =========================
+    # DEEP EXTENSION FLIP BLOCK v23
+    # =========================
+
+    block_deep_sell, deep_ctx, deep_reason = should_block_sell_by_deep_extension(
+        signal,
+        symbol,
+        setup_type,
+        data
+    )
+
+    if block_deep_sell:
+        text = f"""🧯🔄 SELL BLOCCATO {VERSION}
+
+Motivo: Deep Extension Flip
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{deep_extension_status_text(deep_ctx)}
+
+Dettaglio:
+{deep_reason}
+
+Azione:
+Dopo TP profondi / drop enorme il bot non vende il minimo.
+Aspetta un vero rimbalzo per riarmare SELL oppure favorisce MAX_RECOVERY_BUY.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_deep_extension_sell",
+            "score": score,
+            "setup_type": setup_type,
+            "deep_extension_active": deep_ctx.get("active"),
+            "deep_extension_position": deep_ctx.get("position"),
+            "deep_extension_rebound": deep_ctx.get("rebound_from_low")
+        })
 
     # =========================
     # CHAOS DAY / EXTREME ZONE BLOCK v15
