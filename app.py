@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v24 Trigger Maturity + Persistent Runtime State"
+VERSION = "v25 Regime Arbiter + Recovery Dominance"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -547,6 +547,43 @@ SYNTHETIC_RETEST_MICRO_BOS_REQUIRED = os.getenv("SYNTHETIC_RETEST_MICRO_BOS_REQU
 MICRO_BOS_LOOKBACK_UPDATES = int(os.getenv("MICRO_BOS_LOOKBACK_UPDATES", "5"))
 MICRO_BOS_BUFFER_POINTS = float(os.getenv("MICRO_BOS_BUFFER_POINTS", "0.1"))
 
+# v25: Regime Arbiter
+# Un arbitro centrale decide quale tesi domina ADESSO.
+REGIME_ARBITER_ENABLED = os.getenv("REGIME_ARBITER_ENABLED", "TRUE").upper() == "TRUE"
+
+REGIME_MATURITY_REQUIRED_SETUPS = {
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL"
+}
+
+# Recovery BUY Dominance:
+# se un MAX_RECOVERY_BUY è OPEN e ha già raggiunto TP3+, i SELL continuation
+# non possono combatterlo finché il recovery non viene realmente invalidato.
+RECOVERY_DOMINANCE_ENABLED = os.getenv("RECOVERY_DOMINANCE_ENABLED", "TRUE").upper() == "TRUE"
+RECOVERY_DOMINANCE_MIN_TP = int(os.getenv("RECOVERY_DOMINANCE_MIN_TP", "3"))
+RECOVERY_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_DOMINANCE_LOOKBACK_SECONDS", "7200"))
+RECOVERY_DOMINANCE_INVALIDATION_BUFFER = float(os.getenv("RECOVERY_DOMINANCE_INVALIDATION_BUFFER", "2.5"))
+RECOVERY_DOMINANCE_SETUPS = {
+    "MAX_RECOVERY_BUY"
+}
+RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS = {
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL"
+}
+
+# Smart Daily Kill Switch Override per PRE_BEAR_SELL:
+# una sola eccezione controllata, solo da zona estrema e con score alto.
+SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED = os.getenv("SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
+SMART_KILL_PRE_BEAR_MIN_SCORE = int(os.getenv("SMART_KILL_PRE_BEAR_MIN_SCORE", "20"))
+SMART_KILL_PRE_BEAR_MAX_ATTEMPTS = int(os.getenv("SMART_KILL_PRE_BEAR_MAX_ATTEMPTS", "1"))
+SMART_KILL_PRE_BEAR_RISK_WEIGHT = float(os.getenv("SMART_KILL_PRE_BEAR_RISK_WEIGHT", "0.25"))
+SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS", "7200"))
+
+# Stato persistente dell'arbitro.
+REGIME_ARBITER_STATE = {}
+
 # Runtime meta
 RUNTIME_STATE_LAST_SAVE = 0
 RUNTIME_STATE_RESTORED = False
@@ -677,6 +714,7 @@ def runtime_state_payload():
         "price_history": PRICE_HISTORY,
         "bear_campaign_state": BEAR_CAMPAIGN_STATE,
         "pre_bear_state": PRE_BEAR_STATE,
+        "regime_arbiter_state": REGIME_ARBITER_STATE,
         "warmup_tracker": WARMUP_TRACKER
     }
 
@@ -769,6 +807,10 @@ def load_runtime_state():
         _restore_dict(
             PRE_BEAR_STATE,
             payload.get("pre_bear_state")
+        )
+        _restore_dict(
+            REGIME_ARBITER_STATE,
+            payload.get("regime_arbiter_state")
         )
         _restore_dict(
             WARMUP_TRACKER,
@@ -1117,6 +1159,16 @@ def health():
         "synthetic_retest_min_confirmations": SYNTHETIC_RETEST_MIN_CONFIRMATIONS,
         "micro_bos_lookback_updates": MICRO_BOS_LOOKBACK_UPDATES,
         "micro_bos_buffer_points": MICRO_BOS_BUFFER_POINTS,
+        "regime_arbiter_enabled": REGIME_ARBITER_ENABLED,
+        "recovery_dominance_enabled": RECOVERY_DOMINANCE_ENABLED,
+        "recovery_dominance_min_tp": RECOVERY_DOMINANCE_MIN_TP,
+        "recovery_dominance_lookback_seconds": RECOVERY_DOMINANCE_LOOKBACK_SECONDS,
+        "recovery_dominance_invalidation_buffer": RECOVERY_DOMINANCE_INVALIDATION_BUFFER,
+        "smart_kill_pre_bear_override_enabled": SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED,
+        "smart_kill_pre_bear_min_score": SMART_KILL_PRE_BEAR_MIN_SCORE,
+        "smart_kill_pre_bear_max_attempts": SMART_KILL_PRE_BEAR_MAX_ATTEMPTS,
+        "smart_kill_pre_bear_risk_weight": SMART_KILL_PRE_BEAR_RISK_WEIGHT,
+        "regime_arbiter_states": REGIME_ARBITER_STATE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
     })
@@ -1596,7 +1648,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -1658,6 +1710,10 @@ def score_signal(data, signal):
     pre_bear_status = str(pre_bear_ctx.get("status", "IDLE")).upper()
     pre_bear_active = pre_bear_status in ["FAILED_RECOVERY_ARMED", "CONFIRMED"]
     deep_extension_ctx = get_deep_extension_context(symbol, data)
+
+    # v25: continuation/campaign solo con trigger maturo.
+    bear_maturity_ctx = bear_trigger_maturity_context(symbol, data)
+    bear_trigger_mature = bool(bear_maturity_ctx.get("mature"))
 
     # v12 context:
     # se ci sono stati SELL profondi recenti, un BUY di recupero diventa più interessante.
@@ -1899,6 +1955,7 @@ def score_signal(data, signal):
         and CAMPAIGN_SELL_PROMOTION_ENABLED
         and signal == "SELL"
         and campaign_active
+        and bear_trigger_mature
         and bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]
         and (
             structure in ["BEARISH", "LH", "HH"]
@@ -1914,9 +1971,8 @@ def score_signal(data, signal):
     bear_continuation_sell = (
         BEAR_CONTINUATION_ENGINE_ENABLED
         and signal == "SELL"
+        and bear_trigger_mature
         and bear_state_name in [
-            "BEAR_IMPULSE",
-            "RELIEF_RALLY",
             "LOWER_HIGH_ARMED",
             "SELL_TRIGGERED"
         ]
@@ -1931,6 +1987,11 @@ def score_signal(data, signal):
             or bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]
         )
     )
+
+    # v25: se il contesto bearish esiste ma non è ancora maturo,
+    # non promuovo il SELL a continuation/campaign.
+    if signal == "SELL" and bear_state_active and not bear_trigger_mature:
+        reasons.append("Regime Arbiter: continuation declassata, trigger non maturo")
 
     # MAX DIP BUY v11:
     # Più selettivo della v10.
@@ -3290,7 +3351,7 @@ def extreme_zone_info(signal, data):
     }
 
 
-def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
+def should_block_by_chaos_mode(signal, symbol, setup_type, score, data, smart_kill_decision=None):
     ctx = get_chaos_context(symbol, data)
 
     setup_type = str(setup_type).upper()
@@ -3323,6 +3384,14 @@ def should_block_by_chaos_mode(signal, symbol, setup_type, score, data):
                 extreme_info,
                 "Campaign override controllato del Daily Kill Switch"
             )
+
+        if smart_kill_decision is None:
+            smart_kill_decision = smart_kill_pre_bear_decision(
+                signal, symbol, setup_type, score, data, extreme_info=extreme_info
+            )
+
+        if smart_kill_decision.get("allow"):
+            return False, ctx, extreme_info, "Smart Kill override PRE_BEAR da zona estrema"
 
         return True, ctx, extreme_info, "Daily Kill Switch attivo"
 
@@ -3409,6 +3478,360 @@ def chaos_status_text(ctx, extreme_info, block_reason):
 
 
 
+
+
+
+# =========================
+# REGIME ARBITER v25
+# =========================
+
+def _latest_price_for_symbol(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    history = PRICE_HISTORY.get(symbol, [])
+
+    if isinstance(history, list) and history:
+        return to_float(history[-1].get("close"), 0)
+
+    return 0
+
+
+def bear_trigger_maturity_context(symbol, data=None):
+    """Maturità obbligatoria per tutti i setup continuation/campaign."""
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    state = get_bear_continuation_state(symbol)
+    state_name = str(state.get("state", "IDLE")).upper()
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+
+    history = PRICE_HISTORY.get(symbol, [])
+    previous_price = 0
+    if isinstance(history, list) and len(history) >= 2:
+        previous_price = to_float(history[-2].get("close"), 0)
+    elif isinstance(history, list) and history:
+        previous_price = to_float(history[-1].get("close"), 0)
+
+    rally_peak = to_float(state.get("rally_peak"), 0)
+    rally_peak_time = to_float(state.get("rally_peak_time"), 0)
+    stability_age = max(0, now_ts() - rally_peak_time) if rally_peak_time else 0
+    failure_points = max(0, rally_peak - price) if rally_peak and price else 0
+
+    failure_threshold = effective_failure_threshold(
+        data,
+        BEAR_CONTINUATION_FAILURE_POINTS,
+        BEAR_CONTINUATION_FAILURE_MIN_POINTS,
+        BEAR_CONTINUATION_FAILURE_ATR_MULT,
+        BEAR_CONTINUATION_DYNAMIC_FAILURE_ENABLED
+    )
+
+    confirmation_ctx = bearish_confirmation_details(data, previous_price=previous_price)
+    micro_bos_ctx = micro_bos_bear_context(symbol, data)
+    warmup_ctx = warmup_status(symbol)
+
+    state_ready = state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"]
+    stability_ok = rally_peak > 0 and stability_age >= BEAR_RALLY_PEAK_STABILITY_SECONDS
+    failure_ok = failure_points >= failure_threshold
+    confirmations_ok = confirmation_ctx.get("count", 0) >= BEAR_CONTINUATION_MIN_CONFIRMATIONS
+    micro_bos_ok = micro_bos_ctx.get("confirmed") or not BEAR_CONTINUATION_MICRO_BOS_REQUIRED
+    warmup_ok = warmup_ctx.get("warm") or not STATE_WARMUP_BLOCK_AUTONOMOUS
+
+    mature = bool(
+        state_ready and stability_ok and failure_ok and
+        confirmations_ok and micro_bos_ok and warmup_ok
+    )
+
+    return {
+        "mature": mature,
+        "state": state_name,
+        "state_ready": state_ready,
+        "rally_peak": rally_peak,
+        "stability_age": stability_age,
+        "stability_ok": stability_ok,
+        "failure_points": failure_points,
+        "failure_threshold": failure_threshold,
+        "failure_ok": failure_ok,
+        "confirmations": confirmation_ctx.get("count", 0),
+        "confirmation_items": confirmation_ctx.get("items", []),
+        "confirmations_ok": confirmations_ok,
+        "micro_bos": bool(micro_bos_ctx.get("confirmed")),
+        "micro_bos_source": micro_bos_ctx.get("source"),
+        "micro_bos_reference_low": micro_bos_ctx.get("reference_low"),
+        "micro_bos_ok": micro_bos_ok,
+        "warm": warmup_ctx.get("warm"),
+        "warmup_ok": warmup_ok
+    }
+
+
+def bear_trigger_maturity_text(ctx):
+    return (
+        f"State: {ctx.get('state')}\n"
+        f"Mature: {ctx.get('mature')}\n"
+        f"Stability: {round(to_float(ctx.get('stability_age')), 1)}/{BEAR_RALLY_PEAK_STABILITY_SECONDS}s\n"
+        f"Failure: {round(to_float(ctx.get('failure_points')), 2)}/{round(to_float(ctx.get('failure_threshold')), 2)}\n"
+        f"Conferme: {ctx.get('confirmations', 0)}/{BEAR_CONTINUATION_MIN_CONFIRMATIONS}\n"
+        f"Micro BOS: {ctx.get('micro_bos')}\n"
+        f"Warm: {ctx.get('warm')}"
+    )
+
+
+def get_recovery_dominance_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    if not RECOVERY_DOMINANCE_ENABLED:
+        return {"active": False, "reason": "Recovery Dominance disattivata", "best_trade": None, "trades": []}
+
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+    now = now_ts()
+    candidates = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("signal", "")).upper() != "BUY":
+            continue
+        if str(trade.get("setup_type", "")).upper() not in RECOVERY_DOMINANCE_SETUPS:
+            continue
+        if trade.get("status") not in ["OPEN", "PENDING"]:
+            continue
+        if now - (trade.get("created") or 0) > RECOVERY_DOMINANCE_LOOKBACK_SECONDS:
+            continue
+
+        highest_tp = int(trade.get("highest_tp", 0))
+        if highest_tp < RECOVERY_DOMINANCE_MIN_TP:
+            continue
+
+        entry_low = to_float(trade.get("entry_low"), 0)
+        entry_high = to_float(trade.get("entry_high"), 0)
+        if not entry_low and entry_high:
+            entry_low = entry_high
+
+        invalidation_price = entry_low - RECOVERY_DOMINANCE_INVALIDATION_BUFFER if entry_low else 0
+        invalidated = bool(invalidation_price and price and price <= invalidation_price)
+
+        candidates.append({
+            "trade": trade,
+            "highest_tp": highest_tp,
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "invalidation_price": invalidation_price,
+            "invalidated": invalidated,
+            "price": price
+        })
+
+    if not candidates:
+        return {"active": False, "reason": "Nessun MAX_RECOVERY_BUY OPEN con TP sufficiente", "best_trade": None, "trades": []}
+
+    candidates = sorted(
+        candidates,
+        key=lambda x: (
+            x.get("highest_tp", 0),
+            x.get("trade", {}).get("last_tp_time") or x.get("trade", {}).get("created") or 0
+        ),
+        reverse=True
+    )
+
+    active_candidates = [item for item in candidates if not item.get("invalidated")]
+    if not active_candidates:
+        best_ctx = candidates[0]
+        return {
+            "active": False,
+            "reason": "Recovery BUY invalidato sotto zona ingresso",
+            "best_trade": best_ctx.get("trade"),
+            "trades": candidates,
+            "invalidation_price": best_ctx.get("invalidation_price"),
+            "price": price
+        }
+
+    best_ctx = active_candidates[0]
+    best = best_ctx.get("trade") or {}
+    return {
+        "active": True,
+        "reason": f"MAX_RECOVERY_BUY OPEN con TP{best_ctx.get('highest_tp')} e struttura non invalidata",
+        "best_trade": best,
+        "trades": active_candidates,
+        "highest_tp": best_ctx.get("highest_tp"),
+        "invalidation_price": best_ctx.get("invalidation_price"),
+        "price": price
+    }
+
+
+def recovery_dominance_text(ctx):
+    best = (ctx or {}).get("best_trade") or {}
+    return (
+        f"Active: {(ctx or {}).get('active')}\n"
+        f"Reason: {(ctx or {}).get('reason')}\n"
+        f"Trade BUY: {best.get('id', 'N/D')}\n"
+        f"Setup BUY: {best.get('setup_type', 'N/D')}\n"
+        f"Highest TP: {best.get('highest_tp', 0)}\n"
+        f"Status BUY: {best.get('status', 'N/D')}\n"
+        f"Invalidation: {round(to_float((ctx or {}).get('invalidation_price')), 3)}\n"
+        f"Prezzo: {round(to_float((ctx or {}).get('price')), 3)}"
+    )
+
+
+def get_regime_arbiter_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    if symbol not in REGIME_ARBITER_STATE:
+        REGIME_ARBITER_STATE[symbol] = {
+            "mode": "NEUTRAL",
+            "reason": "Nessun regime dominante",
+            "updated": 0,
+            "smart_kill_attempts": 0,
+            "smart_kill_window_start": 0,
+            "last_smart_kill_trade_id": None
+        }
+    return REGIME_ARBITER_STATE[symbol]
+
+
+def get_regime_arbiter_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+    state = get_regime_arbiter_state(symbol)
+
+    recovery_ctx = get_recovery_dominance_context(symbol, data)
+    maturity_ctx = bear_trigger_maturity_context(symbol, data)
+    deep_ctx = get_deep_extension_context(symbol, data)
+    pre_bear = get_pre_bear_state(symbol)
+    pre_bear_status = str(pre_bear.get("status", "IDLE")).upper()
+    bear_state = get_bear_continuation_state(symbol)
+    bear_state_name = str(bear_state.get("state", "IDLE")).upper()
+
+    if recovery_ctx.get("active"):
+        mode, reason = "RECOVERY_DOMINANT", recovery_ctx.get("reason")
+    elif deep_ctx.get("active"):
+        mode, reason = "DEEP_EXTENSION", "SELL già molto pagato / prezzo vicino low"
+    elif maturity_ctx.get("mature"):
+        mode, reason = "BEAR_MATURE", "Continuation bearish matura"
+    elif pre_bear_status in ["FAILED_RECOVERY_ARMED", "CONFIRMED"]:
+        mode, reason = "PRE_BEAR", f"Pre-Bear Thesis {pre_bear_status}"
+    elif bear_state_name in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        mode, reason = "BEAR_BUILDING", "Bear state attivo ma trigger non ancora maturo"
+    else:
+        mode, reason = "NEUTRAL", "Nessun regime dominante"
+
+    state["mode"] = mode
+    state["reason"] = reason
+    state["updated"] = now_ts()
+
+    return {
+        "mode": mode,
+        "reason": reason,
+        "recovery": recovery_ctx,
+        "maturity": maturity_ctx,
+        "deep_extension": deep_ctx,
+        "pre_bear_status": pre_bear_status,
+        "bear_state": bear_state_name
+    }
+
+
+def regime_arbiter_status_text(ctx):
+    return (
+        f"Mode: {ctx.get('mode')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Bear state: {ctx.get('bear_state')}\n"
+        f"Pre-Bear: {ctx.get('pre_bear_status')}\n"
+        f"Recovery dominant: {ctx.get('recovery', {}).get('active')}\n"
+        f"Bear maturity: {ctx.get('maturity', {}).get('mature')}\n"
+        f"Deep extension: {ctx.get('deep_extension', {}).get('active')}"
+    )
+
+
+def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
+    ctx = get_regime_arbiter_context(symbol, data)
+
+    if not REGIME_ARBITER_ENABLED:
+        return False, ctx, "Regime Arbiter disattivato"
+
+    signal = str(signal or "").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    if signal != "SELL":
+        return False, ctx, "Il Regime Arbiter v25 governa qui i conflitti SELL"
+
+    if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
+        recovery_ctx = ctx.get("recovery", {})
+        if recovery_ctx.get("active") and setup_type in RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS:
+            return True, ctx, "Recovery BUY Dominance: continuation SELL non può combattere un MAX_RECOVERY_BUY TP3+ ancora valido"
+
+        deep_ctx = ctx.get("deep_extension", {})
+        if deep_ctx.get("active") and to_float(deep_ctx.get("rebound_from_low"), 0) < DEEP_EXTENSION_REARM_REBOUND_POINTS:
+            return True, ctx, "Deep Extension: continuation SELL non riarmato; rimbalzo dal low insufficiente"
+
+        maturity_ctx = ctx.get("maturity", {})
+        if not maturity_ctx.get("mature"):
+            return True, ctx, "Trigger Maturity obbligatoria: SELL continuation/campaign ancora immaturo"
+
+    return False, ctx, "Regime coerente con il setup"
+
+
+def smart_kill_pre_bear_decision(signal, symbol, setup_type, score, data, extreme_info=None):
+    result = {"allow": False, "reason": "", "risk_weight": 0.0, "attempt_number": 0}
+
+    if not SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED:
+        result["reason"] = "Smart Kill override disattivato"
+        return result
+    if str(signal).upper() != "SELL":
+        result["reason"] = "Non è SELL"
+        return result
+    if str(setup_type).upper() != "PRE_BEAR_SELL":
+        result["reason"] = "Setup non PRE_BEAR_SELL"
+        return result
+    if int(score) < SMART_KILL_PRE_BEAR_MIN_SCORE:
+        result["reason"] = f"Score {score} sotto {SMART_KILL_PRE_BEAR_MIN_SCORE}"
+        return result
+    if not is_state_warm(symbol):
+        result["reason"] = "Warmup non completato"
+        return result
+
+    recovery_ctx = get_recovery_dominance_context(symbol, data)
+    if recovery_ctx.get("active"):
+        result["reason"] = "Recovery Dominance attiva"
+        return result
+
+    if extreme_info is None:
+        _, extreme_info = extreme_zone_info("SELL", data)
+    if not extreme_info.get("ok"):
+        result["reason"] = "Zona estrema SELL non confermata"
+        return result
+
+    state = get_regime_arbiter_state(symbol)
+    now = now_ts()
+    window_start = to_float(state.get("smart_kill_window_start"), 0)
+    if not window_start or now - window_start > SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS:
+        state["smart_kill_window_start"] = now
+        state["smart_kill_attempts"] = 0
+
+    attempts = int(state.get("smart_kill_attempts", 0))
+    if attempts >= SMART_KILL_PRE_BEAR_MAX_ATTEMPTS:
+        result["reason"] = "Numero massimo tentativi Smart Kill già usato"
+        return result
+
+    result.update({
+        "allow": True,
+        "reason": "PRE_BEAR_SELL forte da zona estrema",
+        "risk_weight": SMART_KILL_PRE_BEAR_RISK_WEIGHT,
+        "attempt_number": attempts + 1
+    })
+    return result
+
+
+def register_smart_kill_pre_bear_override(trade, decision):
+    if not decision or not decision.get("allow"):
+        return trade
+
+    symbol = str(trade.get("symbol", "XAUUSD")).upper()
+    state = get_regime_arbiter_state(symbol)
+    state["smart_kill_attempts"] = int(state.get("smart_kill_attempts", 0)) + 1
+    state["last_smart_kill_trade_id"] = trade.get("id")
+    state["updated"] = now_ts()
+
+    trade["smart_kill_override"] = True
+    trade["smart_kill_risk_weight"] = decision.get("risk_weight")
+    trade["smart_kill_attempt_number"] = decision.get("attempt_number")
+
+    save_trades()
+    save_runtime_state(force=True)
+    return trade
 
 
 # =========================
@@ -4124,6 +4547,21 @@ def evaluate_campaign_leg(signal, symbol, setup_type, score, data):
         and not is_state_warm(symbol)
     ):
         result["reason"] = "Campaign leg bloccata durante cold-start warmup"
+        return result
+
+    maturity_ctx = bear_trigger_maturity_context(symbol, data)
+    if not maturity_ctx.get("mature"):
+        result["reason"] = "Campaign leg bloccata: Trigger Maturity non confermata"
+        return result
+
+    recovery_ctx = get_recovery_dominance_context(symbol, data)
+    if recovery_ctx.get("active"):
+        result["reason"] = "Campaign leg bloccata: Recovery BUY Dominance attiva"
+        return result
+
+    deep_ctx = get_deep_extension_context(symbol, data)
+    if deep_ctx.get("active") and to_float(deep_ctx.get("rebound_from_low"), 0) < DEEP_EXTENSION_REARM_REBOUND_POINTS:
+        result["reason"] = "Campaign leg bloccata: Deep Extension non riarmata"
         return result
 
     campaign = sync_bear_campaign(symbol, data)
@@ -5154,6 +5592,19 @@ def process_bear_continuation_state_machine(data):
                     synthetic_data or data
                 )
 
+                arbiter_block, arbiter_ctx, arbiter_reason = should_block_by_regime_arbiter(
+                    "SELL",
+                    symbol,
+                    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+                    BEAR_SYNTHETIC_SCORE,
+                    synthetic_data or data
+                )
+                if arbiter_block:
+                    state["reason"] = f"Regime Arbiter blocca synthetic SELL: {arbiter_reason}"
+                    result["state"] = state.get("state")
+                    result["reason"] = state.get("reason")
+                    return result
+
                 if duplicate and not campaign_decision.get("allow"):
                     state["reason"] = (
                         f"Trigger bear già presente: trade {duplicate_trade.get('id')}"
@@ -5955,7 +6406,7 @@ def get_recovery_lock_context(symbol):
     }
 
 
-def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
+def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score, data=None):
     if not RECOVERY_LOCK_ENABLED:
         return False, get_recovery_lock_context(symbol)
 
@@ -5969,12 +6420,20 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score):
 
     setup_type = str(setup_type).upper()
 
+    # v25: un MAX_RECOVERY_BUY TP3+ ancora valido domina anche sui setup
+    # continuation/campaign.
+    recovery_dominance = get_recovery_dominance_context(symbol, data or {})
+    if recovery_dominance.get("active") and setup_type in RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS:
+        ctx["level"] = "RECOVERY_DOMINANT"
+        ctx["reason"] = recovery_dominance.get("reason")
+        ctx["best_trade"] = recovery_dominance.get("best_trade")
+        return True, ctx
+
     # v23: failed recovery confermato può superare il Recovery Lock solo con score forte.
     if setup_type == "PRE_BEAR_SELL" and int(score) >= PRE_BEAR_SELL_MIN_SCORE:
         return False, ctx
 
-    # v21: se la seconda macchina a stati ha già confermato bearish continuation,
-    # il SELL non viene bloccato da un vecchio Recovery Lock BUY.
+    # Continuation SELL può superare un vecchio lock solo se non c'è Recovery Dominance.
     if setup_type in [
         "BEAR_CAMPAIGN_SELL",
         "BEAR_CONTINUATION_SELL",
@@ -6072,7 +6531,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v24:\n"
+        f"Lettura v25:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -6436,6 +6895,9 @@ def webhook():
         for campaign_message in campaign_messages:
             send_telegram(campaign_message)
 
+        # v25: aggiorna l'arbitro centrale sul nuovo prezzo.
+        regime_ctx = get_regime_arbiter_context(data.get("symbol", "XAUUSD"), data)
+
         # v24: snapshot periodico della memoria runtime.
         save_runtime_state(force=False)
         warmup_ctx = warmup_status(data.get("symbol", "XAUUSD"))
@@ -6461,6 +6923,10 @@ def webhook():
             "warmup_elapsed_seconds": warmup_ctx.get("elapsed_seconds"),
             "warmup_update_count": warmup_ctx.get("update_count"),
             "runtime_state_restored": RUNTIME_STATE_RESTORED,
+            "regime_mode": regime_ctx.get("mode"),
+            "regime_reason": regime_ctx.get("reason"),
+            "recovery_dominance_active": regime_ctx.get("recovery", {}).get("active"),
+            "bear_trigger_mature": regime_ctx.get("maturity", {}).get("mature"),
             "campaign_id": campaign.get("campaign_id"),
             "campaign_status": campaign.get("status"),
             "campaign_legs": len(campaign.get("legs", [])),
@@ -6497,6 +6963,13 @@ def webhook():
         reasons,
         data,
         campaign_decision
+    )
+
+    # v25: decisione Smart Kill PRE_BEAR calcolata una sola volta.
+    _, precomputed_extreme_info = extreme_zone_info(signal, data)
+    smart_kill_decision = smart_kill_pre_bear_decision(
+        signal, symbol, setup_type, score, data,
+        extreme_info=precomputed_extreme_info
     )
 
     # =========================
@@ -6571,6 +7044,54 @@ Durante il cold start il bot non apre NORMAL SELL deboli senza memoria sufficien
             "score": score,
             "setup_type": setup_type,
             "warmup": warmup_ctx
+        })
+
+    # =========================
+    # REGIME ARBITER BLOCK v25
+    # =========================
+
+    block_regime, regime_ctx, regime_reason = should_block_by_regime_arbiter(
+        signal, symbol, setup_type, score, data
+    )
+
+    if block_regime:
+        maturity_ctx = regime_ctx.get("maturity", {})
+        recovery_ctx = regime_ctx.get("recovery", {})
+
+        text = f"""🧭🚫 SEGNALE BLOCCATO {VERSION}
+
+Motivo: Regime Arbiter
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{regime_arbiter_status_text(regime_ctx)}
+
+Dettaglio:
+{regime_reason}
+
+Trigger Maturity:
+{bear_trigger_maturity_text(maturity_ctx)}
+
+Recovery Dominance:
+{recovery_dominance_text(recovery_ctx)}
+
+Azione:
+Il bot usa una sola tesi dominante.
+- continuation/campaign SELL solo con trigger maturo
+- nessun continuation SELL contro MAX_RECOVERY_BUY TP3+ ancora valido
+- Deep Extension deve essere realmente riarmata
+"""
+        send_telegram(text)
+        return jsonify({
+            "status": "blocked_regime_arbiter",
+            "score": score,
+            "setup_type": setup_type,
+            "regime_mode": regime_ctx.get("mode"),
+            "regime_reason": regime_reason
         })
 
     # =========================
@@ -6836,7 +7357,8 @@ Aspetta un vero rimbalzo per riarmare SELL oppure favorisce MAX_RECOVERY_BUY.
         symbol,
         setup_type,
         score,
-        data
+        data,
+        smart_kill_decision=smart_kill_decision
     )
 
     if block_chaos:
@@ -6977,7 +7499,7 @@ Passa solo la direzione dominante.
     # RECOVERY LOCK BLOCK v13
     # =========================
 
-    block_recovery_lock, recovery_ctx = should_block_sell_by_recovery_lock(signal, symbol, setup_type, score)
+    block_recovery_lock, recovery_ctx = should_block_sell_by_recovery_lock(signal, symbol, setup_type, score, data)
 
     if block_recovery_lock:
         text = f"""🟢🔒 SELL BLOCCATO {VERSION}
@@ -7106,6 +7628,9 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
             campaign_decision
         )
 
+    if smart_kill_decision.get("allow"):
+        register_smart_kill_pre_bear_override(trade, smart_kill_decision)
+
     emoji = "🟢" if signal == "BUY" else "🔴"
 
     entry_low = data.get("entry_low", "")
@@ -7125,6 +7650,13 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
             f"🪜 Campaign Leg: {trade.get('campaign_leg')}/{CAMPAIGN_MAX_LEGS}",
             f"⚖️ Risk Weight Leg: {trade.get('campaign_risk_weight')}",
             f"📦 Risk Weight Totale: {get_bear_campaign(symbol).get('total_risk_weight')}/{CAMPAIGN_TOTAL_RISK_CAP}"
+        ])
+
+    if trade.get("smart_kill_override"):
+        lines.extend([
+            "🛡 Smart Kill Override: PRE_BEAR",
+            f"⚖️ Risk Weight Informativo: {trade.get('smart_kill_risk_weight')}",
+            f"🎟 Tentativo Override: {trade.get('smart_kill_attempt_number')}/{SMART_KILL_PRE_BEAR_MAX_ATTEMPTS}"
         ])
 
     if entry_low and entry_high:
@@ -7168,6 +7700,8 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
         "campaign_id": trade.get("campaign_id"),
         "campaign_leg": trade.get("campaign_leg"),
         "campaign_risk_weight": trade.get("campaign_risk_weight"),
+        "smart_kill_override": trade.get("smart_kill_override", False),
+        "smart_kill_risk_weight": trade.get("smart_kill_risk_weight"),
         "telegram_sent": telegram_sent
     })
 
