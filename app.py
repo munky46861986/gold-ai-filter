@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v25 Regime Arbiter + Recovery Dominance"
+VERSION = "v26 Special Buy Dominance + Max Zone Gate"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -557,20 +557,54 @@ REGIME_MATURITY_REQUIRED_SETUPS = {
     "SYNTHETIC_BEAR_CONTINUATION_SELL"
 }
 
-# Recovery BUY Dominance:
-# se un MAX_RECOVERY_BUY è OPEN e ha già raggiunto TP3+, i SELL continuation
-# non possono combatterlo finché il recovery non viene realmente invalidato.
+# v26: Special BUY Dominance
+# Non protegge più solo MAX_RECOVERY_BUY.
+# Se un BUY speciale funziona, il bot non lo combatte con SELL deboli o prematuri.
 RECOVERY_DOMINANCE_ENABLED = os.getenv("RECOVERY_DOMINANCE_ENABLED", "TRUE").upper() == "TRUE"
 RECOVERY_DOMINANCE_MIN_TP = int(os.getenv("RECOVERY_DOMINANCE_MIN_TP", "3"))
 RECOVERY_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_DOMINANCE_LOOKBACK_SECONDS", "7200"))
 RECOVERY_DOMINANCE_INVALIDATION_BUFFER = float(os.getenv("RECOVERY_DOMINANCE_INVALIDATION_BUFFER", "2.5"))
 RECOVERY_DOMINANCE_SETUPS = {
-    "MAX_RECOVERY_BUY"
+    "MAX_RECOVERY_BUY",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY"
 }
 RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS = {
     "BEAR_CAMPAIGN_SELL",
     "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL"
+}
+
+# v26: protezione più precoce contro SELL NORMAL.
+# Default 0 = blocca SELL NORMAL anche se il BUY speciale è appena OPEN
+# e non ha ancora preso TP1. Serve per evitare BUY buono + SELL normale debole.
+SPECIAL_BUY_NORMAL_SELL_MIN_TP = int(os.getenv("SPECIAL_BUY_NORMAL_SELL_MIN_TP", "0"))
+SPECIAL_BUY_BLOCK_NORMAL_SELL = os.getenv("SPECIAL_BUY_BLOCK_NORMAL_SELL", "TRUE").upper() == "TRUE"
+
+# Un SELL contro un BUY speciale attivo passa solo se è veramente da zona Max:
+# setup speciale, score alto, zona alta e micro-BOS.
+SPECIAL_BUY_COUNTER_SELL_MIN_SCORE = int(os.getenv("SPECIAL_BUY_COUNTER_SELL_MIN_SCORE", "22"))
+SPECIAL_BUY_COUNTER_SELL_REQUIRE_ZONE = os.getenv("SPECIAL_BUY_COUNTER_SELL_REQUIRE_ZONE", "TRUE").upper() == "TRUE"
+SPECIAL_BUY_COUNTER_SELL_REQUIRE_MICRO_BOS = os.getenv("SPECIAL_BUY_COUNTER_SELL_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
+SPECIAL_BUY_COUNTER_SELL_ALLOWED_SETUPS = {
+    "PRE_BEAR_SELL",
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL"
+}
+
+# v26: Max Zone Gate per SELL NORMAL.
+# I SELL NORMAL non devono nascere nel mezzo: o sono su zona alta/rejection,
+# oppure restano bloccati.
+MAX_ZONE_SELL_GATE_ENABLED = os.getenv("MAX_ZONE_SELL_GATE_ENABLED", "TRUE").upper() == "TRUE"
+MAX_ZONE_SELL_MIN_SCORE = int(os.getenv("MAX_ZONE_SELL_MIN_SCORE", "8"))
+MAX_ZONE_SELL_REQUIRE_HIGH_ZONE = os.getenv("MAX_ZONE_SELL_REQUIRE_HIGH_ZONE", "TRUE").upper() == "TRUE"
+MAX_ZONE_SELL_SETUPS = {
+    "NORMAL"
 }
 
 # Smart Daily Kill Switch Override per PRE_BEAR_SELL:
@@ -1164,6 +1198,14 @@ def health():
         "recovery_dominance_min_tp": RECOVERY_DOMINANCE_MIN_TP,
         "recovery_dominance_lookback_seconds": RECOVERY_DOMINANCE_LOOKBACK_SECONDS,
         "recovery_dominance_invalidation_buffer": RECOVERY_DOMINANCE_INVALIDATION_BUFFER,
+        "recovery_dominance_setups": list(RECOVERY_DOMINANCE_SETUPS),
+        "special_buy_normal_sell_min_tp": SPECIAL_BUY_NORMAL_SELL_MIN_TP,
+        "special_buy_block_normal_sell": SPECIAL_BUY_BLOCK_NORMAL_SELL,
+        "special_buy_counter_sell_min_score": SPECIAL_BUY_COUNTER_SELL_MIN_SCORE,
+        "special_buy_counter_sell_require_zone": SPECIAL_BUY_COUNTER_SELL_REQUIRE_ZONE,
+        "special_buy_counter_sell_require_micro_bos": SPECIAL_BUY_COUNTER_SELL_REQUIRE_MICRO_BOS,
+        "max_zone_sell_gate_enabled": MAX_ZONE_SELL_GATE_ENABLED,
+        "max_zone_sell_min_score": MAX_ZONE_SELL_MIN_SCORE,
         "smart_kill_pre_bear_override_enabled": SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED,
         "smart_kill_pre_bear_min_score": SMART_KILL_PRE_BEAR_MIN_SCORE,
         "smart_kill_pre_bear_max_attempts": SMART_KILL_PRE_BEAR_MAX_ATTEMPTS,
@@ -1648,7 +1690,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43/v44
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -3574,12 +3616,34 @@ def bear_trigger_maturity_text(ctx):
     )
 
 
-def get_recovery_dominance_context(symbol, data=None):
+def get_recovery_dominance_context(symbol, data=None, min_tp=None, setup_filter=None):
+    """
+    v26:
+    - Default min_tp=RECOVERY_DOMINANCE_MIN_TP crea il regime RECOVERY_DOMINANT.
+    - min_tp=SPECIAL_BUY_NORMAL_SELL_MIN_TP protegge prima contro SELL NORMAL.
+    - setup_filter consente future personalizzazioni.
+    """
     symbol = str(symbol or "XAUUSD").upper()
     data = data or {}
 
     if not RECOVERY_DOMINANCE_ENABLED:
-        return {"active": False, "reason": "Recovery Dominance disattivata", "best_trade": None, "trades": []}
+        return {
+            "active": False,
+            "reason": "Special BUY Dominance disattivata",
+            "best_trade": None,
+            "trades": []
+        }
+
+    effective_min_tp = (
+        RECOVERY_DOMINANCE_MIN_TP
+        if min_tp is None
+        else int(min_tp)
+    )
+    effective_setups = set(
+        setup_filter
+        if setup_filter is not None
+        else RECOVERY_DOMINANCE_SETUPS
+    )
 
     price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
     now = now_ts()
@@ -3588,71 +3652,109 @@ def get_recovery_dominance_context(symbol, data=None):
     for trade in OPEN_TRADES:
         if str(trade.get("symbol", "")).upper() != symbol:
             continue
+
         if str(trade.get("signal", "")).upper() != "BUY":
             continue
-        if str(trade.get("setup_type", "")).upper() not in RECOVERY_DOMINANCE_SETUPS:
+
+        setup_name = str(trade.get("setup_type", "")).upper()
+
+        if setup_name not in effective_setups:
             continue
+
         if trade.get("status") not in ["OPEN", "PENDING"]:
             continue
+
         if now - (trade.get("created") or 0) > RECOVERY_DOMINANCE_LOOKBACK_SECONDS:
             continue
 
         highest_tp = int(trade.get("highest_tp", 0))
-        if highest_tp < RECOVERY_DOMINANCE_MIN_TP:
+
+        if highest_tp < effective_min_tp:
             continue
 
         entry_low = to_float(trade.get("entry_low"), 0)
         entry_high = to_float(trade.get("entry_high"), 0)
+
         if not entry_low and entry_high:
             entry_low = entry_high
 
-        invalidation_price = entry_low - RECOVERY_DOMINANCE_INVALIDATION_BUFFER if entry_low else 0
-        invalidated = bool(invalidation_price and price and price <= invalidation_price)
+        invalidation_price = (
+            entry_low - RECOVERY_DOMINANCE_INVALIDATION_BUFFER
+            if entry_low
+            else 0
+        )
+
+        invalidated = bool(
+            invalidation_price
+            and price
+            and price <= invalidation_price
+        )
 
         candidates.append({
             "trade": trade,
+            "setup": setup_name,
             "highest_tp": highest_tp,
             "entry_low": entry_low,
             "entry_high": entry_high,
             "invalidation_price": invalidation_price,
             "invalidated": invalidated,
-            "price": price
+            "price": price,
+            "effective_min_tp": effective_min_tp
         })
 
     if not candidates:
-        return {"active": False, "reason": "Nessun MAX_RECOVERY_BUY OPEN con TP sufficiente", "best_trade": None, "trades": []}
+        return {
+            "active": False,
+            "reason": f"Nessun BUY speciale OPEN con TP >= {effective_min_tp}",
+            "best_trade": None,
+            "trades": [],
+            "effective_min_tp": effective_min_tp
+        }
 
     candidates = sorted(
         candidates,
         key=lambda x: (
             x.get("highest_tp", 0),
-            x.get("trade", {}).get("last_tp_time") or x.get("trade", {}).get("created") or 0
+            x.get("trade", {}).get("last_tp_time")
+            or x.get("trade", {}).get("created")
+            or 0
         ),
         reverse=True
     )
 
-    active_candidates = [item for item in candidates if not item.get("invalidated")]
+    active_candidates = [
+        item for item in candidates
+        if not item.get("invalidated")
+    ]
+
     if not active_candidates:
         best_ctx = candidates[0]
         return {
             "active": False,
-            "reason": "Recovery BUY invalidato sotto zona ingresso",
+            "reason": "BUY speciale invalidato sotto zona ingresso",
             "best_trade": best_ctx.get("trade"),
             "trades": candidates,
             "invalidation_price": best_ctx.get("invalidation_price"),
-            "price": price
+            "price": price,
+            "effective_min_tp": effective_min_tp
         }
 
     best_ctx = active_candidates[0]
     best = best_ctx.get("trade") or {}
+    best_setup = best_ctx.get("setup", best.get("setup_type", "BUY"))
+
     return {
         "active": True,
-        "reason": f"MAX_RECOVERY_BUY OPEN con TP{best_ctx.get('highest_tp')} e struttura non invalidata",
+        "reason": (
+            f"{best_setup} OPEN con TP{best_ctx.get('highest_tp')} "
+            f"e struttura non invalidata"
+        ),
         "best_trade": best,
         "trades": active_candidates,
         "highest_tp": best_ctx.get("highest_tp"),
         "invalidation_price": best_ctx.get("invalidation_price"),
-        "price": price
+        "price": price,
+        "effective_min_tp": effective_min_tp
     }
 
 
@@ -3667,6 +3769,166 @@ def recovery_dominance_text(ctx):
         f"Status BUY: {best.get('status', 'N/D')}\n"
         f"Invalidation: {round(to_float((ctx or {}).get('invalidation_price')), 3)}\n"
         f"Prezzo: {round(to_float((ctx or {}).get('price')), 3)}"
+    )
+
+
+
+def special_buy_counter_sell_override_context(symbol, setup_type, score, data, special_ctx=None):
+    """
+    Decide se un SELL può combattere un BUY speciale attivo.
+    Regola v26:
+    - setup speciale
+    - score alto
+    - zona alta Max
+    - micro-BOS, se richiesto
+    """
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    if special_ctx is None:
+        special_ctx = get_recovery_dominance_context(
+            symbol,
+            data,
+            min_tp=SPECIAL_BUY_NORMAL_SELL_MIN_TP
+        )
+
+    extreme_ok, extreme_info = extreme_zone_info("SELL", data)
+    micro_ctx = micro_bos_bear_context(symbol, data)
+
+    setup_ok = setup_type in SPECIAL_BUY_COUNTER_SELL_ALLOWED_SETUPS
+    score_ok = int(score) >= SPECIAL_BUY_COUNTER_SELL_MIN_SCORE
+    zone_ok = bool(
+        extreme_ok
+        or to_bool(data.get("near_m15_high", "false"))
+        or to_bool(data.get("near_day_high", "false"))
+        or str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+    )
+    micro_ok = bool(
+        micro_ctx.get("confirmed")
+        or not SPECIAL_BUY_COUNTER_SELL_REQUIRE_MICRO_BOS
+    )
+
+    allow = bool(
+        setup_ok
+        and score_ok
+        and (
+            zone_ok
+            or not SPECIAL_BUY_COUNTER_SELL_REQUIRE_ZONE
+        )
+        and micro_ok
+    )
+
+    return {
+        "allow": allow,
+        "setup_ok": setup_ok,
+        "score_ok": score_ok,
+        "zone_ok": zone_ok,
+        "micro_ok": micro_ok,
+        "score": score,
+        "required_score": SPECIAL_BUY_COUNTER_SELL_MIN_SCORE,
+        "setup_type": setup_type,
+        "extreme_info": extreme_info,
+        "micro_bos": micro_ctx,
+        "special_buy": special_ctx
+    }
+
+
+def special_buy_counter_sell_text(ctx):
+    best = (ctx or {}).get("special_buy", {}).get("best_trade") or {}
+    extreme = (ctx or {}).get("extreme_info") or {}
+    micro = (ctx or {}).get("micro_bos") or {}
+
+    return (
+        f"Allow: {(ctx or {}).get('allow')}\n"
+        f"Setup ok: {(ctx or {}).get('setup_ok')}\n"
+        f"Score ok: {(ctx or {}).get('score_ok')} "
+        f"({(ctx or {}).get('score')}/{(ctx or {}).get('required_score')})\n"
+        f"Zona Max ok: {(ctx or {}).get('zone_ok')}\n"
+        f"Micro BOS ok: {(ctx or {}).get('micro_ok')}\n"
+        f"BUY riferimento: {best.get('id', 'N/D')}\n"
+        f"Setup BUY: {best.get('setup_type', 'N/D')}\n"
+        f"Highest TP BUY: {best.get('highest_tp', 0)}\n"
+        f"Zona side: {extreme.get('side', 'N/D')}\n"
+        f"Day position: {round(to_float(extreme.get('day_position')), 3)}\n"
+        f"Micro BOS: {micro.get('confirmed')}"
+    )
+
+
+def max_zone_sell_gate_context(signal, symbol, setup_type, score, data):
+    signal = str(signal or "").upper()
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    if not MAX_ZONE_SELL_GATE_ENABLED:
+        return {"block": False, "reason": "Max Zone Gate disattivato"}
+
+    if signal != "SELL":
+        return {"block": False, "reason": "Non è SELL"}
+
+    if setup_type not in MAX_ZONE_SELL_SETUPS:
+        return {"block": False, "reason": "Setup esente dal Max Zone Gate"}
+
+    extreme_ok, extreme_info = extreme_zone_info("SELL", data)
+    upper_rejection = bool(
+        str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+    )
+    near_high = bool(
+        to_bool(data.get("near_m15_high", "false"))
+        or to_bool(data.get("near_day_high", "false"))
+    )
+
+    zone_ok = bool(
+        extreme_ok
+        or near_high
+        or upper_rejection
+    )
+
+    score_ok = int(score) >= MAX_ZONE_SELL_MIN_SCORE
+
+    block = bool(
+        not (
+            score_ok
+            and (
+                zone_ok
+                or not MAX_ZONE_SELL_REQUIRE_HIGH_ZONE
+            )
+        )
+    )
+
+    return {
+        "block": block,
+        "reason": (
+            "SELL NORMAL non è in zona Max alta"
+            if block
+            else "SELL NORMAL in zona Max valida"
+        ),
+        "score_ok": score_ok,
+        "zone_ok": zone_ok,
+        "upper_rejection": upper_rejection,
+        "near_high": near_high,
+        "extreme_info": extreme_info,
+        "score": score,
+        "required_score": MAX_ZONE_SELL_MIN_SCORE
+    }
+
+
+def max_zone_sell_gate_text(ctx):
+    extreme = (ctx or {}).get("extreme_info") or {}
+
+    return (
+        f"Block: {(ctx or {}).get('block')}\n"
+        f"Reason: {(ctx or {}).get('reason')}\n"
+        f"Score: {(ctx or {}).get('score')}/{(ctx or {}).get('required_score')}\n"
+        f"Score ok: {(ctx or {}).get('score_ok')}\n"
+        f"Zona ok: {(ctx or {}).get('zone_ok')}\n"
+        f"Near high: {(ctx or {}).get('near_high')}\n"
+        f"Upper rejection: {(ctx or {}).get('upper_rejection')}\n"
+        f"Extreme side: {extreme.get('side', 'N/D')}\n"
+        f"Day position: {round(to_float(extreme.get('day_position')), 3)}"
     )
 
 
@@ -3745,21 +4007,97 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
 
     signal = str(signal or "").upper()
     setup_type = str(setup_type or "NORMAL").upper()
+
     if signal != "SELL":
-        return False, ctx, "Il Regime Arbiter v25 governa qui i conflitti SELL"
+        return False, ctx, "Il Regime Arbiter v26 governa qui i conflitti SELL"
+
+    # v26: protezione precoce di qualunque BUY speciale aperto.
+    # Serve a evitare: BUY speciale corretto + SELL NORMAL debole subito dopo.
+    special_buy_ctx = get_recovery_dominance_context(
+        symbol,
+        data,
+        min_tp=SPECIAL_BUY_NORMAL_SELL_MIN_TP
+    )
+    ctx["special_buy_protection"] = special_buy_ctx
+
+    if special_buy_ctx.get("active"):
+        if setup_type == "NORMAL" and SPECIAL_BUY_BLOCK_NORMAL_SELL:
+            return (
+                True,
+                ctx,
+                "Special BUY Protection: SELL NORMAL bloccato contro BUY speciale attivo"
+            )
+
+        counter_ctx = special_buy_counter_sell_override_context(
+            symbol,
+            setup_type,
+            score,
+            data,
+            special_ctx=special_buy_ctx
+        )
+        ctx["counter_sell_override"] = counter_ctx
+
+        if not counter_ctx.get("allow"):
+            return (
+                True,
+                ctx,
+                "Special BUY Dominance: SELL contro BUY speciale non abbastanza forte / non in zona Max"
+            )
+
+    # v26: SELL NORMAL solo da zona alta/rejection stile Max.
+    max_zone_ctx = max_zone_sell_gate_context(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+    ctx["max_zone_gate"] = max_zone_ctx
+
+    if max_zone_ctx.get("block"):
+        return (
+            True,
+            ctx,
+            "Max Zone Gate: SELL NORMAL bloccato perché non nasce da zona alta valida"
+        )
 
     if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
         recovery_ctx = ctx.get("recovery", {})
-        if recovery_ctx.get("active") and setup_type in RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS:
-            return True, ctx, "Recovery BUY Dominance: continuation SELL non può combattere un MAX_RECOVERY_BUY TP3+ ancora valido"
+
+        if (
+            recovery_ctx.get("active")
+            and setup_type in RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS
+        ):
+            return (
+                True,
+                ctx,
+                "Special BUY Dominance: continuation SELL non può combattere "
+                "un BUY speciale TP3+ ancora valido"
+            )
 
         deep_ctx = ctx.get("deep_extension", {})
-        if deep_ctx.get("active") and to_float(deep_ctx.get("rebound_from_low"), 0) < DEEP_EXTENSION_REARM_REBOUND_POINTS:
-            return True, ctx, "Deep Extension: continuation SELL non riarmato; rimbalzo dal low insufficiente"
+
+        if (
+            deep_ctx.get("active")
+            and to_float(deep_ctx.get("rebound_from_low"), 0)
+            < DEEP_EXTENSION_REARM_REBOUND_POINTS
+        ):
+            return (
+                True,
+                ctx,
+                "Deep Extension: continuation SELL non riarmato; "
+                "rimbalzo dal low insufficiente"
+            )
 
         maturity_ctx = ctx.get("maturity", {})
+
         if not maturity_ctx.get("mature"):
-            return True, ctx, "Trigger Maturity obbligatoria: SELL continuation/campaign ancora immaturo"
+            return (
+                True,
+                ctx,
+                "Trigger Maturity obbligatoria: "
+                "SELL continuation/campaign ancora immaturo"
+            )
 
     return False, ctx, "Regime coerente con il setup"
 
@@ -6531,7 +6869,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v25:\n"
+        f"Lettura v26:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -7076,13 +7414,21 @@ Dettaglio:
 Trigger Maturity:
 {bear_trigger_maturity_text(maturity_ctx)}
 
-Recovery Dominance:
+Special BUY Dominance:
 {recovery_dominance_text(recovery_ctx)}
+
+Special BUY Protection:
+{special_buy_counter_sell_text(regime_ctx.get('counter_sell_override', {}))}
+
+Max Zone Gate:
+{max_zone_sell_gate_text(regime_ctx.get('max_zone_gate', {}))}
 
 Azione:
 Il bot usa una sola tesi dominante.
+- SELL NORMAL bloccati contro BUY speciale attivo
 - continuation/campaign SELL solo con trigger maturo
-- nessun continuation SELL contro MAX_RECOVERY_BUY TP3+ ancora valido
+- nessun continuation SELL contro BUY speciale TP3+ ancora valido
+- SELL contro BUY forte solo se speciale, in zona Max, score alto e micro-BOS
 - Deep Extension deve essere realmente riarmata
 """
         send_telegram(text)
