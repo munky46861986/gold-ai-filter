@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v26 Special Buy Dominance + Max Zone Gate"
+VERSION = "v27 Trade Compression + Sell Profit Lock"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -606,6 +606,29 @@ MAX_ZONE_SELL_REQUIRE_HIGH_ZONE = os.getenv("MAX_ZONE_SELL_REQUIRE_HIGH_ZONE", "
 MAX_ZONE_SELL_SETUPS = {
     "NORMAL"
 }
+
+# v27: Trade Compression / Sell Profit Lock
+# Quando la view SELL ha già pagato molto, il bot smette di spezzare
+# la stessa idea in troppi SELL consecutivi. Rientra solo su nuova zona Max
+# o su continuation/campaign veramente riarmata.
+SELL_PROFIT_LOCK_ENABLED = os.getenv("SELL_PROFIT_LOCK_ENABLED", "TRUE").upper() == "TRUE"
+SELL_PROFIT_LOCK_TP_LEVEL = int(os.getenv("SELL_PROFIT_LOCK_TP_LEVEL", "8"))
+SELL_PROFIT_LOCK_TP5_LEVEL = int(os.getenv("SELL_PROFIT_LOCK_TP5_LEVEL", "5"))
+SELL_PROFIT_LOCK_TP5_COUNT = int(os.getenv("SELL_PROFIT_LOCK_TP5_COUNT", "2"))
+SELL_PROFIT_LOCK_LOOKBACK_SECONDS = int(os.getenv("SELL_PROFIT_LOCK_LOOKBACK_SECONDS", "7200"))
+SELL_PROFIT_LOCK_SECONDS = int(os.getenv("SELL_PROFIT_LOCK_SECONDS", "5400"))
+SELL_PROFIT_LOCK_REARM_REBOUND_POINTS = float(os.getenv("SELL_PROFIT_LOCK_REARM_REBOUND_POINTS", "15"))
+
+# Cosa bloccare dopo che il SELL ha già pagato.
+SELL_PROFIT_LOCK_BLOCK_NORMAL = os.getenv("SELL_PROFIT_LOCK_BLOCK_NORMAL", "TRUE").upper() == "TRUE"
+SELL_PROFIT_LOCK_BLOCK_SYNTHETIC = os.getenv("SELL_PROFIT_LOCK_BLOCK_SYNTHETIC", "TRUE").upper() == "TRUE"
+
+# Eccezioni controllate: nuove vendite consentite solo se davvero in zona Max.
+SELL_PROFIT_LOCK_ALLOW_MAX_FADE_SCORE = int(os.getenv("SELL_PROFIT_LOCK_ALLOW_MAX_FADE_SCORE", "18"))
+SELL_PROFIT_LOCK_ALLOW_PRE_BEAR_SCORE = int(os.getenv("SELL_PROFIT_LOCK_ALLOW_PRE_BEAR_SCORE", "20"))
+SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE = int(os.getenv("SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE", "22"))
+SELL_PROFIT_LOCK_REQUIRE_MICRO_BOS = os.getenv("SELL_PROFIT_LOCK_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
+SELL_PROFIT_LOCK_REQUIRE_MAX_ZONE = os.getenv("SELL_PROFIT_LOCK_REQUIRE_MAX_ZONE", "TRUE").upper() == "TRUE"
 
 # Smart Daily Kill Switch Override per PRE_BEAR_SELL:
 # una sola eccezione controllata, solo da zona estrema e con score alto.
@@ -1206,6 +1229,14 @@ def health():
         "special_buy_counter_sell_require_micro_bos": SPECIAL_BUY_COUNTER_SELL_REQUIRE_MICRO_BOS,
         "max_zone_sell_gate_enabled": MAX_ZONE_SELL_GATE_ENABLED,
         "max_zone_sell_min_score": MAX_ZONE_SELL_MIN_SCORE,
+        "sell_profit_lock_enabled": SELL_PROFIT_LOCK_ENABLED,
+        "sell_profit_lock_tp_level": SELL_PROFIT_LOCK_TP_LEVEL,
+        "sell_profit_lock_tp5_level": SELL_PROFIT_LOCK_TP5_LEVEL,
+        "sell_profit_lock_tp5_count": SELL_PROFIT_LOCK_TP5_COUNT,
+        "sell_profit_lock_seconds": SELL_PROFIT_LOCK_SECONDS,
+        "sell_profit_lock_rearm_rebound_points": SELL_PROFIT_LOCK_REARM_REBOUND_POINTS,
+        "sell_profit_lock_allow_max_fade_score": SELL_PROFIT_LOCK_ALLOW_MAX_FADE_SCORE,
+        "sell_profit_lock_allow_campaign_score": SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE,
         "smart_kill_pre_bear_override_enabled": SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED,
         "smart_kill_pre_bear_min_score": SMART_KILL_PRE_BEAR_MIN_SCORE,
         "smart_kill_pre_bear_max_attempts": SMART_KILL_PRE_BEAR_MAX_ATTEMPTS,
@@ -1690,7 +1721,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43/v44
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43/v44/v45
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -3932,6 +3963,293 @@ def max_zone_sell_gate_text(ctx):
     )
 
 
+
+def _tp_event_time_for_level(trade, level):
+    return (
+        trade.get(f"tp{level}_time")
+        or trade.get("last_tp_time")
+        or trade.get("closed")
+        or trade.get("created")
+        or 0
+    )
+
+
+def get_sell_profit_lock_context(symbol, data=None):
+    """
+    v27 Trade Compression.
+    Attivo quando:
+    - almeno 1 SELL recente ha preso TP8/runner
+    oppure
+    - almeno N SELL recenti hanno preso TP5+
+    Poi blocca nuove entrate simili finché non c'è nuovo rimbalzo/zona Max.
+    """
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    if not SELL_PROFIT_LOCK_ENABLED:
+        return {
+            "active": False,
+            "reason": "Sell Profit Lock disattivato",
+            "recent_tp_deep": [],
+            "recent_tp5": []
+        }
+
+    recent_deep = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=SELL_PROFIT_LOCK_TP_LEVEL,
+        lookback_seconds=SELL_PROFIT_LOCK_LOOKBACK_SECONDS
+    )
+
+    recent_tp5 = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=SELL_PROFIT_LOCK_TP5_LEVEL,
+        lookback_seconds=SELL_PROFIT_LOCK_LOOKBACK_SECONDS
+    )
+
+    recent_runner = [
+        t for t in OPEN_TRADES
+        if str(t.get("symbol", "")).upper() == symbol
+        and str(t.get("signal", "")).upper() == "SELL"
+        and bool(t.get("runner"))
+        and now_ts() - (t.get("last_tp_time") or t.get("created") or 0) <= SELL_PROFIT_LOCK_LOOKBACK_SECONDS
+    ]
+
+    trigger_deep = len(recent_deep) >= 1 or len(recent_runner) >= 1
+    trigger_cluster = len(recent_tp5) >= SELL_PROFIT_LOCK_TP5_COUNT
+
+    event_times = []
+    for trade in recent_deep:
+        event_times.append(_tp_event_time_for_level(trade, SELL_PROFIT_LOCK_TP_LEVEL))
+    for trade in recent_tp5:
+        event_times.append(_tp_event_time_for_level(trade, SELL_PROFIT_LOCK_TP5_LEVEL))
+    for trade in recent_runner:
+        event_times.append(trade.get("last_tp_time") or trade.get("created") or 0)
+
+    latest_event = max(event_times) if event_times else 0
+    seconds_since_event = now_ts() - latest_event if latest_event else 999999999
+
+    lock_by_time = bool(
+        latest_event
+        and seconds_since_event <= SELL_PROFIT_LOCK_SECONDS
+    )
+
+    deep_ctx = get_deep_extension_context(symbol, data)
+    rebound_from_low = to_float(deep_ctx.get("rebound_from_low"), 0)
+    rearmed_by_rebound = bool(
+        rebound_from_low >= SELL_PROFIT_LOCK_REARM_REBOUND_POINTS
+    )
+
+    active = bool(
+        (trigger_deep or trigger_cluster)
+        and lock_by_time
+        and not rearmed_by_rebound
+    )
+
+    if trigger_deep:
+        reason = f"SELL già arrivato a TP{SELL_PROFIT_LOCK_TP_LEVEL}/Runner"
+    elif trigger_cluster:
+        reason = f"{len(recent_tp5)} SELL recenti arrivati almeno a TP{SELL_PROFIT_LOCK_TP5_LEVEL}"
+    else:
+        reason = "Nessun profitto SELL profondo recente"
+
+    return {
+        "active": active,
+        "trigger_deep": trigger_deep,
+        "trigger_cluster": trigger_cluster,
+        "reason": reason,
+        "recent_tp_deep": recent_deep,
+        "recent_tp5": recent_tp5,
+        "recent_runner": recent_runner,
+        "latest_event": latest_event,
+        "seconds_since_event": seconds_since_event,
+        "lock_by_time": lock_by_time,
+        "deep_extension": deep_ctx,
+        "rebound_from_low": rebound_from_low,
+        "rearmed_by_rebound": rearmed_by_rebound,
+        "rearm_rebound_required": SELL_PROFIT_LOCK_REARM_REBOUND_POINTS
+    }
+
+
+def sell_profit_lock_status_text(ctx):
+    return (
+        f"Active: {ctx.get('active')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Recent SELL TP{SELL_PROFIT_LOCK_TP_LEVEL}+: {len(ctx.get('recent_tp_deep', []))}\n"
+        f"Recent SELL TP{SELL_PROFIT_LOCK_TP5_LEVEL}+: {len(ctx.get('recent_tp5', []))}\n"
+        f"Runner SELL recenti: {len(ctx.get('recent_runner', []))}\n"
+        f"Seconds since event: {round(to_float(ctx.get('seconds_since_event')), 1)} / {SELL_PROFIT_LOCK_SECONDS}\n"
+        f"Rebound low: {round(to_float(ctx.get('rebound_from_low')), 2)} / {SELL_PROFIT_LOCK_REARM_REBOUND_POINTS}\n"
+        f"Rearmed by rebound: {ctx.get('rearmed_by_rebound')}"
+    )
+
+
+def sell_profit_lock_allow_context(symbol, setup_type, score, data, lock_ctx=None):
+    """
+    Decide se un nuovo SELL può passare durante Sell Profit Lock.
+    Default: blocca i SELL simili; consente solo rientri stile Max su nuova zona.
+    """
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    if lock_ctx is None:
+        lock_ctx = get_sell_profit_lock_context(symbol, data)
+
+    if not lock_ctx.get("active"):
+        return {
+            "allow": True,
+            "reason": "Sell Profit Lock non attivo",
+            "setup_type": setup_type
+        }
+
+    max_zone_ctx = max_zone_sell_gate_context(
+        "SELL",
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+    micro_ctx = micro_bos_bear_context(symbol, data)
+    maturity_ctx = bear_trigger_maturity_context(symbol, data)
+
+    zone_ok = bool(
+        max_zone_ctx.get("zone_ok")
+        or max_zone_ctx.get("near_high")
+        or max_zone_ctx.get("upper_rejection")
+    )
+    micro_ok = bool(
+        micro_ctx.get("confirmed")
+        or not SELL_PROFIT_LOCK_REQUIRE_MICRO_BOS
+    )
+    required_zone_ok = bool(
+        zone_ok
+        or not SELL_PROFIT_LOCK_REQUIRE_MAX_ZONE
+    )
+    rebound_ok = bool(lock_ctx.get("rearmed_by_rebound"))
+
+    allow = False
+    reason = "SELL bloccato: campagna già pagata, attendo nuova zona Max"
+
+    if setup_type == "NORMAL":
+        allow = not SELL_PROFIT_LOCK_BLOCK_NORMAL
+        reason = (
+            "SELL NORMAL permesso perché blocco NORMAL disattivato"
+            if allow
+            else "SELL NORMAL bloccato: dopo TP profondi non inseguo altri SELL normali"
+        )
+
+    elif setup_type == "MAX_FADE_SELL":
+        allow = bool(
+            int(score) >= SELL_PROFIT_LOCK_ALLOW_MAX_FADE_SCORE
+            and required_zone_ok
+            and micro_ok
+        )
+        reason = (
+            "MAX_FADE_SELL ammesso: nuova zona Max confermata"
+            if allow
+            else "MAX_FADE_SELL bloccato: serve score/zona Max/micro-BOS migliori"
+        )
+
+    elif setup_type == "PRE_BEAR_SELL":
+        allow = bool(
+            int(score) >= SELL_PROFIT_LOCK_ALLOW_PRE_BEAR_SCORE
+            and required_zone_ok
+            and micro_ok
+        )
+        reason = (
+            "PRE_BEAR_SELL ammesso: failed recovery forte da zona alta"
+            if allow
+            else "PRE_BEAR_SELL bloccato: non abbastanza forte dopo profitto SELL"
+        )
+
+    elif setup_type in [
+        "BEAR_CAMPAIGN_SELL",
+        "BEAR_CONTINUATION_SELL",
+        "SYNTHETIC_BEAR_CONTINUATION_SELL"
+    ]:
+        if SELL_PROFIT_LOCK_BLOCK_SYNTHETIC:
+            allow = bool(
+                int(score) >= SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE
+                and rebound_ok
+                and required_zone_ok
+                and micro_ok
+                and maturity_ctx.get("mature")
+            )
+            reason = (
+                "Continuation/Campaign ammessa: nuovo rimbalzo riarmato e trigger maturo"
+                if allow
+                else "Continuation/Campaign bloccata: movimento SELL già pagato, manca nuovo rimbalzo maturo"
+            )
+        else:
+            allow = True
+            reason = "Continuation/Campaign permessa perché blocco synthetic disattivato"
+
+    elif setup_type in [
+        "MAX_VIEW_SELL",
+        "MAX_FAILED_RETEST_SELL",
+        "SYNTHETIC_FAILED_RETEST_SELL",
+        "MAX_EVENT_SPIKE_SELL"
+    ]:
+        allow = bool(
+            int(score) >= SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE
+            and required_zone_ok
+            and micro_ok
+        )
+        reason = (
+            "SELL speciale ammesso durante profit lock"
+            if allow
+            else "SELL speciale bloccato: serve nuova zona Max più pulita"
+        )
+
+    else:
+        allow = bool(
+            int(score) >= SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE
+            and required_zone_ok
+            and micro_ok
+        )
+        reason = (
+            "SELL non standard ammesso durante profit lock"
+            if allow
+            else "SELL non standard bloccato durante profit lock"
+        )
+
+    return {
+        "allow": allow,
+        "reason": reason,
+        "setup_type": setup_type,
+        "score": score,
+        "zone_ok": zone_ok,
+        "required_zone_ok": required_zone_ok,
+        "micro_ok": micro_ok,
+        "micro_bos": micro_ctx,
+        "maturity": maturity_ctx,
+        "max_zone": max_zone_ctx,
+        "rebound_ok": rebound_ok,
+        "lock": lock_ctx
+    }
+
+
+def sell_profit_lock_allow_text(ctx):
+    max_zone = (ctx or {}).get("max_zone") or {}
+    micro = (ctx or {}).get("micro_bos") or {}
+    maturity = (ctx or {}).get("maturity") or {}
+
+    return (
+        f"Allow: {(ctx or {}).get('allow')}\n"
+        f"Reason: {(ctx or {}).get('reason')}\n"
+        f"Setup: {(ctx or {}).get('setup_type')}\n"
+        f"Score: {(ctx or {}).get('score')}\n"
+        f"Zona ok: {(ctx or {}).get('zone_ok')}\n"
+        f"Micro BOS ok: {(ctx or {}).get('micro_ok')}\n"
+        f"Rebound ok: {(ctx or {}).get('rebound_ok')}\n"
+        f"Max Zone day position: {round(to_float((max_zone.get('extreme_info') or {}).get('day_position')), 3)}\n"
+        f"Micro BOS: {micro.get('confirmed')}\n"
+        f"Bear maturity: {maturity.get('mature')}"
+    )
+
+
 def get_regime_arbiter_state(symbol):
     symbol = str(symbol or "XAUUSD").upper()
     if symbol not in REGIME_ARBITER_STATE:
@@ -3954,6 +4272,7 @@ def get_regime_arbiter_context(symbol, data=None):
     recovery_ctx = get_recovery_dominance_context(symbol, data)
     maturity_ctx = bear_trigger_maturity_context(symbol, data)
     deep_ctx = get_deep_extension_context(symbol, data)
+    sell_profit_lock_ctx = get_sell_profit_lock_context(symbol, data)
     pre_bear = get_pre_bear_state(symbol)
     pre_bear_status = str(pre_bear.get("status", "IDLE")).upper()
     bear_state = get_bear_continuation_state(symbol)
@@ -3961,6 +4280,8 @@ def get_regime_arbiter_context(symbol, data=None):
 
     if recovery_ctx.get("active"):
         mode, reason = "RECOVERY_DOMINANT", recovery_ctx.get("reason")
+    elif sell_profit_lock_ctx.get("active"):
+        mode, reason = "SELL_PROFIT_LOCK", sell_profit_lock_ctx.get("reason")
     elif deep_ctx.get("active"):
         mode, reason = "DEEP_EXTENSION", "SELL già molto pagato / prezzo vicino low"
     elif maturity_ctx.get("mature"):
@@ -3982,6 +4303,7 @@ def get_regime_arbiter_context(symbol, data=None):
         "recovery": recovery_ctx,
         "maturity": maturity_ctx,
         "deep_extension": deep_ctx,
+        "sell_profit_lock": sell_profit_lock_ctx,
         "pre_bear_status": pre_bear_status,
         "bear_state": bear_state_name
     }
@@ -3994,6 +4316,7 @@ def regime_arbiter_status_text(ctx):
         f"Bear state: {ctx.get('bear_state')}\n"
         f"Pre-Bear: {ctx.get('pre_bear_status')}\n"
         f"Recovery dominant: {ctx.get('recovery', {}).get('active')}\n"
+        f"Sell profit lock: {ctx.get('sell_profit_lock', {}).get('active')}\n"
         f"Bear maturity: {ctx.get('maturity', {}).get('mature')}\n"
         f"Deep extension: {ctx.get('deep_extension', {}).get('active')}"
     )
@@ -4060,6 +4383,27 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
             ctx,
             "Max Zone Gate: SELL NORMAL bloccato perché non nasce da zona alta valida"
         )
+
+    # v27: Trade Compression / Sell Profit Lock.
+    profit_lock_ctx = ctx.get("sell_profit_lock") or get_sell_profit_lock_context(symbol, data)
+    ctx["sell_profit_lock"] = profit_lock_ctx
+
+    if profit_lock_ctx.get("active"):
+        profit_lock_allow_ctx = sell_profit_lock_allow_context(
+            symbol,
+            setup_type,
+            score,
+            data,
+            lock_ctx=profit_lock_ctx
+        )
+        ctx["sell_profit_lock_allow"] = profit_lock_allow_ctx
+
+        if not profit_lock_allow_ctx.get("allow"):
+            return (
+                True,
+                ctx,
+                "Sell Profit Lock: la view SELL ha già pagato, attendo nuovo rimbalzo/zona Max"
+            )
 
     if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
         recovery_ctx = ctx.get("recovery", {})
@@ -6869,7 +7213,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v26:\n"
+        f"Lettura v27:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -7264,6 +7608,8 @@ def webhook():
             "regime_mode": regime_ctx.get("mode"),
             "regime_reason": regime_ctx.get("reason"),
             "recovery_dominance_active": regime_ctx.get("recovery", {}).get("active"),
+            "sell_profit_lock_active": regime_ctx.get("sell_profit_lock", {}).get("active"),
+            "sell_profit_lock_reason": regime_ctx.get("sell_profit_lock", {}).get("reason"),
             "bear_trigger_mature": regime_ctx.get("maturity", {}).get("mature"),
             "campaign_id": campaign.get("campaign_id"),
             "campaign_status": campaign.get("status"),
@@ -7423,12 +7769,19 @@ Special BUY Protection:
 Max Zone Gate:
 {max_zone_sell_gate_text(regime_ctx.get('max_zone_gate', {}))}
 
+Sell Profit Lock:
+{sell_profit_lock_status_text(regime_ctx.get('sell_profit_lock', {}))}
+
+Profit Lock Allow:
+{sell_profit_lock_allow_text(regime_ctx.get('sell_profit_lock_allow', {}))}
+
 Azione:
 Il bot usa una sola tesi dominante.
 - SELL NORMAL bloccati contro BUY speciale attivo
 - continuation/campaign SELL solo con trigger maturo
 - nessun continuation SELL contro BUY speciale TP3+ ancora valido
 - SELL contro BUY forte solo se speciale, in zona Max, score alto e micro-BOS
+- se il SELL ha già preso TP8/Runner, comprimo nuove entrate simili
 - Deep Extension deve essere realmente riarmata
 """
         send_telegram(text)
