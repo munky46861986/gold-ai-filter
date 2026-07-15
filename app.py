@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v27 Trade Compression + Sell Profit Lock"
+VERSION = "v28 True Max Zone + Big Move Thesis"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -630,6 +630,60 @@ SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE = int(os.getenv("SELL_PROFIT_LOCK_ALLOW_CA
 SELL_PROFIT_LOCK_REQUIRE_MICRO_BOS = os.getenv("SELL_PROFIT_LOCK_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
 SELL_PROFIT_LOCK_REQUIRE_MAX_ZONE = os.getenv("SELL_PROFIT_LOCK_REQUIRE_MAX_ZONE", "TRUE").upper() == "TRUE"
 
+# v28: Loss Recovery + True Max Zone Re-entry
+# Dopo 2 SL SELL diretti il bot non deve vendere il primo rimbalzo medio.
+# Deve aspettare una zona premium vera, come Max: rimbalzo ampio, day position alta,
+# rejection / high context e micro-BOS.
+LOSS_RECOVERY_TRUE_MAX_ZONE_ENABLED = os.getenv("LOSS_RECOVERY_TRUE_MAX_ZONE_ENABLED", "TRUE").upper() == "TRUE"
+LOSS_RECOVERY_SELL_LOSSES = int(os.getenv("LOSS_RECOVERY_SELL_LOSSES", "2"))
+LOSS_RECOVERY_LOOKBACK_SECONDS = int(os.getenv("LOSS_RECOVERY_LOOKBACK_SECONDS", "7200"))
+TRUE_MAX_ZONE_MIN_DAY_POSITION = float(os.getenv("TRUE_MAX_ZONE_MIN_DAY_POSITION", "0.85"))
+TRUE_MAX_ZONE_MIN_REBOUND_POINTS = float(os.getenv("TRUE_MAX_ZONE_MIN_REBOUND_POINTS", "25"))
+TRUE_MAX_ZONE_MIN_SCORE = int(os.getenv("TRUE_MAX_ZONE_MIN_SCORE", "22"))
+TRUE_MAX_ZONE_REQUIRE_MICRO_BOS = os.getenv("TRUE_MAX_ZONE_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
+TRUE_MAX_ZONE_REQUIRE_REJECTION = os.getenv("TRUE_MAX_ZONE_REQUIRE_REJECTION", "TRUE").upper() == "TRUE"
+TRUE_MAX_ZONE_ALLOWED_SETUPS = {
+    "PRE_BEAR_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL"
+}
+
+# v28: Big Move Thesis Engine.
+# Non predice con certezza le news; segnala solo quando ci sono condizioni da
+# movimento grosso: trade già protetto, TP3+, evento/news/volatilità, compressione
+# o breakout e target psicologico libero.
+BIG_MOVE_THESIS_ENABLED = os.getenv("BIG_MOVE_THESIS_ENABLED", "TRUE").upper() == "TRUE"
+BIG_MOVE_ALERTS_ENABLED = os.getenv("BIG_MOVE_ALERTS_ENABLED", "TRUE").upper() == "TRUE"
+BIG_MOVE_MIN_TP_LEVEL = int(os.getenv("BIG_MOVE_MIN_TP_LEVEL", "3"))
+BIG_MOVE_CONFIRMED_TP_LEVEL = int(os.getenv("BIG_MOVE_CONFIRMED_TP_LEVEL", "5"))
+BIG_MOVE_LOOKBACK_SECONDS = int(os.getenv("BIG_MOVE_LOOKBACK_SECONDS", "7200"))
+BIG_MOVE_ALERT_COOLDOWN_SECONDS = int(os.getenv("BIG_MOVE_ALERT_COOLDOWN_SECONDS", "1800"))
+BIG_MOVE_MIN_CONFLUENCES = int(os.getenv("BIG_MOVE_MIN_CONFLUENCES", "4"))
+BIG_MOVE_REQUIRE_BE_PROTECTED = os.getenv("BIG_MOVE_REQUIRE_BE_PROTECTED", "TRUE").upper() == "TRUE"
+BIG_MOVE_EVENT_OR_NEWS_REQUIRED = os.getenv("BIG_MOVE_EVENT_OR_NEWS_REQUIRED", "FALSE").upper() == "TRUE"
+BIG_MOVE_COMPRESSION_MAX_M15_ATR = float(os.getenv("BIG_MOVE_COMPRESSION_MAX_M15_ATR", "1.8"))
+BIG_MOVE_BREAKOUT_M15_ATR = float(os.getenv("BIG_MOVE_BREAKOUT_M15_ATR", "3.0"))
+BIG_MOVE_TARGET_STEP = float(os.getenv("BIG_MOVE_TARGET_STEP", "20"))
+BIG_MOVE_TARGET_COUNT = int(os.getenv("BIG_MOVE_TARGET_COUNT", "3"))
+BIG_MOVE_SPECIAL_SETUPS = {
+    "MAX_RECOVERY_BUY",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY",
+    "PRE_BEAR_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL"
+}
+
 # Smart Daily Kill Switch Override per PRE_BEAR_SELL:
 # una sola eccezione controllata, solo da zona estrema e con score alto.
 SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED = os.getenv("SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
@@ -1237,6 +1291,18 @@ def health():
         "sell_profit_lock_rearm_rebound_points": SELL_PROFIT_LOCK_REARM_REBOUND_POINTS,
         "sell_profit_lock_allow_max_fade_score": SELL_PROFIT_LOCK_ALLOW_MAX_FADE_SCORE,
         "sell_profit_lock_allow_campaign_score": SELL_PROFIT_LOCK_ALLOW_CAMPAIGN_SCORE,
+        "loss_recovery_true_max_zone_enabled": LOSS_RECOVERY_TRUE_MAX_ZONE_ENABLED,
+        "loss_recovery_sell_losses": LOSS_RECOVERY_SELL_LOSSES,
+        "true_max_zone_min_day_position": TRUE_MAX_ZONE_MIN_DAY_POSITION,
+        "true_max_zone_min_rebound_points": TRUE_MAX_ZONE_MIN_REBOUND_POINTS,
+        "true_max_zone_min_score": TRUE_MAX_ZONE_MIN_SCORE,
+        "true_max_zone_require_micro_bos": TRUE_MAX_ZONE_REQUIRE_MICRO_BOS,
+        "big_move_thesis_enabled": BIG_MOVE_THESIS_ENABLED,
+        "big_move_alerts_enabled": BIG_MOVE_ALERTS_ENABLED,
+        "big_move_min_tp_level": BIG_MOVE_MIN_TP_LEVEL,
+        "big_move_confirmed_tp_level": BIG_MOVE_CONFIRMED_TP_LEVEL,
+        "big_move_min_confluences": BIG_MOVE_MIN_CONFLUENCES,
+        "big_move_target_step": BIG_MOVE_TARGET_STEP,
         "smart_kill_pre_bear_override_enabled": SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED,
         "smart_kill_pre_bear_min_score": SMART_KILL_PRE_BEAR_MIN_SCORE,
         "smart_kill_pre_bear_max_attempts": SMART_KILL_PRE_BEAR_MAX_ATTEMPTS,
@@ -1721,7 +1787,7 @@ def score_signal(data, signal):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     near_psych_level, nearest_psych, psych_distance = psych_info(price)
 
-    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43/v44/v45
+    # Campi extra mandati dal Pine v30/v31/v32/v33/v34/v35/v36/v37/v38/v39/v40/v41/v42/v43/v44/v45/v46
     close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
     close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
     recovery_buy_signal = to_bool(data.get("recovery_buy_signal", "false"))
@@ -4250,6 +4316,408 @@ def sell_profit_lock_allow_text(ctx):
     )
 
 
+
+# =========================
+# v28 - TRUE MAX ZONE + BIG MOVE THESIS
+# =========================
+
+def _true_max_zone_targets(price, signal, step=None, count=None):
+    price = to_float(price, 0)
+    step = to_float(step or BIG_MOVE_TARGET_STEP, BIG_MOVE_TARGET_STEP)
+    count = int(count or BIG_MOVE_TARGET_COUNT)
+
+    if not price or not step:
+        return []
+
+    targets = []
+    signal = str(signal or "").upper()
+
+    if signal == "BUY":
+        base_level = math.ceil(price / step) * step
+        if base_level <= price:
+            base_level += step
+        for i in range(count):
+            targets.append(round(base_level + i * step, 3))
+    else:
+        base_level = math.floor(price / step) * step
+        if base_level >= price:
+            base_level -= step
+        for i in range(count):
+            targets.append(round(base_level - i * step, 3))
+
+    return targets
+
+
+def true_max_zone_reentry_context(signal, symbol, setup_type, score, data):
+    signal = str(signal or "").upper()
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    if not LOSS_RECOVERY_TRUE_MAX_ZONE_ENABLED:
+        return {
+            "active": False,
+            "block": False,
+            "allow": True,
+            "reason": "True Max Zone Recovery disattivato",
+            "recent_losses": []
+        }
+
+    if signal != "SELL":
+        return {
+            "active": False,
+            "block": False,
+            "allow": True,
+            "reason": "Non è SELL",
+            "recent_losses": []
+        }
+
+    recent_losses = get_recent_direct_losses_custom(
+        "SELL",
+        symbol,
+        LOSS_RECOVERY_LOOKBACK_SECONDS
+    )
+
+    active = len(recent_losses) >= LOSS_RECOVERY_SELL_LOSSES
+
+    if not active:
+        return {
+            "active": False,
+            "block": False,
+            "allow": True,
+            "reason": f"SL SELL diretti recenti {len(recent_losses)}/{LOSS_RECOVERY_SELL_LOSSES}",
+            "recent_losses": recent_losses
+        }
+
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+    day_position = to_float(data.get("day_position"), -1)
+    deep_ctx = get_deep_extension_context(symbol, data)
+    rebound_from_low = to_float(deep_ctx.get("rebound_from_low"), 0)
+    micro_ctx = micro_bos_bear_context(symbol, data)
+
+    near_high = bool(
+        to_bool(data.get("near_m15_high", "false"))
+        or to_bool(data.get("near_day_high", "false"))
+        or to_bool(data.get("max_zone_sell_local", "false"))
+        or day_position >= TRUE_MAX_ZONE_MIN_DAY_POSITION
+    )
+
+    rejection_ok = bool(
+        str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+        or not TRUE_MAX_ZONE_REQUIRE_REJECTION
+    )
+
+    micro_ok = bool(
+        micro_ctx.get("confirmed")
+        or not TRUE_MAX_ZONE_REQUIRE_MICRO_BOS
+    )
+
+    setup_ok = setup_type in TRUE_MAX_ZONE_ALLOWED_SETUPS
+    score_ok = int(score) >= TRUE_MAX_ZONE_MIN_SCORE
+    rebound_ok = rebound_from_low >= TRUE_MAX_ZONE_MIN_REBOUND_POINTS
+    day_ok = day_position >= TRUE_MAX_ZONE_MIN_DAY_POSITION or near_high
+
+    allow = bool(
+        setup_ok
+        and score_ok
+        and day_ok
+        and rebound_ok
+        and rejection_ok
+        and micro_ok
+    )
+
+    reason = (
+        "True Max Zone confermata dopo SL: rientro SELL permesso"
+        if allow
+        else "Loss Recovery: dopo SL diretti serve vera zona Max alta, non primo rimbalzo"
+    )
+
+    return {
+        "active": True,
+        "block": not allow,
+        "allow": allow,
+        "reason": reason,
+        "recent_losses": recent_losses,
+        "recent_loss_count": len(recent_losses),
+        "setup_ok": setup_ok,
+        "score_ok": score_ok,
+        "day_ok": day_ok,
+        "rebound_ok": rebound_ok,
+        "rejection_ok": rejection_ok,
+        "micro_ok": micro_ok,
+        "setup_type": setup_type,
+        "score": score,
+        "required_score": TRUE_MAX_ZONE_MIN_SCORE,
+        "day_position": day_position,
+        "required_day_position": TRUE_MAX_ZONE_MIN_DAY_POSITION,
+        "rebound_from_low": rebound_from_low,
+        "required_rebound": TRUE_MAX_ZONE_MIN_REBOUND_POINTS,
+        "near_high": near_high,
+        "micro_bos": micro_ctx,
+        "deep_extension": deep_ctx,
+        "price": price
+    }
+
+
+def true_max_zone_reentry_text(ctx):
+    ctx = ctx or {}
+    micro = ctx.get("micro_bos") or {}
+
+    return (
+        f"Active: {ctx.get('active')}\n"
+        f"Allow: {ctx.get('allow')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"SL SELL diretti: {len(ctx.get('recent_losses', []) or [])}/{LOSS_RECOVERY_SELL_LOSSES}\n"
+        f"Setup: {ctx.get('setup_type')} | ok: {ctx.get('setup_ok')}\n"
+        f"Score: {ctx.get('score')}/{ctx.get('required_score')} | ok: {ctx.get('score_ok')}\n"
+        f"Day position: {round(to_float(ctx.get('day_position')), 3)}/{TRUE_MAX_ZONE_MIN_DAY_POSITION} | ok: {ctx.get('day_ok')}\n"
+        f"Rebound from low: {round(to_float(ctx.get('rebound_from_low')), 2)}/{TRUE_MAX_ZONE_MIN_REBOUND_POINTS} | ok: {ctx.get('rebound_ok')}\n"
+        f"Near high: {ctx.get('near_high')}\n"
+        f"Rejection ok: {ctx.get('rejection_ok')}\n"
+        f"Micro BOS: {micro.get('confirmed')} | ok: {ctx.get('micro_ok')}"
+    )
+
+
+def _big_move_best_trade(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    now = now_ts()
+    candidates = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("status")) not in ["OPEN", "PENDING"]:
+            continue
+        if now - (trade.get("created") or 0) > BIG_MOVE_LOOKBACK_SECONDS:
+            continue
+
+        setup = str(trade.get("setup_type", "NORMAL")).upper()
+        if setup not in BIG_MOVE_SPECIAL_SETUPS:
+            continue
+
+        highest_tp = int(trade.get("highest_tp", 0))
+        if highest_tp < BIG_MOVE_MIN_TP_LEVEL:
+            continue
+
+        if BIG_MOVE_REQUIRE_BE_PROTECTED and not trade.get("be"):
+            continue
+
+        candidates.append(trade)
+
+    return sorted(
+        candidates,
+        key=lambda t: (
+            int(t.get("highest_tp", 0)),
+            t.get("last_tp_time") or t.get("created") or 0
+        ),
+        reverse=True
+    )[0] if candidates else None
+
+
+def get_big_move_thesis_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    if not BIG_MOVE_THESIS_ENABLED:
+        return {"active": False, "reason": "Big Move Thesis disattivata"}
+
+    trade = _big_move_best_trade(symbol)
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+
+    if not trade:
+        return {
+            "active": False,
+            "reason": f"Nessun trade speciale protetto a TP{BIG_MOVE_MIN_TP_LEVEL}+",
+            "price": price
+        }
+
+    signal = str(trade.get("signal", "")).upper()
+    highest_tp = int(trade.get("highest_tp", 0))
+    setup = str(trade.get("setup_type", "NORMAL")).upper()
+
+    auto_event_active, event_reasons = auto_event_cache_active()
+    event_active = bool(
+        auto_event_active
+        or to_bool(data.get("event_mode", "false"))
+        or to_bool(data.get("auto_event_pine", "false"))
+        or to_float(data.get("range_atr"), 0) >= 2.2
+        or to_float(data.get("m15_range_atr"), 0) >= BIG_MOVE_BREAKOUT_M15_ATR
+        or to_bool(data.get("volume_spike", "false"))
+    )
+
+    m15_range_atr = to_float(data.get("m15_range_atr"), 0)
+    range_atr = to_float(data.get("range_atr"), 0)
+    compression_ok = bool(
+        0 < m15_range_atr <= BIG_MOVE_COMPRESSION_MAX_M15_ATR
+    )
+    breakout_ok = bool(
+        m15_range_atr >= BIG_MOVE_BREAKOUT_M15_ATR
+        or range_atr >= 2.2
+    )
+
+    h1 = str(data.get("h1_bias", "NEUTRAL")).upper()
+    h4 = str(data.get("h4_bias", "NEUTRAL")).upper()
+    day = str(data.get("day_bias", "NEUTRAL")).upper()
+    ema20 = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50 = str(data.get("ema50_slope", "FLAT")).upper()
+    candle = str(data.get("candle_dir", "")).upper()
+
+    if signal == "BUY":
+        direction_ok = bool(
+            h1 == "BUY" or h4 == "BUY" or day == "BUY"
+            or ema20 == "UP" or ema50 == "UP"
+            or candle == "BULL"
+        )
+    else:
+        direction_ok = bool(
+            h1 == "SELL" or h4 == "SELL" or day == "SELL"
+            or ema20 == "DOWN" or ema50 == "DOWN"
+            or candle == "BEAR"
+        )
+
+    runner_ready = highest_tp >= BIG_MOVE_CONFIRMED_TP_LEVEL or bool(trade.get("runner"))
+    protected = bool(trade.get("be"))
+    target_levels = _true_max_zone_targets(price, signal)
+
+    confluences = []
+    if protected:
+        confluences.append("SL già protetto/BE")
+    if highest_tp >= BIG_MOVE_MIN_TP_LEVEL:
+        confluences.append(f"Trade già a TP{highest_tp}")
+    if setup in BIG_MOVE_SPECIAL_SETUPS:
+        confluences.append(f"Setup speciale {setup}")
+    if event_active:
+        confluences.append("Evento/news/volatilità attiva")
+    if compression_ok:
+        confluences.append("Mercato compresso/lento")
+    if breakout_ok:
+        confluences.append("Breakout o range M15 espanso")
+    if direction_ok:
+        confluences.append("Direzione tecnica coerente")
+    if target_levels:
+        confluences.append("Target psicologici disponibili")
+
+    event_requirement_ok = event_active or not BIG_MOVE_EVENT_OR_NEWS_REQUIRED
+
+    active = bool(
+        len(confluences) >= BIG_MOVE_MIN_CONFLUENCES
+        and event_requirement_ok
+    )
+
+    status = "CONFIRMED" if active and runner_ready and (breakout_ok or event_active) else "WATCH"
+
+    if not active:
+        status = "IDLE"
+
+    reason = (
+        "Possibile movimento grosso in preparazione"
+        if status == "WATCH"
+        else "Movimento grosso confermato / runner da proteggere"
+        if status == "CONFIRMED"
+        else f"Confluenze insufficienti {len(confluences)}/{BIG_MOVE_MIN_CONFLUENCES}"
+    )
+
+    return {
+        "active": active,
+        "status": status,
+        "reason": reason,
+        "symbol": symbol,
+        "signal": signal,
+        "trade": trade,
+        "trade_id": trade.get("id"),
+        "setup": setup,
+        "highest_tp": highest_tp,
+        "price": price,
+        "event_active": event_active,
+        "event_reasons": event_reasons,
+        "compression_ok": compression_ok,
+        "breakout_ok": breakout_ok,
+        "direction_ok": direction_ok,
+        "protected": protected,
+        "runner_ready": runner_ready,
+        "confluences": confluences,
+        "confluence_count": len(confluences),
+        "target_levels": target_levels,
+        "m15_range_atr": m15_range_atr,
+        "range_atr": range_atr
+    }
+
+
+def big_move_thesis_text(ctx):
+    ctx = ctx or {}
+    trade = ctx.get("trade") or {}
+    targets = ctx.get("target_levels") or []
+    target_text = ", ".join(str(t) for t in targets) if targets else "N/D"
+    confluence_text = "\n".join(f"- {item}" for item in (ctx.get("confluences") or [])) or "- N/D"
+
+    return (
+        f"Status: {ctx.get('status')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Trade: {ctx.get('trade_id')} | {ctx.get('signal')} | {ctx.get('setup')}\n"
+        f"Highest TP: {ctx.get('highest_tp')}\n"
+        f"Prezzo: {round(to_float(ctx.get('price')), 3)}\n"
+        f"Evento/news: {ctx.get('event_active')}\n"
+        f"Compressione: {ctx.get('compression_ok')} | Breakout: {ctx.get('breakout_ok')}\n"
+        f"Direzione coerente: {ctx.get('direction_ok')}\n"
+        f"Protetto BE: {ctx.get('protected')}\n"
+        f"Target scenario: {target_text}\n"
+        f"Confluenze {ctx.get('confluence_count')}/{BIG_MOVE_MIN_CONFLUENCES}:\n{confluence_text}"
+    )
+
+
+def maybe_big_move_thesis_alert(symbol, data, ctx=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    if not BIG_MOVE_ALERTS_ENABLED:
+        return None
+
+    ctx = ctx or get_big_move_thesis_context(symbol, data)
+
+    if not ctx.get("active"):
+        return None
+
+    state = get_regime_arbiter_state(symbol)
+    now = now_ts()
+    last_time = to_float(state.get("big_move_last_alert_time"), 0)
+
+    if now - last_time < BIG_MOVE_ALERT_COOLDOWN_SECONDS:
+        return None
+
+    signature = f"{ctx.get('signal')}:{ctx.get('status')}:{ctx.get('trade_id')}:TP{ctx.get('highest_tp')}"
+
+    if state.get("big_move_last_signature") == signature:
+        return None
+
+    state["big_move_last_alert_time"] = now
+    state["big_move_last_signature"] = signature
+
+    emoji = "🚀" if ctx.get("status") == "CONFIRMED" else "⚡"
+    title = "BIG MOVE CONFIRMED" if ctx.get("status") == "CONFIRMED" else "BIG MOVE WATCH"
+    side = "SUPER BUY" if ctx.get("signal") == "BUY" else "SUPER SELL"
+
+    return f"""{emoji} {title} {VERSION}
+
+Scenario: {side}
+Symbol: {symbol}
+
+{big_move_thesis_text(ctx)}
+
+Lettura:
+Il bot non considera questo una garanzia.
+Sta dicendo che ci sono condizioni da movimento grosso stile Max:
+trade già protetto, TP avanzati, evento/news/volatilità o compressione,
+e target psicologici disponibili.
+
+Gestione:
+- non inseguire nuove entrate nel mezzo
+- proteggi il rischio
+- valuta runner solo se hai già TP/BE
+- step by step, come Max
+"""
+
+
 def get_regime_arbiter_state(symbol):
     symbol = str(symbol or "XAUUSD").upper()
     if symbol not in REGIME_ARBITER_STATE:
@@ -4259,7 +4727,9 @@ def get_regime_arbiter_state(symbol):
             "updated": 0,
             "smart_kill_attempts": 0,
             "smart_kill_window_start": 0,
-            "last_smart_kill_trade_id": None
+            "last_smart_kill_trade_id": None,
+            "big_move_last_alert_time": 0,
+            "big_move_last_signature": None
         }
     return REGIME_ARBITER_STATE[symbol]
 
@@ -4273,6 +4743,8 @@ def get_regime_arbiter_context(symbol, data=None):
     maturity_ctx = bear_trigger_maturity_context(symbol, data)
     deep_ctx = get_deep_extension_context(symbol, data)
     sell_profit_lock_ctx = get_sell_profit_lock_context(symbol, data)
+    loss_recovery_ctx = true_max_zone_reentry_context("SELL", symbol, "CONTEXT", 0, data)
+    big_move_ctx = get_big_move_thesis_context(symbol, data)
     pre_bear = get_pre_bear_state(symbol)
     pre_bear_status = str(pre_bear.get("status", "IDLE")).upper()
     bear_state = get_bear_continuation_state(symbol)
@@ -4280,8 +4752,12 @@ def get_regime_arbiter_context(symbol, data=None):
 
     if recovery_ctx.get("active"):
         mode, reason = "RECOVERY_DOMINANT", recovery_ctx.get("reason")
+    elif loss_recovery_ctx.get("active"):
+        mode, reason = "LOSS_RECOVERY_MAX_ZONE", loss_recovery_ctx.get("reason")
     elif sell_profit_lock_ctx.get("active"):
         mode, reason = "SELL_PROFIT_LOCK", sell_profit_lock_ctx.get("reason")
+    elif big_move_ctx.get("active"):
+        mode, reason = f"BIG_MOVE_{big_move_ctx.get('status')}", big_move_ctx.get("reason")
     elif deep_ctx.get("active"):
         mode, reason = "DEEP_EXTENSION", "SELL già molto pagato / prezzo vicino low"
     elif maturity_ctx.get("mature"):
@@ -4304,6 +4780,8 @@ def get_regime_arbiter_context(symbol, data=None):
         "maturity": maturity_ctx,
         "deep_extension": deep_ctx,
         "sell_profit_lock": sell_profit_lock_ctx,
+        "loss_recovery": loss_recovery_ctx,
+        "big_move": big_move_ctx,
         "pre_bear_status": pre_bear_status,
         "bear_state": bear_state_name
     }
@@ -4317,6 +4795,8 @@ def regime_arbiter_status_text(ctx):
         f"Pre-Bear: {ctx.get('pre_bear_status')}\n"
         f"Recovery dominant: {ctx.get('recovery', {}).get('active')}\n"
         f"Sell profit lock: {ctx.get('sell_profit_lock', {}).get('active')}\n"
+        f"Loss recovery max zone: {ctx.get('loss_recovery', {}).get('active')}\n"
+        f"Big move thesis: {ctx.get('big_move', {}).get('status')}\n"
         f"Bear maturity: {ctx.get('maturity', {}).get('mature')}\n"
         f"Deep extension: {ctx.get('deep_extension', {}).get('active')}"
     )
@@ -4332,7 +4812,7 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
     setup_type = str(setup_type or "NORMAL").upper()
 
     if signal != "SELL":
-        return False, ctx, "Il Regime Arbiter v26 governa qui i conflitti SELL"
+        return False, ctx, "Il Regime Arbiter v28 governa qui i conflitti SELL"
 
     # v26: protezione precoce di qualunque BUY speciale aperto.
     # Serve a evitare: BUY speciale corretto + SELL NORMAL debole subito dopo.
@@ -4404,6 +4884,17 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
                 ctx,
                 "Sell Profit Lock: la view SELL ha già pagato, attendo nuovo rimbalzo/zona Max"
             )
+
+    # v28: dopo SL SELL diretti serve True Max Zone, non primo rimbalzo.
+    loss_recovery_ctx = true_max_zone_reentry_context(signal, symbol, setup_type, score, data)
+    ctx["loss_recovery"] = loss_recovery_ctx
+
+    if loss_recovery_ctx.get("active") and loss_recovery_ctx.get("block"):
+        return (
+            True,
+            ctx,
+            "Loss Recovery / True Max Zone: dopo SL diretti attendo rimbalzo alto vero"
+        )
 
     if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
         recovery_ctx = ctx.get("recovery", {})
@@ -7213,7 +7704,7 @@ def runner_message(trade, tp_level, tp_value):
         f"Trade #{trade_id} {signal}\n"
         f"Setup: {setup}\n"
         f"TP{tp_level} raggiunto: {tp_value}\n\n"
-        f"Lettura v27:\n"
+        f"Lettura v28:\n"
         f"Il movimento ha superato tutti i target standard.\n"
         f"Possibile giornata direzionale stile Max.\n"
         f"Valuta di lasciare una parte in RUNNER / OPEN invece di chiudere tutto."
@@ -7577,8 +8068,12 @@ def webhook():
         for campaign_message in campaign_messages:
             send_telegram(campaign_message)
 
-        # v25: aggiorna l'arbitro centrale sul nuovo prezzo.
+        # v25/v28: aggiorna l'arbitro centrale sul nuovo prezzo e valuta Big Move Thesis.
         regime_ctx = get_regime_arbiter_context(data.get("symbol", "XAUUSD"), data)
+        big_move_ctx = regime_ctx.get("big_move") or get_big_move_thesis_context(data.get("symbol", "XAUUSD"), data)
+        big_move_alert = maybe_big_move_thesis_alert(data.get("symbol", "XAUUSD"), data, big_move_ctx)
+        if big_move_alert:
+            send_telegram(big_move_alert)
 
         # v24: snapshot periodico della memoria runtime.
         save_runtime_state(force=False)
@@ -7610,6 +8105,12 @@ def webhook():
             "recovery_dominance_active": regime_ctx.get("recovery", {}).get("active"),
             "sell_profit_lock_active": regime_ctx.get("sell_profit_lock", {}).get("active"),
             "sell_profit_lock_reason": regime_ctx.get("sell_profit_lock", {}).get("reason"),
+            "loss_recovery_active": regime_ctx.get("loss_recovery", {}).get("active"),
+            "loss_recovery_reason": regime_ctx.get("loss_recovery", {}).get("reason"),
+            "big_move_active": big_move_ctx.get("active"),
+            "big_move_status": big_move_ctx.get("status"),
+            "big_move_reason": big_move_ctx.get("reason"),
+            "big_move_targets": big_move_ctx.get("target_levels"),
             "bear_trigger_mature": regime_ctx.get("maturity", {}).get("mature"),
             "campaign_id": campaign.get("campaign_id"),
             "campaign_status": campaign.get("status"),
@@ -7775,6 +8276,12 @@ Sell Profit Lock:
 Profit Lock Allow:
 {sell_profit_lock_allow_text(regime_ctx.get('sell_profit_lock_allow', {}))}
 
+Loss Recovery / True Max Zone:
+{true_max_zone_reentry_text(regime_ctx.get('loss_recovery', {}))}
+
+Big Move Thesis:
+{big_move_thesis_text(regime_ctx.get('big_move', {}))}
+
 Azione:
 Il bot usa una sola tesi dominante.
 - SELL NORMAL bloccati contro BUY speciale attivo
@@ -7782,6 +8289,8 @@ Il bot usa una sola tesi dominante.
 - nessun continuation SELL contro BUY speciale TP3+ ancora valido
 - SELL contro BUY forte solo se speciale, in zona Max, score alto e micro-BOS
 - se il SELL ha già preso TP8/Runner, comprimo nuove entrate simili
+- dopo 2 SL SELL, accetto solo vera zona Max alta
+- se un trade è TP3+ e protetto, attivo Big Move Watch/Confirmed
 - Deep Extension deve essere realmente riarmata
 """
         send_telegram(text)
