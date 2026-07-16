@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v28 True Max Zone + Big Move Thesis"
+VERSION = "v29 Event Trap Flip + Big Move Direction"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -684,6 +684,40 @@ BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_EVENT_SPIKE_SELL"
 }
 
+# v29: Event Trap Flip / Big Move Direction Flip.
+# Se il bot è innamorato di un BUY recovery già a TP5/TP6 ma l'evento crea spike alto
+# e compare un SELL A+ da vera zona Max, può FLIPPARE la tesi e non bloccare il SELL.
+EVENT_TRAP_FLIP_ENABLED = os.getenv("EVENT_TRAP_FLIP_ENABLED", "TRUE").upper() == "TRUE"
+EVENT_TRAP_FLIP_MIN_SCORE = int(os.getenv("EVENT_TRAP_FLIP_MIN_SCORE", "24"))
+EVENT_TRAP_FLIP_MIN_BUY_TP = int(os.getenv("EVENT_TRAP_FLIP_MIN_BUY_TP", "5"))
+EVENT_TRAP_FLIP_REQUIRE_EVENT = os.getenv("EVENT_TRAP_FLIP_REQUIRE_EVENT", "TRUE").upper() == "TRUE"
+EVENT_TRAP_FLIP_REQUIRE_ZONE = os.getenv("EVENT_TRAP_FLIP_REQUIRE_ZONE", "TRUE").upper() == "TRUE"
+EVENT_TRAP_FLIP_REQUIRE_REJECTION = os.getenv("EVENT_TRAP_FLIP_REQUIRE_REJECTION", "FALSE").upper() == "TRUE"
+EVENT_TRAP_FLIP_REQUIRE_MICRO_OR_BREAKDOWN = os.getenv("EVENT_TRAP_FLIP_REQUIRE_MICRO_OR_BREAKDOWN", "FALSE").upper() == "TRUE"
+EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH = float(os.getenv("EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH", "2.5"))
+EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION = float(os.getenv("EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION", "0.62"))
+EVENT_TRAP_FLIP_ALLOWED_SETUPS = {
+    "PRE_BEAR_SELL",
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "MAX_EVENT_SPIKE_SELL"
+}
+
+# v29: non vendere basso con campaign/continuation deboli dopo un grande drop.
+DEEP_EXTENSION_SELL_GUARD_ENABLED = os.getenv("DEEP_EXTENSION_SELL_GUARD_ENABLED", "TRUE").upper() == "TRUE"
+DEEP_EXTENSION_SELL_GUARD_MIN_SCORE = int(os.getenv("DEEP_EXTENSION_SELL_GUARD_MIN_SCORE", "22"))
+DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION = float(os.getenv("DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION", "0.35"))
+DEEP_EXTENSION_SELL_GUARD_SETUPS = {
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL"
+}
+
 # Smart Daily Kill Switch Override per PRE_BEAR_SELL:
 # una sola eccezione controllata, solo da zona estrema e con score alto.
 SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED = os.getenv("SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
@@ -1303,6 +1337,13 @@ def health():
         "big_move_confirmed_tp_level": BIG_MOVE_CONFIRMED_TP_LEVEL,
         "big_move_min_confluences": BIG_MOVE_MIN_CONFLUENCES,
         "big_move_target_step": BIG_MOVE_TARGET_STEP,
+        "event_trap_flip_enabled": EVENT_TRAP_FLIP_ENABLED,
+        "event_trap_flip_min_score": EVENT_TRAP_FLIP_MIN_SCORE,
+        "event_trap_flip_min_buy_tp": EVENT_TRAP_FLIP_MIN_BUY_TP,
+        "event_trap_flip_min_retrace_from_high": EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH,
+        "event_trap_flip_max_event_close_position": EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION,
+        "deep_extension_sell_guard_enabled": DEEP_EXTENSION_SELL_GUARD_ENABLED,
+        "deep_extension_sell_guard_min_score": DEEP_EXTENSION_SELL_GUARD_MIN_SCORE,
         "smart_kill_pre_bear_override_enabled": SMART_KILL_PRE_BEAR_OVERRIDE_ENABLED,
         "smart_kill_pre_bear_min_score": SMART_KILL_PRE_BEAR_MIN_SCORE,
         "smart_kill_pre_bear_max_attempts": SMART_KILL_PRE_BEAR_MAX_ATTEMPTS,
@@ -4718,6 +4759,240 @@ Gestione:
 """
 
 
+
+def event_trap_flip_context(signal, symbol, setup_type, score, data, special_ctx=None, big_move_ctx=None):
+    """
+    v29 Event Trap Flip:
+    Consente un SELL A+ contro un BUY speciale/Big Move BUY quando l'evento fa spike alto
+    e poi mostra segnali di trappola/ribaltamento. Serve a non perdere casi tipo
+    SELL 4038-4044 dopo un BUY arrivato a TP6.
+    """
+    signal = str(signal or "").upper()
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    base = {
+        "active": False,
+        "allow": False,
+        "reason": "Event Trap Flip non attivo",
+        "setup_type": setup_type,
+        "score": score,
+        "required_score": EVENT_TRAP_FLIP_MIN_SCORE
+    }
+
+    if not EVENT_TRAP_FLIP_ENABLED:
+        base["reason"] = "Event Trap Flip disattivato"
+        return base
+
+    if signal != "SELL":
+        base["reason"] = "Non è un SELL flip"
+        return base
+
+    if setup_type not in EVENT_TRAP_FLIP_ALLOWED_SETUPS:
+        base["reason"] = f"Setup {setup_type} non abilitato al flip evento"
+        return base
+
+    special_ctx = special_ctx or get_recovery_dominance_context(
+        symbol,
+        data,
+        min_tp=EVENT_TRAP_FLIP_MIN_BUY_TP
+    )
+    big_move_ctx = big_move_ctx or get_big_move_thesis_context(symbol, data)
+
+    best_buy = special_ctx.get("best_trade") or {}
+    buy_tp = int(special_ctx.get("highest_tp") or best_buy.get("highest_tp") or 0)
+
+    buy_dominant = bool(special_ctx.get("active") and buy_tp >= EVENT_TRAP_FLIP_MIN_BUY_TP)
+    big_move_buy = bool(
+        big_move_ctx.get("active")
+        and str(big_move_ctx.get("signal", "")).upper() == "BUY"
+        and str(big_move_ctx.get("status", "")).upper() in ["WATCH", "CONFIRMED"]
+    )
+
+    conflict_ok = buy_dominant or big_move_buy
+
+    auto_event_active, event_reasons = auto_event_cache_active()
+    range_atr = to_float(data.get("range_atr"), 0)
+    m15_range_atr = to_float(data.get("m15_range_atr"), 0)
+    event_active = bool(
+        auto_event_active
+        or to_bool(data.get("event_mode", "false"))
+        or to_bool(data.get("auto_event_pine", "false"))
+        or to_bool(data.get("volume_spike", "false"))
+        or range_atr >= 2.2
+        or m15_range_atr >= BIG_MOVE_BREAKOUT_M15_ATR
+    )
+
+    extreme_ok, extreme_info = extreme_zone_info("SELL", data)
+    day_position = to_float(data.get("day_position"), -1)
+    zone_ok = bool(
+        extreme_ok
+        or to_bool(data.get("near_m15_high", "false"))
+        or to_bool(data.get("near_day_high", "false"))
+        or to_bool(data.get("max_zone_sell_local", "false"))
+        or to_bool(data.get("true_max_zone_sell_local", "false"))
+        or str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+    )
+
+    event_retrace_from_high = to_float(data.get("event_retrace_from_high"), 0)
+    event_close_position = to_float(data.get("event_close_position"), 0.5)
+    candle_bear = str(data.get("candle_dir", "")).upper() == "BEAR"
+    upper_rejection = bool(
+        str(data.get("rejection", "")).upper() == "UPPER_WICK"
+        or to_bool(data.get("upper_wick_strong", "false"))
+    )
+
+    rejection_ok = bool(
+        upper_rejection
+        or candle_bear
+        or event_retrace_from_high >= EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH
+        or not EVENT_TRAP_FLIP_REQUIRE_REJECTION
+    )
+
+    micro_ctx = micro_bos_bear_context(symbol, data)
+    event_breakdown_ok = bool(
+        event_retrace_from_high >= EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH
+        or event_close_position <= EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION
+        or candle_bear
+        or to_bool(data.get("event_trap_flip_sell_local", "false"))
+    )
+    micro_or_breakdown_ok = bool(
+        micro_ctx.get("confirmed")
+        or event_breakdown_ok
+        or not EVENT_TRAP_FLIP_REQUIRE_MICRO_OR_BREAKDOWN
+    )
+
+    score_ok = int(score) >= EVENT_TRAP_FLIP_MIN_SCORE
+    event_ok = event_active or not EVENT_TRAP_FLIP_REQUIRE_EVENT
+    required_zone_ok = zone_ok or not EVENT_TRAP_FLIP_REQUIRE_ZONE
+
+    allow = bool(
+        conflict_ok
+        and score_ok
+        and event_ok
+        and required_zone_ok
+        and rejection_ok
+        and micro_or_breakdown_ok
+    )
+
+    missing = []
+    if not conflict_ok:
+        missing.append(f"nessun BUY TP{EVENT_TRAP_FLIP_MIN_BUY_TP}+ / Big Move BUY da flippare")
+    if not score_ok:
+        missing.append(f"score {score} sotto {EVENT_TRAP_FLIP_MIN_SCORE}")
+    if not event_ok:
+        missing.append("evento/news non attivo")
+    if not required_zone_ok:
+        missing.append("zona Max alta non confermata")
+    if not rejection_ok:
+        missing.append("rejection/trap non confermata")
+    if not micro_or_breakdown_ok:
+        missing.append("manca micro BOS o breakdown evento")
+
+    return {
+        "active": conflict_ok,
+        "allow": allow,
+        "reason": (
+            "EVENT TRAP FLIP: SELL A+ autorizzato contro BUY recovery / Big Move BUY"
+            if allow else "Event Trap Flip non autorizzato: " + "; ".join(missing)
+        ),
+        "setup_type": setup_type,
+        "setup_ok": setup_type in EVENT_TRAP_FLIP_ALLOWED_SETUPS,
+        "score": score,
+        "required_score": EVENT_TRAP_FLIP_MIN_SCORE,
+        "score_ok": score_ok,
+        "event_active": event_active,
+        "event_ok": event_ok,
+        "event_reasons": event_reasons,
+        "zone_ok": zone_ok,
+        "rejection_ok": rejection_ok,
+        "micro_or_breakdown_ok": micro_or_breakdown_ok,
+        "micro_bos": micro_ctx,
+        "event_breakdown_ok": event_breakdown_ok,
+        "event_retrace_from_high": event_retrace_from_high,
+        "event_close_position": event_close_position,
+        "day_position": day_position,
+        "upper_rejection": upper_rejection,
+        "candle_bear": candle_bear,
+        "special_buy": special_ctx,
+        "big_move": big_move_ctx,
+        "buy_dominant": buy_dominant,
+        "big_move_buy": big_move_buy,
+        "buy_highest_tp": buy_tp,
+        "extreme_info": extreme_info,
+        "missing": missing
+    }
+
+
+def event_trap_flip_text(ctx):
+    ctx = ctx or {}
+    micro = ctx.get("micro_bos") or {}
+    special = ctx.get("special_buy") or {}
+    best = special.get("best_trade") or {}
+    return (
+        f"Active: {ctx.get('active')}\n"
+        f"Allow: {ctx.get('allow')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Setup: {ctx.get('setup_type')} | Score: {ctx.get('score')}/{ctx.get('required_score')} | ok: {ctx.get('score_ok')}\n"
+        f"Evento/news: {ctx.get('event_active')} | ok: {ctx.get('event_ok')}\n"
+        f"Zona Max ok: {ctx.get('zone_ok')} | Rejection ok: {ctx.get('rejection_ok')}\n"
+        f"Micro/Breakdown ok: {ctx.get('micro_or_breakdown_ok')} | Micro BOS: {micro.get('confirmed')} | Event breakdown: {ctx.get('event_breakdown_ok')}\n"
+        f"Retrace da high evento: {round(to_float(ctx.get('event_retrace_from_high')), 2)} / {EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH}\n"
+        f"Event close position: {round(to_float(ctx.get('event_close_position')), 3)} / max {EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION}\n"
+        f"BUY da flippare: {best.get('id', 'N/D')} | {best.get('setup_type', 'N/D')} | TP{ctx.get('buy_highest_tp', 0)}\n"
+        f"Big Move BUY: {ctx.get('big_move_buy')}"
+    )
+
+
+def deep_extension_sell_guard_context(signal, symbol, setup_type, score, data, deep_ctx=None):
+    signal = str(signal or "").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    data = data or {}
+
+    if not DEEP_EXTENSION_SELL_GUARD_ENABLED:
+        return {"block": False, "reason": "Deep Extension Sell Guard disattivato"}
+    if signal != "SELL":
+        return {"block": False, "reason": "Non è SELL"}
+    if setup_type not in DEEP_EXTENSION_SELL_GUARD_SETUPS:
+        return {"block": False, "reason": "Setup esente"}
+
+    deep_ctx = deep_ctx or get_deep_extension_context(symbol, data)
+    day_position = to_float(data.get("day_position"), -1)
+    low_zone = bool(day_position >= 0 and day_position <= DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION)
+    deep_active = bool(deep_ctx.get("active") or to_bool(data.get("deep_extension_local", "false")) or to_bool(data.get("regime_deep_extension_local", "false")))
+    score_ok = int(score) >= DEEP_EXTENSION_SELL_GUARD_MIN_SCORE
+
+    block = bool((deep_active or low_zone) and not score_ok)
+
+    return {
+        "block": block,
+        "reason": (
+            "Deep Extension Guard: SELL basso/campaign troppo debole dopo grande drop"
+            if block else "Deep Extension Guard ok"
+        ),
+        "deep_active": deep_active,
+        "low_zone": low_zone,
+        "score": score,
+        "required_score": DEEP_EXTENSION_SELL_GUARD_MIN_SCORE,
+        "score_ok": score_ok,
+        "day_position": day_position,
+        "max_day_position": DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION,
+        "deep_extension": deep_ctx
+    }
+
+
+def deep_extension_sell_guard_text(ctx):
+    ctx = ctx or {}
+    return (
+        f"Block: {ctx.get('block')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Deep active: {ctx.get('deep_active')} | Low zone: {ctx.get('low_zone')}\n"
+        f"Score: {ctx.get('score')}/{ctx.get('required_score')} | ok: {ctx.get('score_ok')}\n"
+        f"Day position: {round(to_float(ctx.get('day_position')), 3)} / max {DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION}"
+    )
+
 def get_regime_arbiter_state(symbol):
     symbol = str(symbol or "XAUUSD").upper()
     if symbol not in REGIME_ARBITER_STATE:
@@ -4745,12 +5020,16 @@ def get_regime_arbiter_context(symbol, data=None):
     sell_profit_lock_ctx = get_sell_profit_lock_context(symbol, data)
     loss_recovery_ctx = true_max_zone_reentry_context("SELL", symbol, "CONTEXT", 0, data)
     big_move_ctx = get_big_move_thesis_context(symbol, data)
+    event_trap_ctx = event_trap_flip_context("CONTEXT", symbol, "CONTEXT", 0, data, special_ctx=recovery_ctx, big_move_ctx=big_move_ctx)
+    deep_sell_guard_ctx = deep_extension_sell_guard_context("CONTEXT", symbol, "CONTEXT", 0, data, deep_ctx=deep_ctx)
     pre_bear = get_pre_bear_state(symbol)
     pre_bear_status = str(pre_bear.get("status", "IDLE")).upper()
     bear_state = get_bear_continuation_state(symbol)
     bear_state_name = str(bear_state.get("state", "IDLE")).upper()
 
-    if recovery_ctx.get("active"):
+    if event_trap_ctx.get("allow"):
+        mode, reason = "EVENT_TRAP_FLIP", event_trap_ctx.get("reason")
+    elif recovery_ctx.get("active"):
         mode, reason = "RECOVERY_DOMINANT", recovery_ctx.get("reason")
     elif loss_recovery_ctx.get("active"):
         mode, reason = "LOSS_RECOVERY_MAX_ZONE", loss_recovery_ctx.get("reason")
@@ -4782,6 +5061,8 @@ def get_regime_arbiter_context(symbol, data=None):
         "sell_profit_lock": sell_profit_lock_ctx,
         "loss_recovery": loss_recovery_ctx,
         "big_move": big_move_ctx,
+        "event_trap_flip": event_trap_ctx,
+        "deep_extension_sell_guard": deep_sell_guard_ctx,
         "pre_bear_status": pre_bear_status,
         "bear_state": bear_state_name
     }
@@ -4812,7 +5093,7 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
     setup_type = str(setup_type or "NORMAL").upper()
 
     if signal != "SELL":
-        return False, ctx, "Il Regime Arbiter v28 governa qui i conflitti SELL"
+        return False, ctx, "Il Regime Arbiter v29 governa qui i conflitti SELL"
 
     # v26: protezione precoce di qualunque BUY speciale aperto.
     # Serve a evitare: BUY speciale corretto + SELL NORMAL debole subito dopo.
@@ -4823,6 +5104,17 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
     )
     ctx["special_buy_protection"] = special_buy_ctx
 
+    event_trap_ctx = event_trap_flip_context(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data,
+        special_ctx=special_buy_ctx,
+        big_move_ctx=ctx.get("big_move")
+    )
+    ctx["event_trap_flip"] = event_trap_ctx
+
     if special_buy_ctx.get("active"):
         if setup_type == "NORMAL" and SPECIAL_BUY_BLOCK_NORMAL_SELL:
             return (
@@ -4831,21 +5123,27 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
                 "Special BUY Protection: SELL NORMAL bloccato contro BUY speciale attivo"
             )
 
-        counter_ctx = special_buy_counter_sell_override_context(
-            symbol,
-            setup_type,
-            score,
-            data,
-            special_ctx=special_buy_ctx
-        )
-        ctx["counter_sell_override"] = counter_ctx
-
-        if not counter_ctx.get("allow"):
-            return (
-                True,
-                ctx,
-                "Special BUY Dominance: SELL contro BUY speciale non abbastanza forte / non in zona Max"
+        if event_trap_ctx.get("allow"):
+            ctx["counter_sell_override"] = {
+                "allow": True,
+                "reason": "Bypass Special BUY Dominance via Event Trap Flip"
+            }
+        else:
+            counter_ctx = special_buy_counter_sell_override_context(
+                symbol,
+                setup_type,
+                score,
+                data,
+                special_ctx=special_buy_ctx
             )
+            ctx["counter_sell_override"] = counter_ctx
+
+            if not counter_ctx.get("allow"):
+                return (
+                    True,
+                    ctx,
+                    "Special BUY Dominance: SELL contro BUY speciale non abbastanza forte / non in zona Max"
+                )
 
     # v26: SELL NORMAL solo da zona alta/rejection stile Max.
     max_zone_ctx = max_zone_sell_gate_context(
@@ -4896,12 +5194,23 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
             "Loss Recovery / True Max Zone: dopo SL diretti attendo rimbalzo alto vero"
         )
 
+    deep_guard_ctx = deep_extension_sell_guard_context(signal, symbol, setup_type, score, data, deep_ctx=ctx.get("deep_extension"))
+    ctx["deep_extension_sell_guard"] = deep_guard_ctx
+
+    if deep_guard_ctx.get("block") and not event_trap_ctx.get("allow"):
+        return (
+            True,
+            ctx,
+            deep_guard_ctx.get("reason")
+        )
+
     if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
         recovery_ctx = ctx.get("recovery", {})
 
         if (
             recovery_ctx.get("active")
             and setup_type in RECOVERY_DOMINANCE_BLOCK_SELL_SETUPS
+            and not event_trap_ctx.get("allow")
         ):
             return (
                 True,
@@ -4916,6 +5225,7 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
             deep_ctx.get("active")
             and to_float(deep_ctx.get("rebound_from_low"), 0)
             < DEEP_EXTENSION_REARM_REBOUND_POINTS
+            and not event_trap_ctx.get("allow")
         ):
             return (
                 True,
@@ -4926,7 +5236,7 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
 
         maturity_ctx = ctx.get("maturity", {})
 
-        if not maturity_ctx.get("mature"):
+        if not maturity_ctx.get("mature") and not event_trap_ctx.get("allow"):
             return (
                 True,
                 ctx,
@@ -8282,6 +8592,12 @@ Loss Recovery / True Max Zone:
 Big Move Thesis:
 {big_move_thesis_text(regime_ctx.get('big_move', {}))}
 
+Event Trap Flip:
+{event_trap_flip_text(regime_ctx.get('event_trap_flip', {}))}
+
+Deep Extension Sell Guard:
+{deep_extension_sell_guard_text(regime_ctx.get('deep_extension_sell_guard', {}))}
+
 Azione:
 Il bot usa una sola tesi dominante.
 - SELL NORMAL bloccati contro BUY speciale attivo
@@ -8291,6 +8607,7 @@ Il bot usa una sola tesi dominante.
 - se il SELL ha già preso TP8/Runner, comprimo nuove entrate simili
 - dopo 2 SL SELL, accetto solo vera zona Max alta
 - se un trade è TP3+ e protetto, attivo Big Move Watch/Confirmed
+- Event Trap Flip può ribaltare SUPER BUY in SUPER SELL da zona alta evento
 - Deep Extension deve essere realmente riarmata
 """
         send_telegram(text)
@@ -8301,6 +8618,9 @@ Il bot usa una sola tesi dominante.
             "regime_mode": regime_ctx.get("mode"),
             "regime_reason": regime_reason
         })
+
+    if signal == "SELL" and regime_ctx.get("event_trap_flip", {}).get("allow"):
+        reasons.append("EVENT TRAP FLIP: SELL A+ autorizzato contro BUY recovery / Big Move BUY")
 
     # =========================
     # PRE-BEAR BUY BLOCK v23
