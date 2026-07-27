@@ -12,7 +12,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v29 Max Fade + Anti Duplicate"
+VERSION = "v9 Max Fade + Anti Duplicate"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
