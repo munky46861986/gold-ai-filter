@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v31 Max Flip Window + Deep Rebound Fast"
+VERSION = "v32 Max Rebound Buy + Fast Quality Gate"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -90,6 +90,7 @@ OPPOSITE_TRADE_LOCK_MIN_TP = int(os.getenv("OPPOSITE_TRADE_LOCK_MIN_TP", "1"))
 
 RECOVERY_LOCK_BUY_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
 }
@@ -109,7 +110,8 @@ BUY_FATIGUE_ALLOW_SCORE = int(os.getenv("BUY_FATIGUE_ALLOW_SCORE", "18"))
 # e arrivano da zona bassa / livello psicologico / recente low.
 BUY_FATIGUE_ALLOW_SETUPS = {
     "MAX_DIP_BUY",
-    "MAX_RECOVERY_BUY"
+    "MAX_RECOVERY_BUY",
+    "DEEP_REBOUND_BUY"
 }
 
 BUY_SL_COOLDOWN_ENABLED = os.getenv("BUY_SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -131,6 +133,7 @@ SETUP_WEIGHTS = {
     "MAX_EVENT_SPIKE_SELL": 10,
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
+    "DEEP_REBOUND_BUY": 5,
     "MAX_DIP_BUY": 4,
     "REVERSAL_BUY": 4,
     "MAX_FADE_SELL": 3,
@@ -567,6 +570,7 @@ RECOVERY_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_DOMINANCE_LOOKBACK
 RECOVERY_DOMINANCE_INVALIDATION_BUFFER = float(os.getenv("RECOVERY_DOMINANCE_INVALIDATION_BUFFER", "2.5"))
 RECOVERY_DOMINANCE_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
 }
@@ -673,6 +677,7 @@ BIG_MOVE_TARGET_STEP = float(os.getenv("BIG_MOVE_TARGET_STEP", "20"))
 BIG_MOVE_TARGET_COUNT = int(os.getenv("BIG_MOVE_TARGET_COUNT", "3"))
 BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
     "PRE_BEAR_SELL",
@@ -730,19 +735,35 @@ SPECIAL_BUY_FLIP_ALLOWED_SETUPS = {
     "MAX_EVENT_SPIKE_SELL"
 }
 
-# v31: Deep Sell Rebound Unlock.
-# Dopo un SELL TP8/runner o una discesa molto pagata, Max spesso prende il rimbalzo breve.
-# Questa eccezione non compra ogni minimo: serve SELL profondo recente + setup recovery/dip + score alto + prezzo vicino ai low.
+# v32: Max Rebound Buy Unlock.
+# Dopo un SELL già molto pagato (TP6/TP7/TP8 o runner), Max spesso compra il rimbalzo da zona low.
+# Non compra ogni minimo: serve discesa profonda recente + prezzo vicino ai low/psicologico + conferme minime.
 POST_SELL_REBOUND_UNLOCK_ENABLED = os.getenv("POST_SELL_REBOUND_UNLOCK_ENABLED", "TRUE").upper() == "TRUE"
-POST_SELL_REBOUND_MIN_SCORE = int(os.getenv("POST_SELL_REBOUND_MIN_SCORE", "23"))
-POST_SELL_REBOUND_MIN_SELL_TP = int(os.getenv("POST_SELL_REBOUND_MIN_SELL_TP", "8"))
-POST_SELL_REBOUND_LOOKBACK_SECONDS = int(os.getenv("POST_SELL_REBOUND_LOOKBACK_SECONDS", "5400"))
-POST_SELL_REBOUND_MIN_IMPULSE_DROP = float(os.getenv("POST_SELL_REBOUND_MIN_IMPULSE_DROP", "25"))
-POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW = float(os.getenv("POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW", "8"))
+POST_SELL_REBOUND_MIN_SCORE = int(os.getenv("POST_SELL_REBOUND_MIN_SCORE", "11"))
+POST_SELL_REBOUND_MIN_SELL_TP = int(os.getenv("POST_SELL_REBOUND_MIN_SELL_TP", "6"))
+POST_SELL_REBOUND_LOOKBACK_SECONDS = int(os.getenv("POST_SELL_REBOUND_LOOKBACK_SECONDS", "7200"))
+POST_SELL_REBOUND_MIN_IMPULSE_DROP = float(os.getenv("POST_SELL_REBOUND_MIN_IMPULSE_DROP", "18"))
+POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW = float(os.getenv("POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW", "7"))
 POST_SELL_REBOUND_ALLOWED_SETUPS = {
     "MAX_RECOVERY_BUY",
-    "MAX_DIP_BUY"
+    "DEEP_REBOUND_BUY",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY",
+    "DEEP_REBOUND_BUY"
 }
+
+# v32: setup BUY speciale costruito dal server quando il Pine manda un BUY normale
+# dentro una gamba ribassista già pagata. Serve per non perdere il rimbalzo 4020/4017
+# dopo un SELL profondo stile Max, ma resta bloccato se siamo lontani dal low o troppo alti.
+DEEP_REBOUND_BUY_ENABLED = os.getenv("DEEP_REBOUND_BUY_ENABLED", "TRUE").upper() == "TRUE"
+DEEP_REBOUND_BUY_BASE_BONUS = int(os.getenv("DEEP_REBOUND_BUY_BASE_BONUS", "18"))
+DEEP_REBOUND_BUY_MIN_SELL_TP = int(os.getenv("DEEP_REBOUND_BUY_MIN_SELL_TP", "6"))
+DEEP_REBOUND_BUY_LOOKBACK_SECONDS = int(os.getenv("DEEP_REBOUND_BUY_LOOKBACK_SECONDS", "7200"))
+DEEP_REBOUND_BUY_MIN_IMPULSE_DROP = float(os.getenv("DEEP_REBOUND_BUY_MIN_IMPULSE_DROP", "18"))
+DEEP_REBOUND_BUY_MAX_DISTANCE_FROM_LOW = float(os.getenv("DEEP_REBOUND_BUY_MAX_DISTANCE_FROM_LOW", "7"))
+DEEP_REBOUND_BUY_MAX_DAY_POSITION = float(os.getenv("DEEP_REBOUND_BUY_MAX_DAY_POSITION", "0.38"))
+DEEP_REBOUND_BUY_MIN_CONFIRMATIONS = int(os.getenv("DEEP_REBOUND_BUY_MIN_CONFIRMATIONS", "2"))
+DEEP_REBOUND_BUY_REQUIRE_BULLISH_NEWS = os.getenv("DEEP_REBOUND_BUY_REQUIRE_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 
 # v29: non vendere basso con campaign/continuation deboli dopo un grande drop.
 DEEP_EXTENSION_SELL_GUARD_ENABLED = os.getenv("DEEP_EXTENSION_SELL_GUARD_ENABLED", "TRUE").upper() == "TRUE"
@@ -768,19 +789,19 @@ SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDO
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v3 TP Piccoli Copy"
+FAST_VERSION = "Fast Scalper v4 Quality Gate Copy"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
 FAST_SL_POINTS = float(os.getenv("FAST_SL_POINTS", "2.2"))
 FAST_ENTRY_OFFSET = float(os.getenv("FAST_ENTRY_OFFSET", "0.0"))
-FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "5"))
-FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "2"))
-FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "180"))
+FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "7"))
+FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "1"))
+FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "300"))
 FAST_DUPLICATE_PRICE_DISTANCE = float(os.getenv("FAST_DUPLICATE_PRICE_DISTANCE", "1.0"))
-FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "20"))
-FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "5"))
-FAST_MAX_CONSECUTIVE_SL = int(os.getenv("FAST_MAX_CONSECUTIVE_SL", "3"))
+FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "12"))
+FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "4"))
+FAST_MAX_CONSECUTIVE_SL = int(os.getenv("FAST_MAX_CONSECUTIVE_SL", "2"))
 FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS = int(os.getenv("FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS", "3600"))
 FAST_ALLOWED_TFS = {"1", "3", "5"}
 FAST_ONLY_WITH_MAIN_DIRECTION = os.getenv("FAST_ONLY_WITH_MAIN_DIRECTION", "TRUE").upper() == "TRUE"
@@ -800,11 +821,19 @@ FAST_AUTO_FROM_MAIN_WEBHOOK = os.getenv("FAST_AUTO_FROM_MAIN_WEBHOOK", "TRUE").u
 FAST_AUTO_BEFORE_MAIN_BLOCKS = os.getenv("FAST_AUTO_BEFORE_MAIN_BLOCKS", "TRUE").upper() == "TRUE"
 FAST_ALLOW_DEEP_REBOUND_COUNTER = os.getenv("FAST_ALLOW_DEEP_REBOUND_COUNTER", "TRUE").upper() == "TRUE"
 FAST_SEND_BLOCKED_FROM_MAIN = os.getenv("FAST_SEND_BLOCKED_FROM_MAIN", "FALSE").upper() == "TRUE"
+# v32: il fast resta parallelo ma non deve sparare segnali 50/50.
+FAST_QUALITY_GATE_ENABLED = os.getenv("FAST_QUALITY_GATE_ENABLED", "TRUE").upper() == "TRUE"
+FAST_MIN_REASON_COUNT = int(os.getenv("FAST_MIN_REASON_COUNT", "6"))
+FAST_REQUIRE_MOMENTUM_OR_REJECTION = os.getenv("FAST_REQUIRE_MOMENTUM_OR_REJECTION", "TRUE").upper() == "TRUE"
+FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE = os.getenv("FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE", "TRUE").upper() == "TRUE"
+FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.35"))
+FAST_MIDDLE_HIGH = float(os.getenv("FAST_MIDDLE_HIGH", "0.65"))
 FAST_MAIN_ALLOWED_SETUPS = {
     "NORMAL",
     "REVERSAL_BUY",
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
+    "DEEP_REBOUND_BUY",
     "MAX_FADE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FAILED_RETEST_SELL",
@@ -1260,6 +1289,8 @@ def health():
         "fast_auto_before_main_blocks": FAST_AUTO_BEFORE_MAIN_BLOCKS,
         "fast_allow_deep_rebound_counter": FAST_ALLOW_DEEP_REBOUND_COUNTER,
         "fast_send_blocked_from_main": FAST_SEND_BLOCKED_FROM_MAIN,
+        "fast_quality_gate_enabled": FAST_QUALITY_GATE_ENABLED,
+        "fast_min_reason_count": FAST_MIN_REASON_COUNT,
         "special_buy_flip_window_enabled": SPECIAL_BUY_FLIP_WINDOW_ENABLED,
         "post_sell_rebound_unlock_enabled": POST_SELL_REBOUND_UNLOCK_ENABLED,
         "total_trades": len(OPEN_TRADES),
@@ -2408,6 +2439,12 @@ def score_signal(data, signal):
         and dip_confirmations >= 2
     )
 
+    # v32: BUY di rimbalzo dopo SELL profondo stile Max.
+    # Serve quando il Pine manda un BUY normale dentro bear state, ma il SELL ha già pagato TP6+/runner
+    # e il prezzo è in zona low/psicologica.
+    deep_rebound_buy_ctx = deep_rebound_buy_candidate_context(signal, symbol, data)
+    deep_rebound_buy = bool(deep_rebound_buy_ctx.get("allow"))
+
     max_dip_sell = (
         signal == "SELL"
         and active_news_bias == "BEARISH_GOLD"
@@ -2533,6 +2570,22 @@ def score_signal(data, signal):
             else:
                 reasons.append("Modalità evento/NFP: possibile exhaustion sell")
 
+    elif deep_rebound_buy:
+        setup_type = "DEEP_REBOUND_BUY"
+        score += DEEP_REBOUND_BUY_BASE_BONUS
+        reasons.append("DEEP REBOUND BUY: rimbalzo dopo SELL TP6+/runner stile Max")
+        reasons.append(
+            f"SELL già pagato | drop {round(to_float(deep_rebound_buy_ctx.get('impulse_drop')), 2)} | "
+            f"dist low {round(to_float(deep_rebound_buy_ctx.get('distance_from_low')), 2)} | "
+            f"conferme {deep_rebound_buy_ctx.get('confirmations')}/{DEEP_REBOUND_BUY_MIN_CONFIRMATIONS}"
+        )
+        if deep_rebound_buy_ctx.get("near_low"):
+            score += 3
+            reasons.append("Prezzo vicino low/psicologico per rebound")
+        if candle_dir == "BULL" or recovery_buy_signal:
+            score += 2
+            reasons.append("Prima reazione BUY confermata")
+
     elif max_recovery_buy:
         setup_type = "MAX_RECOVERY_BUY"
         score += 9
@@ -2586,8 +2639,8 @@ def score_signal(data, signal):
     # =========================
 
     if signal == "BUY" and bear_state_active:
-        if setup_type == "MAX_RECOVERY_BUY":
-            if deep_extension_ctx.get("active"):
+        if setup_type in ["MAX_RECOVERY_BUY", "DEEP_REBOUND_BUY"]:
+            if deep_extension_ctx.get("active") or setup_type == "DEEP_REBOUND_BUY":
                 reasons.append(
                     f"Bear state {bear_state_name} declassato: Deep Extension Flip attivo"
                 )
@@ -5245,6 +5298,151 @@ def special_buy_flip_window_text(ctx):
     )
 
 
+def deep_rebound_buy_candidate_context(signal, symbol, data):
+    """
+    v32 Max Rebound Buy candidate.
+    Costruisce un BUY speciale quando il SELL precedente è già molto pagato
+    e il prezzo torna su una zona low/psicologica. È l'equivalente server-side
+    del rimbalzo stile Max dopo TP6/TP7/TP8 SELL.
+    """
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+    data = data or {}
+    price = get_price_from_data(data)
+    state = get_bear_continuation_state(symbol)
+
+    active_news_bias, _ = get_auto_news_bias()
+    day_position = to_float(data.get("day_position"), -1)
+    rsi = to_float(data.get("rsi", 50), 50)
+    candle_dir = str(data.get("candle_dir", "NEUTRAL")).upper()
+    rejection = str(data.get("rejection", "NONE")).upper()
+    structure = str(data.get("structure", "NEUTRAL")).upper()
+    near_day_low = to_bool(data.get("near_day_low"))
+    near_m15_low = to_bool(data.get("near_m15_low"))
+    lower_wick = to_bool(data.get("lower_wick_strong"))
+    close_above_ema20 = to_bool(data.get("close_above_ema20"))
+    recent_low_touch = to_bool(data.get("recent_low_touch"))
+    recovery_buy_signal = to_bool(data.get("recovery_buy_signal"))
+    near_psych, psych_level, psych_distance = psych_info(price)
+
+    ctx = {
+        "allow": False,
+        "reason": "Deep Rebound BUY non attivo",
+        "price": price,
+        "state": state.get("state"),
+        "recent_ok": False,
+        "impulse_drop": 0.0,
+        "distance_from_low": 999999.0,
+        "confirmations": 0,
+        "near_low": False,
+        "day_position": day_position,
+        "psych_level": psych_level,
+        "psych_distance": psych_distance
+    }
+
+    if not DEEP_REBOUND_BUY_ENABLED:
+        ctx["reason"] = "DEEP_REBOUND_BUY_ENABLED = FALSE"
+        return ctx
+    if signal != "BUY":
+        ctx["reason"] = "non è BUY"
+        return ctx
+    if DEEP_REBOUND_BUY_REQUIRE_BULLISH_NEWS and active_news_bias != "BULLISH_GOLD":
+        ctx["reason"] = f"news non bullish ({active_news_bias})"
+        return ctx
+
+    recent_sells = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=DEEP_REBOUND_BUY_MIN_SELL_TP,
+        lookback_seconds=DEEP_REBOUND_BUY_LOOKBACK_SECONDS
+    )
+    recent_runner_sells = [
+        t for t in OPEN_TRADES
+        if str(t.get("symbol", "")).upper() == symbol
+        and normalize_signal(t.get("signal")) == "SELL"
+        and bool(t.get("runner"))
+        and now_ts() - to_float(t.get("created", 0), 0) <= DEEP_REBOUND_BUY_LOOKBACK_SECONDS
+    ]
+    recent_ok = bool(recent_sells or recent_runner_sells)
+
+    impulse_high = to_float(state.get("impulse_high"), 0)
+    impulse_low = to_float(state.get("impulse_low"), 0)
+    history = recent_bear_history(symbol, BEAR_IMPULSE_LOOKBACK_SECONDS)
+    if history:
+        if not impulse_high:
+            impulse_high = max(to_float(p.get("high"), 0) for p in history)
+        if not impulse_low:
+            impulse_low = min(to_float(p.get("low"), 999999) for p in history)
+
+    impulse_drop = max(0.0, impulse_high - impulse_low)
+    distance_from_low = abs(price - impulse_low) if price and impulse_low else 999999.0
+    near_low = bool(
+        distance_from_low <= DEEP_REBOUND_BUY_MAX_DISTANCE_FROM_LOW
+        or near_day_low
+        or near_m15_low
+        or lower_wick
+        or rejection == "LOWER_WICK"
+        or (near_psych and psych_distance <= PSYCH_LEVEL_DISTANCE)
+    )
+
+    confirmations = 0
+    if near_low:
+        confirmations += 1
+    if candle_dir == "BULL" or recovery_buy_signal:
+        confirmations += 1
+    if lower_wick or rejection == "LOWER_WICK" or recent_low_touch:
+        confirmations += 1
+    if near_psych:
+        confirmations += 1
+    if close_above_ema20:
+        confirmations += 1
+    if rsi <= 48:
+        confirmations += 1
+    if structure in ["LL", "HL", "BULLISH"]:
+        confirmations += 1
+
+    day_pos_ok = bool(day_position < 0 or day_position <= DEEP_REBOUND_BUY_MAX_DAY_POSITION)
+    impulse_ok = impulse_drop >= DEEP_REBOUND_BUY_MIN_IMPULSE_DROP
+    confirmation_ok = confirmations >= DEEP_REBOUND_BUY_MIN_CONFIRMATIONS
+
+    allow = bool(recent_ok and impulse_ok and near_low and day_pos_ok and confirmation_ok)
+    ctx.update({
+        "allow": allow,
+        "reason": (
+            "DEEP REBOUND BUY: rimbalzo Max dopo SELL già molto pagato"
+            if allow else "Deep Rebound BUY non autorizzato"
+        ),
+        "recent_ok": recent_ok,
+        "recent_sell_count": len(recent_sells),
+        "recent_runner_sell_count": len(recent_runner_sells),
+        "impulse_drop": impulse_drop,
+        "distance_from_low": distance_from_low,
+        "near_low": near_low,
+        "day_pos_ok": day_pos_ok,
+        "impulse_ok": impulse_ok,
+        "confirmation_ok": confirmation_ok,
+        "confirmations": confirmations,
+        "impulse_high": impulse_high,
+        "impulse_low": impulse_low
+    })
+
+    if not allow:
+        missing = []
+        if not recent_ok:
+            missing.append(f"nessun SELL TP{DEEP_REBOUND_BUY_MIN_SELL_TP}/runner recente")
+        if not impulse_ok:
+            missing.append(f"drop {round(impulse_drop, 2)}/{DEEP_REBOUND_BUY_MIN_IMPULSE_DROP}")
+        if not near_low:
+            missing.append(f"lontano dal low {round(distance_from_low, 2)}/{DEEP_REBOUND_BUY_MAX_DISTANCE_FROM_LOW}")
+        if not day_pos_ok:
+            missing.append(f"day position alta {round(day_position, 2)}/{DEEP_REBOUND_BUY_MAX_DAY_POSITION}")
+        if not confirmation_ok:
+            missing.append(f"conferme {confirmations}/{DEEP_REBOUND_BUY_MIN_CONFIRMATIONS}")
+        ctx["reason"] = "Deep Rebound BUY non autorizzato: " + "; ".join(missing)
+
+    return ctx
+
+
 def post_sell_rebound_unlock_context(signal, symbol, setup_type, score, data):
     """
     v31 Deep Sell Rebound Unlock.
@@ -5325,7 +5523,7 @@ def post_sell_rebound_unlock_context(signal, symbol, setup_type, score, data):
         "active": recent_ok,
         "allow": allow,
         "reason": (
-            "DEEP SELL REBOUND: BUY recovery/dip autorizzato dopo SELL TP8/runner"
+            "DEEP SELL REBOUND: BUY recovery/dip autorizzato dopo SELL TP6+/runner"
             if allow else "Deep Sell Rebound non autorizzato"
         ),
         "recent_sell_tp8_count": len(recent_sells),
@@ -7706,6 +7904,13 @@ def should_block_buy_by_bear_state(signal, symbol, setup_type, score, data):
         if strong_recovery:
             return False, state, "Recovery BUY eccezionale ammesso"
 
+    # v32: se il server ha promosso il BUY a DEEP_REBOUND_BUY, non bloccarlo
+    # solo perché la lower-high machine è ancora bearish.
+    if setup_type == "DEEP_REBOUND_BUY":
+        deep_rebound_ctx = deep_rebound_buy_candidate_context(signal, symbol, data)
+        if deep_rebound_ctx.get("allow"):
+            return False, state, deep_rebound_ctx.get("reason")
+
     rebound_ctx = post_sell_rebound_unlock_context(signal, symbol, setup_type, score, data)
     if rebound_ctx.get("allow"):
         return False, state, rebound_ctx.get("reason")
@@ -8877,10 +9082,12 @@ def fast_direction_score(data, signal):
     return score, reasons
 
 
-def fast_should_block(data, signal, entry):
+def fast_should_block(data, signal, entry, score=None, score_reasons=None):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     tf = str(data.get("tf", "")).strip()
     reasons = []
+    score = to_int(score, 0)
+    score_reasons = score_reasons or []
 
     if not FAST_ENGINE_ENABLED:
         return True, ["FAST_ENGINE_ENABLED = FALSE"]
@@ -8934,6 +9141,45 @@ def fast_should_block(data, signal, entry):
     day_position = to_float(data.get("day_position"), 0.5)
     lower_wick = to_bool(data.get("lower_wick_strong"))
     upper_wick = to_bool(data.get("upper_wick_strong"))
+    candle_dir = str(data.get("candle_dir", "NEUTRAL")).upper()
+    ema20_slope = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50_slope = str(data.get("ema50_slope", "FLAT")).upper()
+    near_m15_high = to_bool(data.get("near_m15_high"))
+    near_m15_low = to_bool(data.get("near_m15_low"))
+
+    if FAST_QUALITY_GATE_ENABLED:
+        if len(score_reasons) < FAST_MIN_REASON_COUNT:
+            return True, [
+                f"fast quality gate: poche confluenze {len(score_reasons)}/{FAST_MIN_REASON_COUNT}"
+            ]
+
+        if FAST_REQUIRE_MOMENTUM_OR_REJECTION:
+            if signal == "BUY":
+                momentum_or_rejection = bool(
+                    candle_dir == "BULL"
+                    or ema20_slope == "UP"
+                    or ema50_slope == "UP"
+                    or near_m15_low
+                    or lower_wick
+                )
+                if not momentum_or_rejection:
+                    return True, ["BUY fast bloccato: manca momentum o rejection bassa"]
+            else:
+                momentum_or_rejection = bool(
+                    candle_dir == "BEAR"
+                    or ema20_slope == "DOWN"
+                    or ema50_slope == "DOWN"
+                    or near_m15_high
+                    or upper_wick
+                )
+                if not momentum_or_rejection:
+                    return True, ["SELL fast bloccato: manca momentum o rejection alta"]
+
+        if FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE and not main_direction:
+            if FAST_MIDDLE_LOW <= day_position <= FAST_MIDDLE_HIGH:
+                return True, [
+                    f"fast bloccato nel mezzo del range ({round(day_position, 2)}): serve big move o zona estrema"
+                ]
 
     if FAST_BLOCK_HIGH_SPIKE_BUY and signal == "BUY" and day_position >= FAST_HIGH_POSITION_BLOCK and not lower_wick:
         return True, [
@@ -8970,7 +9216,7 @@ def build_fast_trade(data, signal):
         sl = entry + FAST_SL_POINTS
 
     score, reasons = fast_direction_score(data, signal)
-    blocked, block_reasons = fast_should_block(data, signal, entry)
+    blocked, block_reasons = fast_should_block(data, signal, entry, score, reasons)
 
     if score < FAST_MIN_SCORE:
         blocked = True
@@ -9662,7 +9908,7 @@ def test_fast():
         "ema20_slope": "UP",
         "ema50_slope": "UP",
         "close_above_ema200": "true",
-        "day_position": "0.45"
+        "day_position": "0.25"
     }
     trade, blocked, block_reasons, reasons = build_fast_trade(fake, "BUY")
     if blocked:
