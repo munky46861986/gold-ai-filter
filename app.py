@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v32 Max Rebound Buy + Fast Quality Gate"
+VERSION = "v33 Max Flip Buy + Virtual Runner + Fast Pause"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -90,6 +90,7 @@ OPPOSITE_TRADE_LOCK_MIN_TP = int(os.getenv("OPPOSITE_TRADE_LOCK_MIN_TP", "1"))
 
 RECOVERY_LOCK_BUY_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
@@ -111,6 +112,7 @@ BUY_FATIGUE_ALLOW_SCORE = int(os.getenv("BUY_FATIGUE_ALLOW_SCORE", "18"))
 BUY_FATIGUE_ALLOW_SETUPS = {
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY"
 }
 
@@ -133,6 +135,7 @@ SETUP_WEIGHTS = {
     "MAX_EVENT_SPIKE_SELL": 10,
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
+    "MAX_FLIP_BUY": 6,
     "DEEP_REBOUND_BUY": 5,
     "MAX_DIP_BUY": 4,
     "REVERSAL_BUY": 4,
@@ -185,6 +188,7 @@ CHAOS_SELL_SETUPS = {
 CHAOS_BUY_SETUPS = {
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "REVERSAL_BUY"
 }
 
@@ -570,6 +574,7 @@ RECOVERY_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_DOMINANCE_LOOKBACK
 RECOVERY_DOMINANCE_INVALIDATION_BUFFER = float(os.getenv("RECOVERY_DOMINANCE_INVALIDATION_BUFFER", "2.5"))
 RECOVERY_DOMINANCE_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
@@ -677,6 +682,7 @@ BIG_MOVE_TARGET_STEP = float(os.getenv("BIG_MOVE_TARGET_STEP", "20"))
 BIG_MOVE_TARGET_COUNT = int(os.getenv("BIG_MOVE_TARGET_COUNT", "3"))
 BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
@@ -746,6 +752,7 @@ POST_SELL_REBOUND_MIN_IMPULSE_DROP = float(os.getenv("POST_SELL_REBOUND_MIN_IMPU
 POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW = float(os.getenv("POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW", "7"))
 POST_SELL_REBOUND_ALLOWED_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
@@ -764,6 +771,41 @@ DEEP_REBOUND_BUY_MAX_DISTANCE_FROM_LOW = float(os.getenv("DEEP_REBOUND_BUY_MAX_D
 DEEP_REBOUND_BUY_MAX_DAY_POSITION = float(os.getenv("DEEP_REBOUND_BUY_MAX_DAY_POSITION", "0.38"))
 DEEP_REBOUND_BUY_MIN_CONFIRMATIONS = int(os.getenv("DEEP_REBOUND_BUY_MIN_CONFIRMATIONS", "2"))
 DEEP_REBOUND_BUY_REQUIRE_BULLISH_NEWS = os.getenv("DEEP_REBOUND_BUY_REQUIRE_BULLISH_NEWS", "TRUE").upper() == "TRUE"
+
+# v33: Max Flip BUY dopo SELL pagato/BE.
+# Caso reale 30/07: Max chiude/gestisce SELL, poi compra il recupero 4052-4047.
+# Questa logica NON tocca la strategia base: è un generatore autonomo solo su PRICE_UPDATE,
+# dopo SELL già protetto e invalidato al rialzo.
+MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED = os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED", "TRUE").upper() == "TRUE"
+MAX_FLIP_BUY_AFTER_SELL_BE_LOOKBACK_SECONDS = int(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_LOOKBACK_SECONDS", "5400"))
+MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SELL_TP = int(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SELL_TP", "1"))
+MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SCORE = int(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SCORE", "12"))
+MAX_FLIP_BUY_AFTER_SELL_BE_INVALIDATION_POINTS = float(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_INVALIDATION_POINTS", "2.0"))
+MAX_FLIP_BUY_AFTER_SELL_BE_MAX_DAY_POSITION = float(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_MAX_DAY_POSITION", "0.72"))
+MAX_FLIP_BUY_AFTER_SELL_BE_MIN_CONFIRMATIONS = int(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_MIN_CONFIRMATIONS", "3"))
+MAX_FLIP_BUY_AFTER_SELL_BE_COOLDOWN_SECONDS = int(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_COOLDOWN_SECONDS", "2400"))
+MAX_FLIP_BUY_AFTER_SELL_BE_ENTRY_HALF_ZONE = float(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_ENTRY_HALF_ZONE", "3.0"))
+MAX_FLIP_BUY_AFTER_SELL_BE_SL_POINTS = float(os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_SL_POINTS", "12.0"))
+MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_BULLISH_CONTEXT = os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_BULLISH_CONTEXT", "TRUE").upper() == "TRUE"
+MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_RECOVERY_ABOVE_SELL = os.getenv("MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_RECOVERY_ABOVE_SELL", "TRUE").upper() == "TRUE"
+MAX_FLIP_BUY_AFTER_SELL_BE_TP_DISTANCES = [6, 8, 11, 14, 17, 19, 22, 26]
+MAX_FLIP_BUY_AFTER_SELL_BE_SETUPS_TO_FLIP = {
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "MAX_FADE_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "NORMAL"
+}
+
+# v33: Runner virtuale.
+# Se un trade TP2/TP3+ si chiude a BE, la tesi resta viva per permettere flip/re-entry.
+VIRTUAL_RUNNER_ENABLED = os.getenv("VIRTUAL_RUNNER_ENABLED", "TRUE").upper() == "TRUE"
+VIRTUAL_RUNNER_MIN_TP = int(os.getenv("VIRTUAL_RUNNER_MIN_TP", "2"))
+VIRTUAL_RUNNER_LOOKBACK_SECONDS = int(os.getenv("VIRTUAL_RUNNER_LOOKBACK_SECONDS", "7200"))
+VIRTUAL_RUNNER_STATE = {}
+
 
 # v29: non vendere basso con campaign/continuation deboli dopo un grande drop.
 DEEP_EXTENSION_SELL_GUARD_ENABLED = os.getenv("DEEP_EXTENSION_SELL_GUARD_ENABLED", "TRUE").upper() == "TRUE"
@@ -789,7 +831,7 @@ SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDO
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v4 Quality Gate Copy"
+FAST_VERSION = "Fast Scalper v5 Quality Gate Copy + Pause"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -803,6 +845,9 @@ FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "12"))
 FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "4"))
 FAST_MAX_CONSECUTIVE_SL = int(os.getenv("FAST_MAX_CONSECUTIVE_SL", "2"))
 FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS = int(os.getenv("FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS", "3600"))
+FAST_PAUSE_ALERT_ENABLED = os.getenv("FAST_PAUSE_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+FAST_PAUSE_ALERT_COOLDOWN_SECONDS = int(os.getenv("FAST_PAUSE_ALERT_COOLDOWN_SECONDS", "900"))
+FAST_PAUSE_NOTIFIED = {}
 FAST_ALLOWED_TFS = {"1", "3", "5"}
 FAST_ONLY_WITH_MAIN_DIRECTION = os.getenv("FAST_ONLY_WITH_MAIN_DIRECTION", "TRUE").upper() == "TRUE"
 FAST_BLOCK_COUNTER_BIG_MOVE = os.getenv("FAST_BLOCK_COUNTER_BIG_MOVE", "TRUE").upper() == "TRUE"
@@ -864,7 +909,11 @@ CAMPAIGN_PROFIT_LOCK_SELL_AFTER_BUY_ALLOW_SETUPS = {
     "MAX_EVENT_SPIKE_SELL"
 }
 CAMPAIGN_PROFIT_LOCK_BUY_AFTER_SELL_ALLOW_SETUPS = {
-    "MAX_RECOVERY_BUY"
+    "MAX_RECOVERY_BUY",
+    "MAX_FLIP_BUY",
+    "DEEP_REBOUND_BUY",
+    "REVERSAL_BUY",
+    "MAX_DIP_BUY"
 }
 
 # v30: non inseguire BUY alti dopo una campagna BUY già pagata.
@@ -1291,6 +1340,8 @@ def health():
         "fast_send_blocked_from_main": FAST_SEND_BLOCKED_FROM_MAIN,
         "fast_quality_gate_enabled": FAST_QUALITY_GATE_ENABLED,
         "fast_min_reason_count": FAST_MIN_REASON_COUNT,
+        "max_flip_buy_after_sell_be_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED,
+        "virtual_runner_enabled": VIRTUAL_RUNNER_ENABLED,
         "special_buy_flip_window_enabled": SPECIAL_BUY_FLIP_WINDOW_ENABLED,
         "post_sell_rebound_unlock_enabled": POST_SELL_REBOUND_UNLOCK_ENABLED,
         "total_trades": len(OPEN_TRADES),
@@ -8851,6 +8902,415 @@ def buy_campaign_exhaustion_text(ctx):
         + "\n".join(rows)
     )
 
+
+# =========================
+# v33 MAX FLIP BUY + VIRTUAL RUNNER
+# =========================
+
+def _trade_close_or_update_time(trade):
+    return to_float(
+        trade.get("closed")
+        or trade.get("last_tp_time")
+        or trade.get("activated")
+        or trade.get("created")
+        or 0,
+        0
+    )
+
+
+def _trade_mid_entry(trade):
+    low = to_float(trade.get("entry_low"), 0)
+    high = to_float(trade.get("entry_high"), 0)
+    if low and high:
+        return (low + high) / 2
+    return low or high or 0
+
+
+def mark_virtual_runner(trade, reason=""):
+    if not VIRTUAL_RUNNER_ENABLED or not trade:
+        return None
+
+    highest_tp = int(trade.get("highest_tp", 0) or 0)
+    if highest_tp < VIRTUAL_RUNNER_MIN_TP:
+        return None
+
+    symbol = str(trade.get("symbol", "XAUUSD")).upper()
+    state = {
+        "active": True,
+        "symbol": symbol,
+        "trade_id": trade.get("id"),
+        "signal": trade.get("signal"),
+        "setup_type": trade.get("setup_type"),
+        "highest_tp": highest_tp,
+        "status": trade.get("status"),
+        "entry_low": trade.get("entry_low"),
+        "entry_high": trade.get("entry_high"),
+        "sl": trade.get("sl"),
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "expires": now_ts() + VIRTUAL_RUNNER_LOOKBACK_SECONDS,
+        "reason": reason or "Trade chiuso a BE ma tesi ancora valida"
+    }
+    VIRTUAL_RUNNER_STATE[symbol] = state
+    return state
+
+
+def get_virtual_runner(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    state = VIRTUAL_RUNNER_STATE.get(symbol)
+    if not state:
+        return {"active": False, "reason": "Nessun runner virtuale"}
+    if now_ts() > to_float(state.get("expires"), 0):
+        VIRTUAL_RUNNER_STATE.pop(symbol, None)
+        return {"active": False, "reason": "Runner virtuale scaduto"}
+    return state
+
+
+def virtual_runner_text(symbol):
+    state = get_virtual_runner(symbol)
+    if not state.get("active"):
+        return f"Active: False\nReason: {state.get('reason')}"
+    return (
+        f"Active: True\n"
+        f"Trade: {state.get('trade_id')} | {state.get('signal')} | {state.get('setup_type')}\n"
+        f"Highest TP: {state.get('highest_tp')}\n"
+        f"Reason: {state.get('reason')}\n"
+        f"Expires: {state.get('expires')}"
+    )
+
+
+def recent_sell_for_max_flip_buy(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    cutoff = now_ts() - MAX_FLIP_BUY_AFTER_SELL_BE_LOOKBACK_SECONDS
+    candidates = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("signal", "")).upper() != "SELL":
+            continue
+        if str(trade.get("setup_type", "NORMAL")).upper() not in MAX_FLIP_BUY_AFTER_SELL_BE_SETUPS_TO_FLIP:
+            continue
+        if int(trade.get("highest_tp", 0) or 0) < MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SELL_TP:
+            continue
+        if _trade_close_or_update_time(trade) < cutoff:
+            continue
+        if trade.get("status") not in ["OPEN", "BE", "WIN"]:
+            continue
+        candidates.append(trade)
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda t: (
+            int(t.get("highest_tp", 0) or 0),
+            _trade_close_or_update_time(t)
+        ),
+        reverse=True
+    )
+    return candidates[0]
+
+
+def has_recent_max_flip_buy(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    cutoff = now_ts() - MAX_FLIP_BUY_AFTER_SELL_BE_COOLDOWN_SECONDS
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("setup_type", "")).upper() != "MAX_FLIP_BUY":
+            continue
+        if to_float(trade.get("created", 0), 0) >= cutoff:
+            return True, trade
+    return False, None
+
+
+def max_flip_buy_after_sell_be_context(data):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+    ctx = {
+        "allow": False,
+        "reason": "",
+        "symbol": symbol,
+        "price": price,
+        "score": 0,
+        "confirmations": 0,
+        "sell_trade": None,
+        "reasons": []
+    }
+
+    if not MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED:
+        ctx["reason"] = "MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED = FALSE"
+        return ctx
+
+    if not price:
+        ctx["reason"] = "Prezzo non disponibile"
+        return ctx
+
+    duplicated, old = has_recent_max_flip_buy(symbol)
+    if duplicated:
+        ctx["reason"] = f"MAX_FLIP_BUY recente già presente #{old.get('id')}"
+        return ctx
+
+    # Se c'è già un BUY principale aperto/pending, non sovraccarico.
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("signal", "")).upper() == "BUY" and trade.get("status") in ["PENDING", "OPEN"]:
+            ctx["reason"] = f"BUY già attivo #{trade.get('id')}"
+            return ctx
+
+    sell_trade = recent_sell_for_max_flip_buy(symbol)
+    virtual = get_virtual_runner(symbol)
+    ctx["virtual_runner"] = virtual
+
+    if not sell_trade:
+        ctx["reason"] = "Nessun SELL recente TP/BE da flippare"
+        return ctx
+
+    ctx["sell_trade"] = sell_trade
+
+    sell_entry_high = to_float(sell_trade.get("entry_high"), 0)
+    sell_entry_mid = _trade_mid_entry(sell_trade)
+    invalidation_level = sell_entry_high + MAX_FLIP_BUY_AFTER_SELL_BE_INVALIDATION_POINTS if sell_entry_high else 0
+    recovered_above_sell = bool(price >= invalidation_level) if invalidation_level else True
+
+    day_position = to_float(data.get("day_position"), -1)
+    candle_dir = str(data.get("candle_dir", "")).upper()
+    h1 = str(data.get("h1_bias", "")).upper()
+    h4 = str(data.get("h4_bias", "")).upper()
+    daily = str(data.get("day_bias", data.get("daily_bias", ""))).upper()
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    ema50 = str(data.get("ema50_slope", "")).upper()
+    rsi = to_float(data.get("rsi"), 50)
+    close_above_ema20 = to_bool(data.get("close_above_ema20")) or ema20 == "UP"
+    close_above_ema50 = to_bool(data.get("close_above_ema50")) or ema50 == "UP"
+    lower_wick = to_bool(data.get("lower_wick_strong")) or str(data.get("rejection", "")).upper() == "LOWER_WICK"
+    near_low = to_bool(data.get("near_day_low")) or to_bool(data.get("near_m15_low"))
+    event_or_news = is_event_or_news_active(data)
+    micro_bull = to_bool(data.get("micro_bos_bull")) or to_bool(data.get("breakout_up"))
+
+    reasons = []
+    if recovered_above_sell:
+        reasons.append(f"recupero sopra zona SELL: {round(price, 3)} >= {round(invalidation_level, 3)}")
+    if candle_dir == "BULL":
+        reasons.append("candela bullish")
+    if h1 == "BUY":
+        reasons.append("H1 BUY")
+    if h4 == "BUY":
+        reasons.append("H4 BUY")
+    if daily == "BUY":
+        reasons.append("Daily BUY")
+    if rsi > 50:
+        reasons.append("RSI sopra 50")
+    if close_above_ema20:
+        reasons.append("recupero/EMA20 UP")
+    if close_above_ema50:
+        reasons.append("recupero/EMA50 UP")
+    if lower_wick or near_low:
+        reasons.append("rejection/low difeso")
+    if event_or_news:
+        reasons.append("evento/news/volatilità attiva")
+    if micro_bull:
+        reasons.append("micro breakout bullish")
+
+    confirmations = len(reasons)
+    score = 10 + confirmations
+    if int(sell_trade.get("highest_tp", 0) or 0) >= 3:
+        score += 2
+    if sell_trade.get("status") == "BE":
+        score += 2
+    if event_or_news:
+        score += 1
+
+    day_position_ok = bool(day_position < 0 or day_position <= MAX_FLIP_BUY_AFTER_SELL_BE_MAX_DAY_POSITION)
+    recovery_ok = bool((not MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_RECOVERY_ABOVE_SELL) or recovered_above_sell)
+    context_ok = bool((not MAX_FLIP_BUY_AFTER_SELL_BE_REQUIRE_BULLISH_CONTEXT) or confirmations >= MAX_FLIP_BUY_AFTER_SELL_BE_MIN_CONFIRMATIONS)
+    score_ok = bool(score >= MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SCORE)
+
+    ctx.update({
+        "score": score,
+        "confirmations": confirmations,
+        "reasons": reasons,
+        "day_position": day_position,
+        "day_position_ok": day_position_ok,
+        "recovery_ok": recovery_ok,
+        "context_ok": context_ok,
+        "score_ok": score_ok,
+        "sell_entry_high": sell_entry_high,
+        "sell_entry_mid": sell_entry_mid,
+        "invalidation_level": invalidation_level,
+        "recovered_above_sell": recovered_above_sell,
+        "sell_highest_tp": int(sell_trade.get("highest_tp", 0) or 0),
+        "sell_status": sell_trade.get("status"),
+        "sell_setup": sell_trade.get("setup_type")
+    })
+
+    if recovery_ok and context_ok and score_ok and day_position_ok:
+        ctx["allow"] = True
+        ctx["reason"] = "SELL pagato/BE invalidato: flip BUY stile Max autorizzato"
+    else:
+        missing = []
+        if not recovery_ok:
+            missing.append(f"manca recupero sopra SELL {round(price, 3)}/{round(invalidation_level, 3)}")
+        if not context_ok:
+            missing.append(f"conferme bullish {confirmations}/{MAX_FLIP_BUY_AFTER_SELL_BE_MIN_CONFIRMATIONS}")
+        if not score_ok:
+            missing.append(f"score {score}/{MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SCORE}")
+        if not day_position_ok:
+            missing.append(f"day position alta {round(day_position, 2)}/{MAX_FLIP_BUY_AFTER_SELL_BE_MAX_DAY_POSITION}")
+        ctx["reason"] = "; ".join(missing) if missing else "condizioni non complete"
+
+    return ctx
+
+
+def build_max_flip_buy_data(data, ctx):
+    price = get_price_from_data(data)
+    if not price:
+        return None, "Prezzo non disponibile"
+
+    entry_high = round(price, 3)
+    entry_low = round(price - MAX_FLIP_BUY_AFTER_SELL_BE_ENTRY_HALF_ZONE, 3)
+    sl = round(entry_low - MAX_FLIP_BUY_AFTER_SELL_BE_SL_POINTS, 3)
+
+    out = {
+        "signal": "BUY",
+        "symbol": data.get("symbol", "XAUUSD"),
+        "price": price,
+        "tf": data.get("tf", "1"),
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "sl": sl,
+        "synthetic_source": "MAX_FLIP_BUY_AFTER_SELL_BE",
+        "day_position": data.get("day_position")
+    }
+
+    for i, dist in enumerate(MAX_FLIP_BUY_AFTER_SELL_BE_TP_DISTANCES, start=1):
+        out[f"tp{i}"] = round(entry_low + float(dist), 3)
+
+    return out, None
+
+
+def save_max_flip_buy_trade(data, ctx):
+    synthetic_data, error = build_max_flip_buy_data(data, ctx)
+    if error:
+        return None, error
+
+    trade = save_trade(
+        synthetic_data,
+        "BUY",
+        int(ctx.get("score", MAX_FLIP_BUY_AFTER_SELL_BE_MIN_SCORE)),
+        "MAX_FLIP_BUY"
+    )
+    trade["status"] = "OPEN"
+    trade["entered"] = True
+    trade["activated"] = now_ts()
+    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    trade["synthetic"] = True
+    trade["synthetic_source"] = "MAX_FLIP_BUY_AFTER_SELL_BE"
+    sell_trade = ctx.get("sell_trade") or {}
+    trade["flip_from_sell_id"] = sell_trade.get("id")
+    trade["flip_from_sell_setup"] = sell_trade.get("setup_type")
+    trade["flip_from_sell_highest_tp"] = sell_trade.get("highest_tp")
+    trade["flip_reason"] = ctx.get("reason")
+    save_trades()
+    return trade, None
+
+
+def max_flip_buy_message(trade, ctx):
+    reason_text = "\n".join([f"- {r}" for r in ctx.get("reasons", [])]) or "- recupero bullish post SELL"
+    sell_trade = ctx.get("sell_trade") or {}
+    return f"""🟢🔄 GOLD BUY AUTONOMO {VERSION}
+
+🆔 Trade ID: {trade.get('id')}
+📌 Setup: MAX_FLIP_BUY
+🧠 Origine: Python Max Flip BUY dopo SELL TP/BE
+📍 Entry Zone: {trade.get('entry_low')} - {trade.get('entry_high')}
+🛑 SL: {trade.get('sl')}
+🎯 TP1: {trade.get('tp1')}
+🎯 TP2: {trade.get('tp2')}
+🎯 TP3: {trade.get('tp3')}
+🎯 TP4: {trade.get('tp4')}
+🎯 TP5: {trade.get('tp5')}
+🎯 TP6: {trade.get('tp6')}
+🎯 TP7: {trade.get('tp7')}
+🎯 TP8: {trade.get('tp8')}
+
+🧠 Score flip: {ctx.get('score')}
+
+SELL flippato:
+- ID: {sell_trade.get('id', 'N/D')}
+- Setup: {sell_trade.get('setup_type', 'N/D')}
+- Status: {sell_trade.get('status', 'N/D')}
+- Highest TP: {sell_trade.get('highest_tp', 0)}
+- Zona SELL: {sell_trade.get('entry_low', 'N/D')} - {sell_trade.get('entry_high', 'N/D')}
+
+Conferme:
+{reason_text}
+
+Virtual Runner:
+{virtual_runner_text(trade.get('symbol', 'XAUUSD'))}
+
+Azione:
+Il bot considera il SELL precedente pagato/invalido e prova il recupero BUY stile Max.
+"""
+
+
+def process_max_flip_buy_after_sell_be(data):
+    result = {
+        "triggered": False,
+        "trade_id": None,
+        "reason": ""
+    }
+    ctx = max_flip_buy_after_sell_be_context(data)
+    result["reason"] = ctx.get("reason")
+    result["ctx"] = ctx
+    if not ctx.get("allow"):
+        return result
+
+    trade, error = save_max_flip_buy_trade(data, ctx)
+    if error:
+        result["reason"] = error
+        return result
+
+    send_telegram(max_flip_buy_message(trade, ctx))
+    result["triggered"] = True
+    result["trade_id"] = trade.get("id")
+    return result
+
+
+def fast_pause_status(symbol=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    consecutive = fast_consecutive_sl_count(symbol)
+    if consecutive < FAST_MAX_CONSECUTIVE_SL:
+        return {"active": False, "consecutive_sl": consecutive, "remaining_seconds": 0}
+    last_loss = fast_last_loss_ts(symbol)
+    remaining = max(0, FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS - (now_ts() - last_loss))
+    return {"active": remaining > 0, "consecutive_sl": consecutive, "remaining_seconds": remaining}
+
+
+def maybe_fast_pause_message(symbol):
+    if not FAST_PAUSE_ALERT_ENABLED:
+        return None
+    symbol = str(symbol or "XAUUSD").upper()
+    status = fast_pause_status(symbol)
+    if not status.get("active"):
+        return None
+    last_notified = to_float(FAST_PAUSE_NOTIFIED.get(symbol), 0)
+    if now_ts() - last_notified < FAST_PAUSE_ALERT_COOLDOWN_SECONDS:
+        return None
+    FAST_PAUSE_NOTIFIED[symbol] = now_ts()
+    mins = int(math.ceil(status.get("remaining_seconds", 0) / 60.0))
+    return (
+        f"⏸ FAST SCALPER IN PAUSA\n\n"
+        f"Symbol: {symbol}\n"
+        f"Motivo: {status.get('consecutive_sl')} SL fast consecutivi\n"
+        f"Pausa residua circa: {mins} minuti\n\n"
+        f"Azione:\n"
+        f"Il motore veloce non è rotto: si ferma per evitare overtrading dopo SL ravvicinati.\n"
+        f"La strategia principale continua normalmente."
+    )
+
 # =========================
 # FAST SCALPER PARALLELO
 # =========================
@@ -9381,6 +9841,9 @@ def handle_fast_price_update(data):
                     f"SL: {fmt_price(sl)}\n"
                     f"Consecutivi oggi: {fast_consecutive_sl_count(symbol)}"
                 )
+                pause_msg = maybe_fast_pause_message(symbol)
+                if pause_msg:
+                    updates.append(pause_msg)
                 continue
 
             if high >= tp:
@@ -9403,6 +9866,9 @@ def handle_fast_price_update(data):
                     f"SL: {fmt_price(sl)}\n"
                     f"Consecutivi oggi: {fast_consecutive_sl_count(symbol)}"
                 )
+                pause_msg = maybe_fast_pause_message(symbol)
+                if pause_msg:
+                    updates.append(pause_msg)
                 continue
 
             if low <= tp:
@@ -9474,6 +9940,11 @@ def close_trade(trade, status):
     trade["status"] = status
     trade["closed"] = now_ts()
     trade["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    # v33: se un trade aveva già pagato TP2/TP3+ e chiude a BE,
+    # non cancelliamo mentalmente la tesi: resta un runner virtuale per re-entry/flip.
+    if status == "BE":
+        mark_virtual_runner(trade, f"{trade.get('signal')} chiuso a BE dopo TP{trade.get('highest_tp', 0)}")
 
 
 def runner_message(trade, tp_level, tp_value):
@@ -9893,6 +10364,22 @@ def fast_trades():
     })
 
 
+@app.route("/fast_status")
+def fast_status():
+    symbol = request.args.get("symbol", "XAUUSD")
+    return jsonify({
+        "version": FAST_VERSION,
+        "main_version": VERSION,
+        "symbol": str(symbol).upper(),
+        "pause": fast_pause_status(symbol),
+        "fast_active_trades": len(fast_active_trades(symbol)),
+        "fast_today_trades": len(fast_today_trades(symbol)),
+        "fast_consecutive_sl": fast_consecutive_sl_count(symbol),
+        "virtual_runner": get_virtual_runner(symbol),
+        "max_flip_buy_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED
+    })
+
+
 @app.route("/test_fast")
 def test_fast():
     fake = {
@@ -10029,6 +10516,10 @@ def webhook():
         for campaign_message in campaign_messages:
             send_telegram(campaign_message)
 
+        # v33: se un SELL già pagato/BE viene invalidato da recupero forte,
+        # genera un BUY autonomo stile Max senza aspettare un nuovo alert Pine.
+        max_flip_buy_result = process_max_flip_buy_after_sell_be(data)
+
         # v25/v28: aggiorna l'arbitro centrale sul nuovo prezzo e valuta Big Move Thesis.
         regime_ctx = get_regime_arbiter_context(data.get("symbol", "XAUUSD"), data)
         big_move_ctx = regime_ctx.get("big_move") or get_big_move_thesis_context(data.get("symbol", "XAUUSD"), data)
@@ -10053,6 +10544,9 @@ def webhook():
             "bear_trade_id": bear_result.get("trade_id"),
             "bear_state": bear_result.get("state"),
             "bear_reason": bear_result.get("reason"),
+            "max_flip_buy_triggered": max_flip_buy_result.get("triggered"),
+            "max_flip_buy_trade_id": max_flip_buy_result.get("trade_id"),
+            "max_flip_buy_reason": max_flip_buy_result.get("reason"),
             "pre_bear_status": pre_bear_result.get("status"),
             "pre_bear_confirmed": pre_bear_result.get("confirmed"),
             "pre_bear_reason": pre_bear_result.get("reason"),
