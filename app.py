@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v33 Max Flip Buy + Virtual Runner + Fast Pause"
+VERSION = "v34 Master Regime + One Direction Control"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -806,10 +806,63 @@ VIRTUAL_RUNNER_MIN_TP = int(os.getenv("VIRTUAL_RUNNER_MIN_TP", "2"))
 VIRTUAL_RUNNER_LOOKBACK_SECONDS = int(os.getenv("VIRTUAL_RUNNER_LOOKBACK_SECONDS", "7200"))
 VIRTUAL_RUNNER_STATE = {}
 
+# v34: Master Regime / One Direction Control.
+# Obiettivo: leggere la giornata prima del singolo segnale.
+# Se il mercato passa in SELL_CONTROL, il bot smette di comprare ogni rimbalzo
+# e il FAST può lavorare solo nella direzione dominante.
+# Le variabili restano nel codice: se su Render non puoi aggiungerle, i default qui sotto sono già attivi.
+MASTER_REGIME_ENABLED = os.getenv("MASTER_REGIME_ENABLED", "TRUE").upper() == "TRUE"
+MASTER_REGIME_PRICE_DOMINATES_NEWS = os.getenv("MASTER_REGIME_PRICE_DOMINATES_NEWS", "TRUE").upper() == "TRUE"
+MASTER_REGIME_SELL_CONTROL_BEAR_VOTES = int(os.getenv("MASTER_REGIME_SELL_CONTROL_BEAR_VOTES", "5"))
+MASTER_REGIME_BUY_CONTROL_BULL_VOTES = int(os.getenv("MASTER_REGIME_BUY_CONTROL_BULL_VOTES", "6"))
+MASTER_REGIME_BUY_LOCK_DIRECT_SL = int(os.getenv("MASTER_REGIME_BUY_LOCK_DIRECT_SL", "2"))
+MASTER_REGIME_BUY_LOCK_LOOKBACK_SECONDS = int(os.getenv("MASTER_REGIME_BUY_LOCK_LOOKBACK_SECONDS", "7200"))
+MASTER_REGIME_SELL_SCORE_BONUS = int(os.getenv("MASTER_REGIME_SELL_SCORE_BONUS", "6"))
+MASTER_REGIME_NORMAL_SELL_EXTRA_BONUS = int(os.getenv("MASTER_REGIME_NORMAL_SELL_EXTRA_BONUS", "2"))
+MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY = int(os.getenv("MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY", "14"))
+MASTER_REGIME_ALLOW_NORMAL_SELL_IN_SELL_CONTROL = os.getenv("MASTER_REGIME_ALLOW_NORMAL_SELL_IN_SELL_CONTROL", "TRUE").upper() == "TRUE"
+MASTER_REGIME_SELL_CONTROL_NORMAL_MIN_SCORE = int(os.getenv("MASTER_REGIME_SELL_CONTROL_NORMAL_MIN_SCORE", "6"))
+MASTER_REGIME_SELL_CONTROL_SPECIAL_MIN_SCORE = int(os.getenv("MASTER_REGIME_SELL_CONTROL_SPECIAL_MIN_SCORE", "19"))
+MASTER_REGIME_ALLOW_SELL_AFTER_BUY_FAILURE = os.getenv("MASTER_REGIME_ALLOW_SELL_AFTER_BUY_FAILURE", "TRUE").upper() == "TRUE"
+MASTER_REGIME_BLOCK_BUY_IN_SELL_CONTROL = os.getenv("MASTER_REGIME_BLOCK_BUY_IN_SELL_CONTROL", "TRUE").upper() == "TRUE"
+MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP = int(os.getenv("MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP", "6"))
+MASTER_REGIME_REBOUND_BUY_LOOKBACK_SECONDS = int(os.getenv("MASTER_REGIME_REBOUND_BUY_LOOKBACK_SECONDS", "7200"))
+MASTER_REGIME_REBOUND_BUY_MAX_DISTANCE_FROM_LOW = float(os.getenv("MASTER_REGIME_REBOUND_BUY_MAX_DISTANCE_FROM_LOW", "8.0"))
+MASTER_REGIME_REBOUND_BUY_MAX_DAY_POSITION = float(os.getenv("MASTER_REGIME_REBOUND_BUY_MAX_DAY_POSITION", "0.38"))
+MASTER_REGIME_REBOUND_BUY_MIN_SCORE = int(os.getenv("MASTER_REGIME_REBOUND_BUY_MIN_SCORE", "16"))
+MASTER_REGIME_BLOCK_COUNTER_SELL_IN_BUY_CONTROL = os.getenv("MASTER_REGIME_BLOCK_COUNTER_SELL_IN_BUY_CONTROL", "TRUE").upper() == "TRUE"
+MASTER_REGIME_BUY_CONTROL_COUNTER_SELL_MIN_SCORE = int(os.getenv("MASTER_REGIME_BUY_CONTROL_COUNTER_SELL_MIN_SCORE", "22"))
+MASTER_REGIME_FAST_FOLLOWS_MASTER = os.getenv("MASTER_REGIME_FAST_FOLLOWS_MASTER", "TRUE").upper() == "TRUE"
+MASTER_REGIME_FAST_ALLOW_REBOUND_BUY = os.getenv("MASTER_REGIME_FAST_ALLOW_REBOUND_BUY", "TRUE").upper() == "TRUE"
+MASTER_REGIME_MAX_BUY_DIRECT_SL_BEFORE_CHAOS = int(os.getenv("MASTER_REGIME_MAX_BUY_DIRECT_SL_BEFORE_CHAOS", "3"))
+MASTER_REGIME_MAX_SELL_DIRECT_SL_BEFORE_CHAOS = int(os.getenv("MASTER_REGIME_MAX_SELL_DIRECT_SL_BEFORE_CHAOS", "3"))
+MASTER_REGIME_LOW_POSITION_SELL_SKIP_GUARD = float(os.getenv("MASTER_REGIME_LOW_POSITION_SELL_SKIP_GUARD", "0.20"))
+MASTER_REGIME_TRUE_REBOUND_FOR_NEW_SELL = float(os.getenv("MASTER_REGIME_TRUE_REBOUND_FOR_NEW_SELL", "6.0"))
+
+MASTER_REGIME_SELL_SPECIAL_SETUPS = {
+    "PRE_BEAR_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FADE_SELL",
+    "REVERSAL_SELL",
+    "MAX_DIP_SELL"
+}
+
+MASTER_REGIME_REBOUND_BUY_SETUPS = {
+    "MAX_FLIP_BUY",
+    "DEEP_REBOUND_BUY",
+    "MAX_RECOVERY_BUY"
+}
+
 
 # v29: non vendere basso con campaign/continuation deboli dopo un grande drop.
 DEEP_EXTENSION_SELL_GUARD_ENABLED = os.getenv("DEEP_EXTENSION_SELL_GUARD_ENABLED", "TRUE").upper() == "TRUE"
-DEEP_EXTENSION_SELL_GUARD_MIN_SCORE = int(os.getenv("DEEP_EXTENSION_SELL_GUARD_MIN_SCORE", "22"))
+DEEP_EXTENSION_SELL_GUARD_MIN_SCORE = int(os.getenv("DEEP_EXTENSION_SELL_GUARD_MIN_SCORE", "19"))
 DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION = float(os.getenv("DEEP_EXTENSION_SELL_GUARD_MAX_DAY_POSITION", "0.35"))
 DEEP_EXTENSION_SELL_GUARD_SETUPS = {
     "BEAR_CAMPAIGN_SELL",
@@ -831,7 +884,7 @@ SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDO
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v5 Quality Gate Copy + Pause"
+FAST_VERSION = "Fast Scalper v6 Master Regime Copy + Pause"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -3062,6 +3115,35 @@ def score_signal(data, signal):
                 score -= 3
                 reasons.append("Volume spike bullish")
 
+    # v34 Master Regime: il prezzo domina le news.
+    # Se la giornata passa in SELL_CONTROL, le news bullish non devono più impedire
+    # un SELL da lower-high / bear impulse; al contrario i BUY vengono penalizzati.
+    if MASTER_REGIME_ENABLED:
+        master_ctx = get_master_regime_context(symbol, data)
+        master_mode = str(master_ctx.get("mode", "MIXED")).upper()
+
+        if signal == "SELL" and master_mode == "SELL_CONTROL":
+            if MASTER_REGIME_PRICE_DOMINATES_NEWS and active_news_bias == "BULLISH_GOLD":
+                score += MASTER_REGIME_SELL_SCORE_BONUS
+                reasons.append(
+                    f"Master Regime SELL_CONTROL: price action domina news bullish (+{MASTER_REGIME_SELL_SCORE_BONUS})"
+                )
+            elif master_ctx.get("allow_lower_high_sell"):
+                score += max(2, MASTER_REGIME_SELL_SCORE_BONUS // 2)
+                reasons.append("Master Regime SELL_CONTROL: lower-high / impulso bearish confermato")
+
+            if setup_type == "NORMAL" and MASTER_REGIME_ALLOW_NORMAL_SELL_IN_SELL_CONTROL:
+                score += MASTER_REGIME_NORMAL_SELL_EXTRA_BONUS
+                reasons.append(
+                    f"Master Regime: NORMAL SELL consentito in SELL_CONTROL (+{MASTER_REGIME_NORMAL_SELL_EXTRA_BONUS})"
+                )
+
+        if signal == "BUY" and master_mode == "SELL_CONTROL" and not master_ctx.get("allow_rebound_buy"):
+            score -= MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY
+            reasons.append(
+                f"Master Regime SELL_CONTROL: BUY contro giornata sell (-{MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY})"
+            )
+
     return score, reasons, active_news_bias, news_reasons, setup_type
 
 
@@ -5265,6 +5347,30 @@ def special_buy_flip_window_context(symbol, setup_type, score, data, special_ctx
         to_bool(data.get("near_m15_high", "false"))
         or to_bool(data.get("near_day_high", "false"))
     )
+    # v34: il FAST deve seguire il Master Regime, altrimenti prende BUY veloci
+    # dentro una giornata chiaramente SELL.
+    if MASTER_REGIME_FAST_FOLLOWS_MASTER:
+        master_ctx = get_master_regime_context(symbol, data)
+        master_mode = str(master_ctx.get("mode", "MIXED")).upper()
+        if master_mode == "SELL_CONTROL" and signal == "BUY":
+            rebound_ok = (
+                MASTER_REGIME_FAST_ALLOW_REBOUND_BUY
+                and master_ctx.get("allow_rebound_buy")
+                and score >= MASTER_REGIME_REBOUND_BUY_MIN_SCORE
+            )
+            if not rebound_ok:
+                return True, [
+                    "FAST bloccato da Master Regime SELL_CONTROL: niente BUY veloci contro giornata sell",
+                    master_ctx.get("reason", "")
+                ]
+        if master_mode == "BUY_CONTROL" and signal == "SELL" and score < MASTER_REGIME_BUY_CONTROL_COUNTER_SELL_MIN_SCORE:
+            return True, [
+                "FAST bloccato da Master Regime BUY_CONTROL: niente SELL veloci contro giornata buy",
+                master_ctx.get("reason", "")
+            ]
+        if master_mode == "CHAOS_CONTROL":
+            return True, ["FAST bloccato da Master Regime CHAOS_CONTROL"]
+
     day_position = to_float(data.get("day_position"), 0.5)
     event_active = bool(
         to_bool(data.get("event_mode"))
@@ -5684,6 +5790,249 @@ def get_regime_arbiter_state(symbol):
     return REGIME_ARBITER_STATE[symbol]
 
 
+
+# =========================
+# MASTER REGIME v34
+# =========================
+
+def _recent_price_window(symbol, seconds=7200):
+    symbol = str(symbol or "XAUUSD").upper()
+    history = recent_bear_history(symbol, seconds)
+    if not history:
+        return {"high": 0.0, "low": 0.0, "drop": 0.0, "rebound_from_low": 0.0, "count": 0}
+
+    highs = [to_float(p.get("high"), to_float(p.get("price"), 0)) for p in history]
+    lows = [to_float(p.get("low"), to_float(p.get("price"), 0)) for p in history]
+    last_price = to_float(history[-1].get("price"), 0)
+    high = max(highs) if highs else 0.0
+    low = min(lows) if lows else 0.0
+    return {
+        "high": high,
+        "low": low,
+        "drop": round(high - low, 3) if high and low else 0.0,
+        "rebound_from_low": round(last_price - low, 3) if last_price and low else 0.0,
+        "count": len(history)
+    }
+
+
+def get_master_regime_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    data = data or {}
+
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+    h1_bias = str(data.get("h1_bias", "NEUTRAL")).upper()
+    h4_bias = str(data.get("h4_bias", "NEUTRAL")).upper()
+    day_bias = str(data.get("day_bias", "NEUTRAL")).upper()
+    structure = str(data.get("structure", "NEUTRAL")).upper()
+    candle_dir = str(data.get("candle_dir", "NEUTRAL")).upper()
+    ema20_slope = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50_slope = str(data.get("ema50_slope", "FLAT")).upper()
+    rsi = to_float(data.get("rsi"), 50)
+    above_ema200 = to_bool(data.get("close_above_ema200", "false"))
+    day_position = to_float(data.get("day_position"), 0.5)
+    micro_bos = bool(micro_bos_bear_context(symbol, data).get("micro_bos"))
+
+    active_news_bias, _ = get_auto_news_bias()
+    bear_state = get_bear_continuation_state(symbol)
+    bear_state_name = str(bear_state.get("state", "IDLE")).upper()
+    pre_bear = get_pre_bear_state(symbol)
+    pre_bear_status = str(pre_bear.get("status", "IDLE")).upper()
+    maturity = bear_trigger_maturity_context(symbol, data)
+    recent_window = _recent_price_window(symbol, MASTER_REGIME_BUY_LOCK_LOOKBACK_SECONDS)
+
+    buy_direct_losses = get_recent_direct_losses_custom(
+        "BUY", symbol, MASTER_REGIME_BUY_LOCK_LOOKBACK_SECONDS
+    )
+    sell_direct_losses = get_recent_direct_losses_custom(
+        "SELL", symbol, MASTER_REGIME_BUY_LOCK_LOOKBACK_SECONDS
+    )
+    recent_deep_sells = get_recent_tp_trades(
+        "SELL", symbol,
+        min_tp=MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP,
+        lookback_seconds=MASTER_REGIME_REBOUND_BUY_LOOKBACK_SECONDS
+    )
+    recent_deep_buys = get_recent_tp_trades(
+        "BUY", symbol,
+        min_tp=5,
+        lookback_seconds=MASTER_REGIME_REBOUND_BUY_LOOKBACK_SECONDS
+    )
+
+    bearish_votes = []
+    bullish_votes = []
+
+    if h1_bias == "SELL": bearish_votes.append("H1 SELL")
+    if h4_bias == "SELL": bearish_votes.append("H4 SELL")
+    if day_bias == "SELL": bearish_votes.append("Daily SELL")
+    if structure in ["BEARISH", "LH", "LL"]: bearish_votes.append(f"Struttura {structure}")
+    if candle_dir == "BEAR": bearish_votes.append("Candela bearish")
+    if ema20_slope == "DOWN": bearish_votes.append("EMA20 DOWN")
+    if ema50_slope == "DOWN": bearish_votes.append("EMA50 DOWN")
+    if not above_ema200: bearish_votes.append("Prezzo sotto EMA200")
+    if rsi < 50: bearish_votes.append("RSI sotto 50")
+    if micro_bos: bearish_votes.append("Micro BOS bearish")
+    if bear_state_name in ["BEAR_IMPULSE", "RELIEF_RALLY", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"]:
+        bearish_votes.append(f"Bear state {bear_state_name}")
+    if pre_bear_status in ["FAILED_RECOVERY_ARMED", "CONFIRMED", "HANDED_TO_BEAR"]:
+        bearish_votes.append(f"Pre-Bear {pre_bear_status}")
+    if len(buy_direct_losses) >= MASTER_REGIME_BUY_LOCK_DIRECT_SL:
+        bearish_votes.append(f"BUY failure lock {len(buy_direct_losses)} SL")
+
+    if h1_bias == "BUY": bullish_votes.append("H1 BUY")
+    if h4_bias == "BUY": bullish_votes.append("H4 BUY")
+    if day_bias == "BUY": bullish_votes.append("Daily BUY")
+    if structure in ["BULLISH", "HL"]: bullish_votes.append(f"Struttura {structure}")
+    if candle_dir == "BULL": bullish_votes.append("Candela bullish")
+    if ema20_slope == "UP": bullish_votes.append("EMA20 UP")
+    if ema50_slope == "UP": bullish_votes.append("EMA50 UP")
+    if above_ema200: bullish_votes.append("Prezzo sopra EMA200")
+    if rsi > 50: bullish_votes.append("RSI sopra 50")
+    if active_news_bias == "BULLISH_GOLD": bullish_votes.append("News bullish")
+
+    buy_failure_lock = len(buy_direct_losses) >= MASTER_REGIME_BUY_LOCK_DIRECT_SL
+    sell_failure_lock = len(sell_direct_losses) >= MASTER_REGIME_MAX_SELL_DIRECT_SL_BEFORE_CHAOS
+
+    price_action_bearish = len(bearish_votes) >= MASTER_REGIME_SELL_CONTROL_BEAR_VOTES
+    price_action_bullish = len(bullish_votes) >= MASTER_REGIME_BUY_CONTROL_BULL_VOTES
+
+    recent_sell_paid = len(recent_deep_sells) > 0
+    rebound_buy_area = (
+        recent_sell_paid
+        and recent_window.get("low", 0) > 0
+        and price > 0
+        and (price - recent_window.get("low", price)) <= MASTER_REGIME_REBOUND_BUY_MAX_DISTANCE_FROM_LOW
+        and day_position <= MASTER_REGIME_REBOUND_BUY_MAX_DAY_POSITION
+    )
+
+    mode = "MIXED"
+    reason = "Regime non ancora dominante"
+
+    if buy_failure_lock and (price_action_bearish or bear_state_name in ["BEAR_IMPULSE", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"]):
+        mode = "SELL_CONTROL"
+        reason = f"BUY falliti + price action ribassista ({len(bearish_votes)} voti)"
+    elif bear_state_name in ["BEAR_IMPULSE", "LOWER_HIGH_ARMED", "SELL_TRIGGERED"] and len(bearish_votes) >= 4:
+        mode = "SELL_CONTROL"
+        reason = f"Bear state attivo: {bear_state_name}"
+    elif pre_bear_status in ["CONFIRMED", "HANDED_TO_BEAR"] and len(bearish_votes) >= 4:
+        mode = "SELL_CONTROL"
+        reason = f"Pre-Bear passato al ribasso: {pre_bear_status}"
+    elif price_action_bearish and not price_action_bullish:
+        mode = "SELL_CONTROL"
+        reason = f"Price action dominante SELL ({len(bearish_votes)} voti)"
+    elif rebound_buy_area and not buy_failure_lock:
+        mode = "POST_SELL_REBOUND_BUY"
+        reason = f"SELL già pagato TP{MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP}+ e prezzo vicino al low"
+    elif price_action_bullish and not price_action_bearish:
+        mode = "BUY_CONTROL"
+        reason = f"Price action dominante BUY ({len(bullish_votes)} voti)"
+    elif buy_failure_lock and sell_failure_lock:
+        mode = "CHAOS_CONTROL"
+        reason = "SL diretti su entrambe le direzioni: mercato tossico"
+
+    allow_lower_high_sell = (
+        mode == "SELL_CONTROL"
+        and (maturity.get("mature") or micro_bos or buy_failure_lock or bear_state_name in ["LOWER_HIGH_ARMED", "SELL_TRIGGERED"])
+        and len(bearish_votes) >= 4
+    )
+
+    allow_rebound_buy = (
+        mode == "POST_SELL_REBOUND_BUY"
+        or (
+            recent_sell_paid
+            and rebound_buy_area
+            and len(buy_direct_losses) < MASTER_REGIME_BUY_LOCK_DIRECT_SL
+            and len(bullish_votes) >= 3
+        )
+    )
+
+    return {
+        "enabled": MASTER_REGIME_ENABLED,
+        "mode": mode,
+        "reason": reason,
+        "price": price,
+        "news_bias": active_news_bias,
+        "bearish_votes": bearish_votes,
+        "bullish_votes": bullish_votes,
+        "bearish_vote_count": len(bearish_votes),
+        "bullish_vote_count": len(bullish_votes),
+        "bear_state": bear_state_name,
+        "pre_bear_status": pre_bear_status,
+        "maturity": maturity,
+        "micro_bos": micro_bos,
+        "buy_failure_lock": buy_failure_lock,
+        "buy_direct_losses": len(buy_direct_losses),
+        "sell_direct_losses": len(sell_direct_losses),
+        "recent_deep_sells": len(recent_deep_sells),
+        "recent_deep_buys": len(recent_deep_buys),
+        "day_position": day_position,
+        "recent_window": recent_window,
+        "rebound_buy_area": rebound_buy_area,
+        "allow_rebound_buy": allow_rebound_buy,
+        "allow_lower_high_sell": allow_lower_high_sell,
+        "price_action_bearish": price_action_bearish,
+        "price_action_bullish": price_action_bullish,
+    }
+
+
+def master_regime_status_text(ctx):
+    if not ctx:
+        return "Master Regime: N/D"
+    bearish = ctx.get("bearish_votes", [])[:8]
+    bullish = ctx.get("bullish_votes", [])[:8]
+    rw = ctx.get("recent_window", {}) or {}
+    return (
+        f"Mode: {ctx.get('mode')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"News bias: {ctx.get('news_bias')}\n"
+        f"Bear state: {ctx.get('bear_state')} | Pre-Bear: {ctx.get('pre_bear_status')}\n"
+        f"Bearish votes: {ctx.get('bearish_vote_count')} -> " + (", ".join(bearish) if bearish else "N/D") + "\n"
+        f"Bullish votes: {ctx.get('bullish_vote_count')} -> " + (", ".join(bullish) if bullish else "N/D") + "\n"
+        f"BUY direct SL: {ctx.get('buy_direct_losses')} | BUY lock: {ctx.get('buy_failure_lock')}\n"
+        f"SELL TP{MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP}+ recenti: {ctx.get('recent_deep_sells')} | Rebound BUY area: {ctx.get('rebound_buy_area')}\n"
+        f"Day position: {round(to_float(ctx.get('day_position'), 0), 3)} | Window drop: {rw.get('drop')} | Rebound low: {rw.get('rebound_from_low')}\n"
+        f"Allow lower-high SELL: {ctx.get('allow_lower_high_sell')} | Allow rebound BUY: {ctx.get('allow_rebound_buy')}"
+    )
+
+
+def should_block_by_master_regime(signal, symbol, setup_type, score, data):
+    ctx = get_master_regime_context(symbol, data)
+    if not MASTER_REGIME_ENABLED:
+        return False, ctx, "Master Regime disattivato"
+
+    signal = normalize_signal(signal)
+    setup_type = str(setup_type or "NORMAL").upper()
+    mode = str(ctx.get("mode", "MIXED")).upper()
+
+    if mode == "SELL_CONTROL" and signal == "BUY" and MASTER_REGIME_BLOCK_BUY_IN_SELL_CONTROL:
+        buy_allowed = (
+            setup_type in MASTER_REGIME_REBOUND_BUY_SETUPS
+            and ctx.get("allow_rebound_buy")
+            and int(score) >= MASTER_REGIME_REBOUND_BUY_MIN_SCORE
+        )
+        if not buy_allowed:
+            return (
+                True,
+                ctx,
+                "Master Regime SELL_CONTROL: BUY bloccato. Non compro rimbalzi/minimi dentro giornata sell."
+            )
+
+    if mode == "BUY_CONTROL" and signal == "SELL" and MASTER_REGIME_BLOCK_COUNTER_SELL_IN_BUY_CONTROL:
+        if setup_type == "NORMAL" and int(score) < MASTER_REGIME_BUY_CONTROL_COUNTER_SELL_MIN_SCORE:
+            return (
+                True,
+                ctx,
+                "Master Regime BUY_CONTROL: SELL NORMAL debole bloccato contro direzione dominante."
+            )
+
+    if mode == "CHAOS_CONTROL":
+        return (
+            True,
+            ctx,
+            "Master Regime CHAOS_CONTROL: troppi SL diretti, fermo nuovi ingressi non A+."
+        )
+
+    return False, ctx, "Master Regime coerente"
+
+
 def get_regime_arbiter_context(symbol, data=None):
     symbol = str(symbol or "XAUUSD").upper()
     data = data or {}
@@ -5738,6 +6087,7 @@ def get_regime_arbiter_context(symbol, data=None):
         "big_move": big_move_ctx,
         "event_trap_flip": event_trap_ctx,
         "deep_extension_sell_guard": deep_sell_guard_ctx,
+        "master_regime": get_master_regime_context(symbol, data),
         "pre_bear_status": pre_bear_status,
         "bear_state": bear_state_name
     }
@@ -5766,6 +6116,18 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
 
     signal = str(signal or "").upper()
     setup_type = str(setup_type or "NORMAL").upper()
+    master_ctx = ctx.get("master_regime") or get_master_regime_context(symbol, data)
+    ctx["master_regime"] = master_ctx
+    master_allows_lower_high_sell = (
+        MASTER_REGIME_ENABLED
+        and signal == "SELL"
+        and master_ctx.get("mode") == "SELL_CONTROL"
+        and master_ctx.get("allow_lower_high_sell")
+        and (
+            (setup_type == "NORMAL" and int(score) >= MASTER_REGIME_SELL_CONTROL_NORMAL_MIN_SCORE)
+            or (setup_type in MASTER_REGIME_SELL_SPECIAL_SETUPS and int(score) >= MASTER_REGIME_SELL_CONTROL_SPECIAL_MIN_SCORE)
+        )
+    )
 
     if signal != "SELL":
         return False, ctx, "Il Regime Arbiter v29 governa qui i conflitti SELL"
@@ -5855,12 +6217,16 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
     )
     ctx["max_zone_gate"] = max_zone_ctx
 
-    if max_zone_ctx.get("block"):
+    if max_zone_ctx.get("block") and not master_allows_lower_high_sell:
         return (
             True,
             ctx,
             "Max Zone Gate: SELL NORMAL bloccato perché non nasce da zona alta valida"
         )
+
+    if max_zone_ctx.get("block") and master_allows_lower_high_sell:
+        ctx["max_zone_gate"]["master_override"] = True
+        ctx["max_zone_gate"]["reason"] = "Master Regime: SELL_CONTROL autorizza lower-high SELL anche fuori zona alta classica"
 
     # v27: Trade Compression / Sell Profit Lock.
     profit_lock_ctx = ctx.get("sell_profit_lock") or get_sell_profit_lock_context(symbol, data)
@@ -5897,12 +6263,16 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
     deep_guard_ctx = deep_extension_sell_guard_context(signal, symbol, setup_type, score, data, deep_ctx=ctx.get("deep_extension"))
     ctx["deep_extension_sell_guard"] = deep_guard_ctx
 
-    if deep_guard_ctx.get("block") and not event_trap_ctx.get("allow"):
+    if deep_guard_ctx.get("block") and not event_trap_ctx.get("allow") and not master_allows_lower_high_sell:
         return (
             True,
             ctx,
             deep_guard_ctx.get("reason")
         )
+
+    if deep_guard_ctx.get("block") and master_allows_lower_high_sell:
+        ctx["deep_extension_sell_guard"]["master_override"] = True
+        ctx["deep_extension_sell_guard"]["reason"] = "Master Regime: SELL_CONTROL supera Deep Extension Guard perché lower-high/microBOS è maturo"
 
     if setup_type in REGIME_MATURITY_REQUIRED_SETUPS:
         recovery_ctx = ctx.get("recovery", {})
@@ -5936,7 +6306,7 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
 
         maturity_ctx = ctx.get("maturity", {})
 
-        if not maturity_ctx.get("mature") and not event_trap_ctx.get("allow"):
+        if not maturity_ctx.get("mature") and not event_trap_ctx.get("allow") and not master_allows_lower_high_sell:
             return (
                 True,
                 ctx,
@@ -10376,6 +10746,7 @@ def fast_status():
         "fast_today_trades": len(fast_today_trades(symbol)),
         "fast_consecutive_sl": fast_consecutive_sl_count(symbol),
         "virtual_runner": get_virtual_runner(symbol),
+        "master_regime": get_master_regime_context(symbol, {}),
         "max_flip_buy_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED
     })
 
@@ -10661,6 +11032,47 @@ News:
         })
 
     # =========================
+    # MASTER REGIME BLOCK v34
+    # =========================
+
+    block_master, master_ctx, master_reason = should_block_by_master_regime(
+        signal, symbol, setup_type, score, data
+    )
+
+    if block_master:
+        text = f"""🧠🚫 SEGNALE BLOCCATO {VERSION}
+
+Motivo: Master Regime / One Direction Control
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{master_regime_status_text(master_ctx)}
+
+Dettaglio:
+{master_reason}
+
+Azione:
+Il bot sceglie una tesi dominante prima del singolo segnale.
+- In SELL_CONTROL non compra ogni rimbalzo o nuovo minimo.
+- Le news bullish vengono declassate se il prezzo conferma bear impulse/lower-high.
+- Il FAST segue la direzione dominante e non va contro regime.
+- Il BUY di rimbalzo passa solo dopo SELL già pagato e zona bassa vera.
+"""
+        send_telegram(text)
+        return jsonify({
+            "status": "blocked_master_regime",
+            "score": score,
+            "setup_type": setup_type,
+            "master_mode": master_ctx.get("mode"),
+            "master_reason": master_reason,
+            "fast_pre": fast_pre_result
+        })
+
+    # =========================
     # COLD START WARMUP BLOCK v24
     # =========================
 
@@ -10725,6 +11137,9 @@ Setup: {setup_type}
 Score finale: {score}
 
 {regime_arbiter_status_text(regime_ctx)}
+
+Master Regime:
+{master_regime_status_text(regime_ctx.get('master_regime', {}))}
 
 Dettaglio:
 {regime_reason}
