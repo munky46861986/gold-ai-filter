@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v34 Master Regime + One Direction Control"
+VERSION = "v36 Max Pullback Re-Arm + Anti-Fade Super BUY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -574,6 +574,7 @@ RECOVERY_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("RECOVERY_DOMINANCE_LOOKBACK
 RECOVERY_DOMINANCE_INVALIDATION_BUFFER = float(os.getenv("RECOVERY_DOMINANCE_INVALIDATION_BUFFER", "2.5"))
 RECOVERY_DOMINANCE_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
@@ -682,6 +683,7 @@ BIG_MOVE_TARGET_STEP = float(os.getenv("BIG_MOVE_TARGET_STEP", "20"))
 BIG_MOVE_TARGET_COUNT = int(os.getenv("BIG_MOVE_TARGET_COUNT", "3"))
 BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
@@ -752,6 +754,7 @@ POST_SELL_REBOUND_MIN_IMPULSE_DROP = float(os.getenv("POST_SELL_REBOUND_MIN_IMPU
 POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW = float(os.getenv("POST_SELL_REBOUND_MAX_DISTANCE_FROM_LOW", "7"))
 POST_SELL_REBOUND_ALLOWED_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
@@ -855,6 +858,7 @@ MASTER_REGIME_SELL_SPECIAL_SETUPS = {
 
 MASTER_REGIME_REBOUND_BUY_SETUPS = {
     "MAX_FLIP_BUY",
+    "MAX_PULLBACK_REARM_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_RECOVERY_BUY"
 }
@@ -884,18 +888,18 @@ SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDO
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v6 Master Regime Copy + Pause"
+FAST_VERSION = "Fast Scalper v8 Master Gate + Wider SL"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
-FAST_SL_POINTS = float(os.getenv("FAST_SL_POINTS", "2.2"))
+FAST_SL_POINTS = float(os.getenv("FAST_SL_POINTS", "3.5"))
 FAST_ENTRY_OFFSET = float(os.getenv("FAST_ENTRY_OFFSET", "0.0"))
-FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "7"))
+FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "8"))
 FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "1"))
-FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "300"))
+FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "600"))
 FAST_DUPLICATE_PRICE_DISTANCE = float(os.getenv("FAST_DUPLICATE_PRICE_DISTANCE", "1.0"))
-FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "12"))
-FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "4"))
+FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "8"))
+FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "3"))
 FAST_MAX_CONSECUTIVE_SL = int(os.getenv("FAST_MAX_CONSECUTIVE_SL", "2"))
 FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS = int(os.getenv("FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS", "3600"))
 FAST_PAUSE_ALERT_ENABLED = os.getenv("FAST_PAUSE_ALERT_ENABLED", "TRUE").upper() == "TRUE"
@@ -904,7 +908,7 @@ FAST_PAUSE_NOTIFIED = {}
 FAST_ALLOWED_TFS = {"1", "3", "5"}
 FAST_ONLY_WITH_MAIN_DIRECTION = os.getenv("FAST_ONLY_WITH_MAIN_DIRECTION", "TRUE").upper() == "TRUE"
 FAST_BLOCK_COUNTER_BIG_MOVE = os.getenv("FAST_BLOCK_COUNTER_BIG_MOVE", "TRUE").upper() == "TRUE"
-FAST_MAIN_DOMINANCE_TP_LEVEL = int(os.getenv("FAST_MAIN_DOMINANCE_TP_LEVEL", "5"))
+FAST_MAIN_DOMINANCE_TP_LEVEL = int(os.getenv("FAST_MAIN_DOMINANCE_TP_LEVEL", "3"))
 FAST_MAIN_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("FAST_MAIN_DOMINANCE_LOOKBACK_SECONDS", "7200"))
 FAST_BLOCK_HIGH_SPIKE_BUY = os.getenv("FAST_BLOCK_HIGH_SPIKE_BUY", "TRUE").upper() == "TRUE"
 FAST_BLOCK_LOW_SPIKE_SELL = os.getenv("FAST_BLOCK_LOW_SPIKE_SELL", "TRUE").upper() == "TRUE"
@@ -916,18 +920,34 @@ FAST_USE_HTML_COPY_FORMAT = os.getenv("FAST_USE_HTML_COPY_FORMAT", "TRUE").upper
 FAST_AUTO_FROM_MAIN_WEBHOOK = os.getenv("FAST_AUTO_FROM_MAIN_WEBHOOK", "TRUE").upper() == "TRUE"
 # v31: il FAST può nascere anche se il main bot poi blocca il segnale.
 # Così è davvero parallelo: TP/SL piccoli, più operazioni, senza rovinare la view Max principale.
-FAST_AUTO_BEFORE_MAIN_BLOCKS = os.getenv("FAST_AUTO_BEFORE_MAIN_BLOCKS", "TRUE").upper() == "TRUE"
+FAST_AUTO_BEFORE_MAIN_BLOCKS = os.getenv("FAST_AUTO_BEFORE_MAIN_BLOCKS", "FALSE").upper() == "TRUE"
 FAST_ALLOW_DEEP_REBOUND_COUNTER = os.getenv("FAST_ALLOW_DEEP_REBOUND_COUNTER", "TRUE").upper() == "TRUE"
 FAST_SEND_BLOCKED_FROM_MAIN = os.getenv("FAST_SEND_BLOCKED_FROM_MAIN", "FALSE").upper() == "TRUE"
 # v32: il fast resta parallelo ma non deve sparare segnali 50/50.
 FAST_QUALITY_GATE_ENABLED = os.getenv("FAST_QUALITY_GATE_ENABLED", "TRUE").upper() == "TRUE"
-FAST_MIN_REASON_COUNT = int(os.getenv("FAST_MIN_REASON_COUNT", "6"))
+FAST_MIN_REASON_COUNT = int(os.getenv("FAST_MIN_REASON_COUNT", "7"))
+# v35: il FAST è parallelo, ma non deve più andare contro il Master Regime.
+# I default sono già dentro il codice: se Render non ti fa aggiungere variabili, funziona lo stesso.
+FAST_MASTER_GATE_ENABLED = os.getenv("FAST_MASTER_GATE_ENABLED", "TRUE").upper() == "TRUE"
+FAST_BLOCK_BUY_IN_SELL_CONTROL = os.getenv("FAST_BLOCK_BUY_IN_SELL_CONTROL", "TRUE").upper() == "TRUE"
+FAST_BLOCK_SELL_IN_BUY_CONTROL = os.getenv("FAST_BLOCK_SELL_IN_BUY_CONTROL", "TRUE").upper() == "TRUE"
+FAST_BLOCK_CHAOS_CONTROL = os.getenv("FAST_BLOCK_CHAOS_CONTROL", "TRUE").upper() == "TRUE"
+FAST_BLOCK_COUNTER_BIG_MOVE_THESIS = os.getenv("FAST_BLOCK_COUNTER_BIG_MOVE_THESIS", "TRUE").upper() == "TRUE"
+FAST_BIG_MOVE_BLOCK_FROM_TP = int(os.getenv("FAST_BIG_MOVE_BLOCK_FROM_TP", "3"))
+FAST_SELL_CONTROL_MIN_SCORE = int(os.getenv("FAST_SELL_CONTROL_MIN_SCORE", "8"))
+FAST_BUY_CONTROL_MIN_SCORE = int(os.getenv("FAST_BUY_CONTROL_MIN_SCORE", "8"))
+FAST_USE_DYNAMIC_SL = os.getenv("FAST_USE_DYNAMIC_SL", "TRUE").upper() == "TRUE"
+FAST_MIN_SL_POINTS = float(os.getenv("FAST_MIN_SL_POINTS", "3.5"))
+FAST_EVENT_SL_POINTS = float(os.getenv("FAST_EVENT_SL_POINTS", "4.5"))
+FAST_MAX_SL_POINTS = float(os.getenv("FAST_MAX_SL_POINTS", "6.0"))
+FAST_ATR_SL_MULT = float(os.getenv("FAST_ATR_SL_MULT", "1.1"))
 FAST_REQUIRE_MOMENTUM_OR_REJECTION = os.getenv("FAST_REQUIRE_MOMENTUM_OR_REJECTION", "TRUE").upper() == "TRUE"
 FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE = os.getenv("FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE", "TRUE").upper() == "TRUE"
 FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.35"))
 FAST_MIDDLE_HIGH = float(os.getenv("FAST_MIDDLE_HIGH", "0.65"))
 FAST_MAIN_ALLOWED_SETUPS = {
     "NORMAL",
+    "MAX_PULLBACK_REARM_BUY",
     "REVERSAL_BUY",
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
@@ -963,6 +983,7 @@ CAMPAIGN_PROFIT_LOCK_SELL_AFTER_BUY_ALLOW_SETUPS = {
 }
 CAMPAIGN_PROFIT_LOCK_BUY_AFTER_SELL_ALLOW_SETUPS = {
     "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
     "DEEP_REBOUND_BUY",
     "REVERSAL_BUY",
@@ -976,6 +997,37 @@ BUY_CAMPAIGN_EXHAUSTION_LOOKBACK_SECONDS = int(os.getenv("BUY_CAMPAIGN_EXHAUSTIO
 BUY_CAMPAIGN_EXHAUSTION_MIN_DAY_POSITION = float(os.getenv("BUY_CAMPAIGN_EXHAUSTION_MIN_DAY_POSITION", "0.62"))
 BUY_CAMPAIGN_EXHAUSTION_ALLOW_SCORE = int(os.getenv("BUY_CAMPAIGN_EXHAUSTION_ALLOW_SCORE", "18"))
 BUY_CAMPAIGN_EXHAUSTION_ALLOW_LOW_POSITION = float(os.getenv("BUY_CAMPAIGN_EXHAUSTION_ALLOW_LOW_POSITION", "0.45"))
+
+# v36: Max Pullback Re-Arm + Anti-Fade Super BUY.
+# Patch nata dal caso 31/07 + 04/08:
+# il bot aveva preso bene la campagna BUY, poi ha confuso il pullback con SELL_CONTROL
+# e ha aperto MAX_FADE_SELL troppo presto. Ora una campagna BUY forte può riarmare
+# un nuovo BUY da pullback; i SELL contro SUPER BUY passano solo con invalidazione vera.
+MAX_PULLBACK_REARM_ENABLED = os.getenv("MAX_PULLBACK_REARM_ENABLED", "TRUE").upper() == "TRUE"
+MAX_PULLBACK_REARM_MIN_BUY_TP = int(os.getenv("MAX_PULLBACK_REARM_MIN_BUY_TP", "5"))
+MAX_PULLBACK_REARM_LOOKBACK_SECONDS = int(os.getenv("MAX_PULLBACK_REARM_LOOKBACK_SECONDS", "7200"))
+MAX_PULLBACK_REARM_MIN_PULLBACK_POINTS = float(os.getenv("MAX_PULLBACK_REARM_MIN_PULLBACK_POINTS", "4.0"))
+MAX_PULLBACK_REARM_MAX_DAY_POSITION = float(os.getenv("MAX_PULLBACK_REARM_MAX_DAY_POSITION", "0.78"))
+MAX_PULLBACK_REARM_INVALIDATION_BUFFER = float(os.getenv("MAX_PULLBACK_REARM_INVALIDATION_BUFFER", "5.0"))
+MAX_PULLBACK_REARM_MIN_CONFIRMATIONS = int(os.getenv("MAX_PULLBACK_REARM_MIN_CONFIRMATIONS", "4"))
+MAX_PULLBACK_REARM_BASE_BONUS = int(os.getenv("MAX_PULLBACK_REARM_BASE_BONUS", "12"))
+MAX_PULLBACK_REARM_SCORE_FLOOR = int(os.getenv("MAX_PULLBACK_REARM_SCORE_FLOOR", "11"))
+MAX_PULLBACK_REARM_ALLOW_IN_SELL_CONTROL = os.getenv("MAX_PULLBACK_REARM_ALLOW_IN_SELL_CONTROL", "TRUE").upper() == "TRUE"
+
+ANTI_FADE_SUPER_BUY_ENABLED = os.getenv("ANTI_FADE_SUPER_BUY_ENABLED", "TRUE").upper() == "TRUE"
+ANTI_FADE_SUPER_BUY_MIN_BUY_TP = int(os.getenv("ANTI_FADE_SUPER_BUY_MIN_BUY_TP", "5"))
+ANTI_FADE_SUPER_BUY_LOOKBACK_SECONDS = int(os.getenv("ANTI_FADE_SUPER_BUY_LOOKBACK_SECONDS", "7200"))
+ANTI_FADE_SUPER_BUY_SUPPORT_BUFFER = float(os.getenv("ANTI_FADE_SUPER_BUY_SUPPORT_BUFFER", "5.0"))
+ANTI_FADE_SUPER_BUY_ALLOW_SCORE = int(os.getenv("ANTI_FADE_SUPER_BUY_ALLOW_SCORE", "28"))
+ANTI_FADE_SUPER_BUY_MIN_BEAR_CONFIRMATIONS = int(os.getenv("ANTI_FADE_SUPER_BUY_MIN_BEAR_CONFIRMATIONS", "5"))
+ANTI_FADE_SUPER_BUY_REQUIRE_MICRO_BOS = os.getenv("ANTI_FADE_SUPER_BUY_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
+ANTI_FADE_SUPER_BUY_REQUIRE_TRUE_HIGH_ZONE = os.getenv("ANTI_FADE_SUPER_BUY_REQUIRE_TRUE_HIGH_ZONE", "TRUE").upper() == "TRUE"
+ANTI_FADE_SUPER_BUY_MIN_DAY_POSITION = float(os.getenv("ANTI_FADE_SUPER_BUY_MIN_DAY_POSITION", "0.82"))
+ANTI_FADE_SUPER_BUY_BLOCK_SETUPS = {
+    "NORMAL",
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL"
+}
 
 FAST_TRADES = []
 
@@ -1387,6 +1439,9 @@ def health():
         "fast_active_trades": len(fast_active_trades()),
         "fast_tp_points": FAST_TP_POINTS,
         "fast_sl_points": FAST_SL_POINTS,
+        "fast_min_sl_points": FAST_MIN_SL_POINTS,
+        "fast_event_sl_points": FAST_EVENT_SL_POINTS,
+        "fast_master_gate_enabled": FAST_MASTER_GATE_ENABLED,
         "fast_auto_from_main_webhook": FAST_AUTO_FROM_MAIN_WEBHOOK,
         "fast_auto_before_main_blocks": FAST_AUTO_BEFORE_MAIN_BLOCKS,
         "fast_allow_deep_rebound_counter": FAST_ALLOW_DEEP_REBOUND_COUNTER,
@@ -1635,6 +1690,10 @@ def health():
         "buy_campaign_exhaustion_min_tp": BUY_CAMPAIGN_EXHAUSTION_MIN_TP,
         "buy_campaign_exhaustion_min_day_position": BUY_CAMPAIGN_EXHAUSTION_MIN_DAY_POSITION,
         "buy_campaign_exhaustion_allow_score": BUY_CAMPAIGN_EXHAUSTION_ALLOW_SCORE,
+        "max_pullback_rearm_enabled": MAX_PULLBACK_REARM_ENABLED,
+        "max_pullback_rearm_min_buy_tp": MAX_PULLBACK_REARM_MIN_BUY_TP,
+        "anti_fade_super_buy_enabled": ANTI_FADE_SUPER_BUY_ENABLED,
+        "anti_fade_super_buy_min_buy_tp": ANTI_FADE_SUPER_BUY_MIN_BUY_TP,
         "regime_arbiter_states": REGIME_ARBITER_STATE,
         "trades_file": TRADES_FILE,
         "timezone": USER_TIMEZONE
@@ -2549,6 +2608,11 @@ def score_signal(data, signal):
     deep_rebound_buy_ctx = deep_rebound_buy_candidate_context(signal, symbol, data)
     deep_rebound_buy = bool(deep_rebound_buy_ctx.get("allow"))
 
+    # v36: se una campagna BUY ha già pagato bene e il prezzo fa pullback controllato,
+    # non considero automaticamente quel rimbalzo un SELL_CONTROL. Può diventare nuovo BUY stile Max.
+    max_pullback_rearm_ctx = max_pullback_rearm_buy_context(signal, symbol, data)
+    max_pullback_rearm_buy = bool(max_pullback_rearm_ctx.get("allow"))
+
     max_dip_sell = (
         signal == "SELL"
         and active_news_bias == "BEARISH_GOLD"
@@ -2674,6 +2738,16 @@ def score_signal(data, signal):
             else:
                 reasons.append("Modalità evento/NFP: possibile exhaustion sell")
 
+    elif max_pullback_rearm_buy:
+        setup_type = "MAX_PULLBACK_REARM_BUY"
+        score += MAX_PULLBACK_REARM_BASE_BONUS
+        reasons.append(
+            f"MAX PULLBACK RE-ARM BUY: campagna BUY già pagata + pullback controllato ({max_pullback_rearm_ctx.get('confirmations')}/{MAX_PULLBACK_REARM_MIN_CONFIRMATIONS})"
+        )
+        reasons.append(max_pullback_rearm_ctx.get("reason", "Pullback re-arm attivo"))
+        for item in (max_pullback_rearm_ctx.get("reasons") or [])[:5]:
+            reasons.append(item)
+
     elif deep_rebound_buy:
         setup_type = "DEEP_REBOUND_BUY"
         score += DEEP_REBOUND_BUY_BASE_BONUS
@@ -2743,10 +2817,10 @@ def score_signal(data, signal):
     # =========================
 
     if signal == "BUY" and bear_state_active:
-        if setup_type in ["MAX_RECOVERY_BUY", "DEEP_REBOUND_BUY"]:
-            if deep_extension_ctx.get("active") or setup_type == "DEEP_REBOUND_BUY":
+        if setup_type in ["MAX_RECOVERY_BUY", "DEEP_REBOUND_BUY", "MAX_PULLBACK_REARM_BUY"]:
+            if deep_extension_ctx.get("active") or setup_type in ["DEEP_REBOUND_BUY", "MAX_PULLBACK_REARM_BUY"]:
                 reasons.append(
-                    f"Bear state {bear_state_name} declassato: Deep Extension Flip attivo"
+                    f"Bear state {bear_state_name} declassato: BUY da deep/pullback re-arm ammesso"
                 )
             else:
                 score -= 4
@@ -2816,13 +2890,16 @@ def score_signal(data, signal):
 
     if active_news_bias == "BULLISH_GOLD":
         if signal == "BUY":
-            if bear_state_active:
+            if bear_state_active and not max_pullback_rearm_buy:
                 reasons.append(
                     f"News bullish declassate: bear state {bear_state_name} attivo"
                 )
             else:
                 score += 1
-                reasons.append("News bullish gold")
+                if max_pullback_rearm_buy and bear_state_active:
+                    reasons.append("News bullish riabilitate: Pullback Re-Arm BUY attivo")
+                else:
+                    reasons.append("News bullish gold")
         else:
             if (
                 pre_bear_sell
@@ -2882,9 +2959,9 @@ def score_signal(data, signal):
             reasons.append("Daily BUY")
 
         if day_bias == "SELL":
-            if max_dip_buy or max_recovery_buy:
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
                 score -= 1
-                reasons.append("BUY da fondo/recupero contro Daily SELL accettato")
+                reasons.append("BUY da fondo/recupero/pullback re-arm contro Daily SELL accettato")
             elif reversal_buy:
                 score -= 1
                 reasons.append("BUY reversal contro Daily SELL")
@@ -2917,8 +2994,8 @@ def score_signal(data, signal):
             reasons.append("Candela bullish")
 
         if candle_dir == "BEAR":
-            if max_dip_buy or max_recovery_buy:
-                reasons.append("Candela rossa accettata: exhaustion/recovery BUY")
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
+                reasons.append("Candela rossa accettata: exhaustion/recovery/pullback re-arm BUY")
             else:
                 score -= 2
                 reasons.append("Candela rossa contro BUY")
@@ -2928,9 +3005,9 @@ def score_signal(data, signal):
             reasons.append("Rejection bullish")
 
         if rejection == "UPPER_WICK":
-            if max_dip_buy or max_recovery_buy:
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
                 score -= 1
-                reasons.append("Wick alta ma BUY speciale ancora valido")
+                reasons.append("Wick alta ma BUY speciale/re-arm ancora valido")
             else:
                 score -= 3
                 reasons.append("Wick alta")
@@ -2944,9 +3021,9 @@ def score_signal(data, signal):
             reasons.append("EMA50 UP")
 
         if ema20_slope == "DOWN":
-            if max_dip_buy or max_recovery_buy:
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
                 score -= 1
-                reasons.append("EMA20 DOWN ma BUY speciale")
+                reasons.append("EMA20 DOWN ma BUY speciale/re-arm")
             elif reversal_buy:
                 score -= 1
                 reasons.append("EMA20 DOWN ma reversal BUY")
@@ -2955,9 +3032,9 @@ def score_signal(data, signal):
                 reasons.append("EMA20 DOWN")
 
         if ema50_slope == "DOWN":
-            if max_dip_buy or max_recovery_buy:
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
                 score -= 1
-                reasons.append("EMA50 DOWN ma BUY speciale")
+                reasons.append("EMA50 DOWN ma BUY speciale/re-arm")
             elif reversal_buy:
                 score -= 1
                 reasons.append("EMA50 DOWN ma reversal BUY")
@@ -2966,9 +3043,9 @@ def score_signal(data, signal):
                 reasons.append("EMA50 DOWN")
 
         if volume_spike and candle_dir == "BEAR":
-            if max_dip_buy or max_recovery_buy:
+            if max_dip_buy or max_recovery_buy or max_pullback_rearm_buy:
                 score -= 1
-                reasons.append("Volume bearish ma BUY speciale ancora valido")
+                reasons.append("Volume bearish ma BUY speciale/re-arm ancora valido")
             else:
                 score -= 3
                 reasons.append("Volume spike bearish")
@@ -3138,11 +3215,14 @@ def score_signal(data, signal):
                     f"Master Regime: NORMAL SELL consentito in SELL_CONTROL (+{MASTER_REGIME_NORMAL_SELL_EXTRA_BONUS})"
                 )
 
-        if signal == "BUY" and master_mode == "SELL_CONTROL" and not master_ctx.get("allow_rebound_buy"):
+        if signal == "BUY" and master_mode == "SELL_CONTROL" and not (master_ctx.get("allow_rebound_buy") or max_pullback_rearm_buy):
             score -= MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY
             reasons.append(
                 f"Master Regime SELL_CONTROL: BUY contro giornata sell (-{MASTER_REGIME_BLOCK_BUY_SCORE_PENALTY})"
             )
+        elif signal == "BUY" and master_mode == "SELL_CONTROL" and max_pullback_rearm_buy:
+            score += max(0, MAX_PULLBACK_REARM_SCORE_FLOOR - int(score))
+            reasons.append("Master Regime SELL_CONTROL declassato: Pullback Re-Arm BUY stile Max")
 
     return score, reasons, active_news_bias, news_reasons, setup_type
 
@@ -5347,30 +5427,6 @@ def special_buy_flip_window_context(symbol, setup_type, score, data, special_ctx
         to_bool(data.get("near_m15_high", "false"))
         or to_bool(data.get("near_day_high", "false"))
     )
-    # v34: il FAST deve seguire il Master Regime, altrimenti prende BUY veloci
-    # dentro una giornata chiaramente SELL.
-    if MASTER_REGIME_FAST_FOLLOWS_MASTER:
-        master_ctx = get_master_regime_context(symbol, data)
-        master_mode = str(master_ctx.get("mode", "MIXED")).upper()
-        if master_mode == "SELL_CONTROL" and signal == "BUY":
-            rebound_ok = (
-                MASTER_REGIME_FAST_ALLOW_REBOUND_BUY
-                and master_ctx.get("allow_rebound_buy")
-                and score >= MASTER_REGIME_REBOUND_BUY_MIN_SCORE
-            )
-            if not rebound_ok:
-                return True, [
-                    "FAST bloccato da Master Regime SELL_CONTROL: niente BUY veloci contro giornata sell",
-                    master_ctx.get("reason", "")
-                ]
-        if master_mode == "BUY_CONTROL" and signal == "SELL" and score < MASTER_REGIME_BUY_CONTROL_COUNTER_SELL_MIN_SCORE:
-            return True, [
-                "FAST bloccato da Master Regime BUY_CONTROL: niente SELL veloci contro giornata buy",
-                master_ctx.get("reason", "")
-            ]
-        if master_mode == "CHAOS_CONTROL":
-            return True, ["FAST bloccato da Master Regime CHAOS_CONTROL"]
-
     day_position = to_float(data.get("day_position"), 0.5)
     event_active = bool(
         to_bool(data.get("event_mode"))
@@ -6003,10 +6059,19 @@ def should_block_by_master_regime(signal, symbol, setup_type, score, data):
     mode = str(ctx.get("mode", "MIXED")).upper()
 
     if mode == "SELL_CONTROL" and signal == "BUY" and MASTER_REGIME_BLOCK_BUY_IN_SELL_CONTROL:
+        pullback_rearm_ctx = max_pullback_rearm_buy_context(signal, symbol, data)
+        ctx["pullback_rearm"] = pullback_rearm_ctx
         buy_allowed = (
             setup_type in MASTER_REGIME_REBOUND_BUY_SETUPS
-            and ctx.get("allow_rebound_buy")
-            and int(score) >= MASTER_REGIME_REBOUND_BUY_MIN_SCORE
+            and (
+                ctx.get("allow_rebound_buy")
+                or (
+                    setup_type == "MAX_PULLBACK_REARM_BUY"
+                    and pullback_rearm_ctx.get("allow")
+                    and MAX_PULLBACK_REARM_ALLOW_IN_SELL_CONTROL
+                )
+            )
+            and int(score) >= min(MASTER_REGIME_REBOUND_BUY_MIN_SCORE, MAX_PULLBACK_REARM_SCORE_FLOOR)
         )
         if not buy_allowed:
             return (
@@ -6161,6 +6226,28 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
         event_trap_ctx=event_trap_ctx
     )
     ctx["special_buy_flip_window"] = flip_window_ctx
+
+    pullback_rearm_ctx = max_pullback_rearm_buy_context("BUY", symbol, data)
+    ctx["pullback_rearm"] = pullback_rearm_ctx
+
+    anti_fade_ctx = anti_fade_super_buy_context(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data,
+        big_move_ctx=ctx.get("big_move"),
+        event_trap_ctx=event_trap_ctx,
+        flip_window_ctx=flip_window_ctx
+    )
+    ctx["anti_fade_super_buy"] = anti_fade_ctx
+
+    if anti_fade_ctx.get("block"):
+        return (
+            True,
+            ctx,
+            "Anti-Fade Super BUY: SELL/MAX_FADE bloccato, campagna BUY TP5+ ancora viva e non invalidata"
+        )
 
     if special_buy_ctx.get("active"):
         if setup_type == "NORMAL" and SPECIAL_BUY_BLOCK_NORMAL_SELL:
@@ -6641,6 +6728,11 @@ def should_block_buy_by_pre_bear(signal, symbol, setup_type, score, data):
         and int(score) >= PRE_BEAR_ALLOW_RECOVERY_BUY_SCORE
     ):
         return False, state, "Recovery BUY profondo ammesso dopo deep extension"
+
+    if str(setup_type).upper() == "MAX_PULLBACK_REARM_BUY":
+        rearm_ctx = max_pullback_rearm_buy_context(signal, symbol, data)
+        if rearm_ctx.get("allow"):
+            return False, state, "Pre-Bear declassata: Max Pullback Re-Arm BUY confermato"
 
     rebound_ctx = post_sell_rebound_unlock_context(signal, symbol, setup_type, score, data)
     if rebound_ctx.get("allow"):
@@ -8332,6 +8424,11 @@ def should_block_buy_by_bear_state(signal, symbol, setup_type, score, data):
         if deep_rebound_ctx.get("allow"):
             return False, state, deep_rebound_ctx.get("reason")
 
+    if setup_type == "MAX_PULLBACK_REARM_BUY":
+        rearm_ctx = max_pullback_rearm_buy_context(signal, symbol, data)
+        if rearm_ctx.get("allow"):
+            return False, state, "Bear state declassato: Max Pullback Re-Arm BUY confermato"
+
     rebound_ctx = post_sell_rebound_unlock_context(signal, symbol, setup_type, score, data)
     if rebound_ctx.get("allow"):
         return False, state, rebound_ctx.get("reason")
@@ -9217,6 +9314,303 @@ def recent_buy_campaign_winners(symbol):
     return sorted(winners, key=lambda t: int(t.get("highest_tp", 0) or 0), reverse=True)
 
 
+def max_pullback_rearm_buy_context(signal, symbol, data=None):
+    """
+    v36:
+    BUY re-arm dopo una campagna BUY già pagata.
+    Caso reale: il bot aveva BUY vincenti, poi il pullback è stato letto come SELL_CONTROL.
+    Qui serve capire se è solo ricarica/pullback e non vero cambio bearish.
+    """
+    data = data or {}
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+
+    ctx = {
+        "allow": False,
+        "active": False,
+        "reason": "non valutato",
+        "reasons": [],
+        "confirmations": 0,
+        "required_confirmations": MAX_PULLBACK_REARM_MIN_CONFIRMATIONS,
+        "winners": []
+    }
+
+    if not MAX_PULLBACK_REARM_ENABLED:
+        ctx["reason"] = "MAX_PULLBACK_REARM_ENABLED = FALSE"
+        return ctx
+    if signal != "BUY":
+        ctx["reason"] = "non è BUY"
+        return ctx
+
+    winners = [
+        t for t in recent_buy_campaign_winners(symbol)
+        if int(t.get("highest_tp", 0) or 0) >= MAX_PULLBACK_REARM_MIN_BUY_TP
+        and now_ts() - max(to_float(t.get("last_tp_time") or t.get("created"), 0), to_float(t.get("created"), 0)) <= MAX_PULLBACK_REARM_LOOKBACK_SECONDS
+    ]
+    if not winners:
+        ctx["reason"] = f"nessun BUY recente TP{MAX_PULLBACK_REARM_MIN_BUY_TP}+"
+        return ctx
+
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+    day_position = to_float(data.get("day_position"), 0.5)
+    recent_window = _recent_price_window(symbol, MAX_PULLBACK_REARM_LOOKBACK_SECONDS)
+    window_high = to_float(recent_window.get("high"), 0)
+    window_low = to_float(recent_window.get("low"), 0)
+    pullback_from_high = max(0, window_high - price) if window_high and price else 0
+    rebound_from_low = max(0, price - window_low) if window_low and price else 0
+
+    h1 = str(data.get("h1_bias", "NEUTRAL")).upper()
+    h4 = str(data.get("h4_bias", "NEUTRAL")).upper()
+    day = str(data.get("day_bias", "NEUTRAL")).upper()
+    structure = str(data.get("structure", "NEUTRAL")).upper()
+    candle = str(data.get("candle_dir", "NEUTRAL")).upper()
+    ema20 = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50 = str(data.get("ema50_slope", "FLAT")).upper()
+    rsi = to_float(data.get("rsi"), 50)
+    above_ema200 = to_bool(data.get("close_above_ema200", "false"))
+    close_above_ema20 = to_bool(data.get("close_above_ema20", "false"))
+    close_above_ema50 = to_bool(data.get("close_above_ema50", "false"))
+    near_m15_low = to_bool(data.get("near_m15_low", "false"))
+    near_day_low = to_bool(data.get("near_day_low", "false"))
+    lower_rejection = str(data.get("rejection", "")).upper() == "LOWER_WICK" or to_bool(data.get("lower_wick_strong", "false"))
+    active_news_bias, _ = get_auto_news_bias()
+
+    support_low_candidates = [to_float(t.get("entry_low"), 0) for t in winners if to_float(t.get("entry_low"), 0) > 0]
+    support_low = min(support_low_candidates) if support_low_candidates else 0
+    invalidation_price = support_low - MAX_PULLBACK_REARM_INVALIDATION_BUFFER if support_low else 0
+    support_alive = bool(not invalidation_price or not price or price > invalidation_price)
+    pullback_ok = pullback_from_high >= MAX_PULLBACK_REARM_MIN_PULLBACK_POINTS
+    not_chasing_top = day_position <= MAX_PULLBACK_REARM_MAX_DAY_POSITION or near_m15_low or near_day_low or lower_rejection
+
+    reasons = []
+    confirmations = 0
+
+    if h1 == "BUY":
+        confirmations += 1; reasons.append("H1 BUY")
+    if h4 == "BUY":
+        confirmations += 1; reasons.append("H4 BUY")
+    if day == "BUY":
+        confirmations += 1; reasons.append("Daily BUY")
+    if structure in ["BULLISH", "HL", "LL"]:
+        confirmations += 1; reasons.append(f"Struttura {structure}")
+    if candle == "BULL":
+        confirmations += 1; reasons.append("Candela bullish")
+    if ema20 == "UP" or close_above_ema20:
+        confirmations += 1; reasons.append("EMA20/close sopra EMA20")
+    if ema50 == "UP" or close_above_ema50:
+        confirmations += 1; reasons.append("EMA50/close sopra EMA50")
+    if above_ema200:
+        confirmations += 1; reasons.append("Prezzo sopra EMA200")
+    if rsi > 50:
+        confirmations += 1; reasons.append("RSI sopra 50")
+    if active_news_bias == "BULLISH_GOLD":
+        confirmations += 1; reasons.append("News bullish gold")
+    if lower_rejection or near_m15_low or near_day_low:
+        confirmations += 1; reasons.append("Pullback/rejection su zona bassa")
+    if pullback_ok:
+        confirmations += 1; reasons.append(f"Pullback dal massimo: {round(pullback_from_high, 2)} punti")
+    if support_alive:
+        confirmations += 1; reasons.append("Supporto campagna BUY non invalidato")
+
+    allow = bool(
+        support_alive
+        and pullback_ok
+        and not_chasing_top
+        and confirmations >= MAX_PULLBACK_REARM_MIN_CONFIRMATIONS
+    )
+
+    best = sorted(winners, key=lambda t: (int(t.get("highest_tp", 0) or 0), to_float(t.get("last_tp_time") or t.get("created"), 0)), reverse=True)[0]
+    ctx.update({
+        "active": bool(winners),
+        "allow": allow,
+        "reason": (
+            "campagna BUY ancora viva: pullback controllato, posso cercare re-entry BUY"
+            if allow else
+            "campagna BUY viva ma re-arm non confermato"
+        ),
+        "reasons": reasons,
+        "confirmations": confirmations,
+        "winners": winners[:5],
+        "best_trade": best,
+        "highest_tp": int(best.get("highest_tp", 0) or 0),
+        "price": price,
+        "day_position": day_position,
+        "window_high": window_high,
+        "window_low": window_low,
+        "pullback_from_high": pullback_from_high,
+        "rebound_from_low": rebound_from_low,
+        "support_low": support_low,
+        "invalidation_price": invalidation_price,
+        "support_alive": support_alive,
+        "pullback_ok": pullback_ok,
+        "not_chasing_top": not_chasing_top
+    })
+    return ctx
+
+
+def max_pullback_rearm_text(ctx):
+    if not ctx or not ctx.get("active"):
+        return "Max Pullback Re-Arm: non attivo"
+    best = ctx.get("best_trade") or {}
+    reasons = "\n".join(f"- {r}" for r in (ctx.get("reasons") or [])[:8]) or "- N/D"
+    return (
+        f"Active: {ctx.get('active')} | Allow: {ctx.get('allow')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Trade base: {best.get('id', 'N/D')} | {best.get('setup_type', 'N/D')} | TP{ctx.get('highest_tp')}\n"
+        f"Prezzo: {round(to_float(ctx.get('price')), 3)} | Day position: {round(to_float(ctx.get('day_position')), 2)}\n"
+        f"Pullback high: {round(to_float(ctx.get('pullback_from_high')), 2)} | Rebound low: {round(to_float(ctx.get('rebound_from_low')), 2)}\n"
+        f"Supporto BUY: {round(to_float(ctx.get('support_low')), 3)} | Invalidation: {round(to_float(ctx.get('invalidation_price')), 3)}\n"
+        f"Conferme: {ctx.get('confirmations')}/{MAX_PULLBACK_REARM_MIN_CONFIRMATIONS}\n{reasons}"
+    )
+
+
+def anti_fade_super_buy_context(signal, symbol, setup_type, score, data=None, big_move_ctx=None, event_trap_ctx=None, flip_window_ctx=None):
+    """
+    v36:
+    Anti-fade contro una campagna BUY già pagata.
+    Evita MAX_FADE_SELL/NORMAL SELL prematuri quando il BUY ha fatto TP5+ e non è invalidato.
+    """
+    data = data or {}
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+    setup_type = str(setup_type or "NORMAL").upper()
+
+    ctx = {
+        "active": False,
+        "block": False,
+        "allow": False,
+        "reason": "non valutato",
+        "bear_confirmations": 0,
+        "required_bear_confirmations": ANTI_FADE_SUPER_BUY_MIN_BEAR_CONFIRMATIONS,
+        "winners": []
+    }
+
+    if not ANTI_FADE_SUPER_BUY_ENABLED:
+        ctx["reason"] = "ANTI_FADE_SUPER_BUY_ENABLED = FALSE"
+        return ctx
+    if signal != "SELL":
+        ctx["reason"] = "non è SELL"
+        return ctx
+    if setup_type not in ANTI_FADE_SUPER_BUY_BLOCK_SETUPS:
+        ctx["reason"] = "setup non soggetto ad anti-fade"
+        return ctx
+
+    winners = [
+        t for t in recent_buy_campaign_winners(symbol)
+        if int(t.get("highest_tp", 0) or 0) >= ANTI_FADE_SUPER_BUY_MIN_BUY_TP
+        and now_ts() - max(to_float(t.get("last_tp_time") or t.get("created"), 0), to_float(t.get("created"), 0)) <= ANTI_FADE_SUPER_BUY_LOOKBACK_SECONDS
+    ]
+    if not winners:
+        ctx["reason"] = f"nessuna campagna BUY TP{ANTI_FADE_SUPER_BUY_MIN_BUY_TP}+ recente"
+        return ctx
+
+    price = get_price_from_data(data) or _latest_price_for_symbol(symbol)
+    support_candidates = [to_float(t.get("entry_low"), 0) for t in winners if to_float(t.get("entry_low"), 0) > 0]
+    support_low = min(support_candidates) if support_candidates else 0
+    invalidation_price = support_low - ANTI_FADE_SUPER_BUY_SUPPORT_BUFFER if support_low else 0
+    campaign_invalidated = bool(invalidation_price and price and price <= invalidation_price)
+
+    if campaign_invalidated:
+        ctx.update({
+            "active": True,
+            "allow": True,
+            "block": False,
+            "reason": "campagna BUY invalidata sotto supporto: SELL non bloccato",
+            "winners": winners[:5],
+            "price": price,
+            "support_low": support_low,
+            "invalidation_price": invalidation_price
+        })
+        return ctx
+
+    day_position = to_float(data.get("day_position"), 0.5)
+    near_high = to_bool(data.get("near_m15_high", "false")) or to_bool(data.get("near_day_high", "false"))
+    true_high_zone = bool(near_high or day_position >= ANTI_FADE_SUPER_BUY_MIN_DAY_POSITION)
+    candle = str(data.get("candle_dir", "NEUTRAL")).upper()
+    structure = str(data.get("structure", "NEUTRAL")).upper()
+    ema20 = str(data.get("ema20_slope", "FLAT")).upper()
+    ema50 = str(data.get("ema50_slope", "FLAT")).upper()
+    rsi = to_float(data.get("rsi"), 50)
+    above_ema200 = to_bool(data.get("close_above_ema200", "false"))
+    upper_rejection = str(data.get("rejection", "")).upper() == "UPPER_WICK" or to_bool(data.get("upper_wick_strong", "false"))
+    micro = micro_bos_bear_context(symbol, data)
+    micro_ok = bool(micro.get("confirmed") or micro.get("micro_bos"))
+
+    bear_confirmations = 0
+    bear_reasons = []
+    if candle == "BEAR":
+        bear_confirmations += 1; bear_reasons.append("Candela bearish")
+    if structure in ["BEARISH", "LH", "HH"]:
+        bear_confirmations += 1; bear_reasons.append(f"Struttura {structure}")
+    if ema20 == "DOWN":
+        bear_confirmations += 1; bear_reasons.append("EMA20 DOWN")
+    if ema50 == "DOWN":
+        bear_confirmations += 1; bear_reasons.append("EMA50 DOWN")
+    if rsi < 50:
+        bear_confirmations += 1; bear_reasons.append("RSI sotto 50")
+    if not above_ema200:
+        bear_confirmations += 1; bear_reasons.append("Prezzo sotto EMA200")
+    if upper_rejection:
+        bear_confirmations += 1; bear_reasons.append("Upper rejection")
+    if micro_ok:
+        bear_confirmations += 1; bear_reasons.append("Micro BOS bearish")
+    if true_high_zone:
+        bear_confirmations += 1; bear_reasons.append("Zona alta vera")
+
+    event_trap_allow = bool((event_trap_ctx or {}).get("allow"))
+    flip_window_allow = bool((flip_window_ctx or {}).get("allow"))
+    score_ok = int(score or 0) >= ANTI_FADE_SUPER_BUY_ALLOW_SCORE
+    micro_rule_ok = micro_ok or not ANTI_FADE_SUPER_BUY_REQUIRE_MICRO_BOS
+    zone_rule_ok = true_high_zone or not ANTI_FADE_SUPER_BUY_REQUIRE_TRUE_HIGH_ZONE
+    bear_ok = bear_confirmations >= ANTI_FADE_SUPER_BUY_MIN_BEAR_CONFIRMATIONS
+    allow = bool(event_trap_allow or (flip_window_allow and score_ok) or (score_ok and micro_rule_ok and zone_rule_ok and bear_ok))
+    block = bool(not allow)
+
+    best = sorted(winners, key=lambda t: (int(t.get("highest_tp", 0) or 0), to_float(t.get("last_tp_time") or t.get("created"), 0)), reverse=True)[0]
+    ctx.update({
+        "active": True,
+        "block": block,
+        "allow": allow,
+        "reason": (
+            "SELL autorizzato: invalidazione/flip A+ confermato"
+            if allow else
+            "SUPER BUY ancora vivo: blocco fade/SELL prematuro contro campagna BUY TP5+"
+        ),
+        "best_trade": best,
+        "highest_tp": int(best.get("highest_tp", 0) or 0),
+        "winners": winners[:5],
+        "price": price,
+        "support_low": support_low,
+        "invalidation_price": invalidation_price,
+        "campaign_invalidated": campaign_invalidated,
+        "score": int(score or 0),
+        "required_score": ANTI_FADE_SUPER_BUY_ALLOW_SCORE,
+        "true_high_zone": true_high_zone,
+        "day_position": day_position,
+        "micro_ok": micro_ok,
+        "bear_confirmations": bear_confirmations,
+        "bear_reasons": bear_reasons,
+        "event_trap_allow": event_trap_allow,
+        "flip_window_allow": flip_window_allow
+    })
+    return ctx
+
+
+def anti_fade_super_buy_text(ctx):
+    if not ctx or not ctx.get("active"):
+        return "Anti-Fade Super BUY: non attivo"
+    best = ctx.get("best_trade") or {}
+    bears = "\n".join(f"- {r}" for r in (ctx.get("bear_reasons") or [])[:8]) or "- N/D"
+    return (
+        f"Active: {ctx.get('active')} | Block: {ctx.get('block')} | Allow: {ctx.get('allow')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Trade BUY base: {best.get('id', 'N/D')} | {best.get('setup_type', 'N/D')} | TP{ctx.get('highest_tp')}\n"
+        f"Prezzo: {round(to_float(ctx.get('price')), 3)} | Supporto: {round(to_float(ctx.get('support_low')), 3)} | Invalidation: {round(to_float(ctx.get('invalidation_price')), 3)}\n"
+        f"Score SELL: {ctx.get('score')}/{ANTI_FADE_SUPER_BUY_ALLOW_SCORE} | Micro BOS: {ctx.get('micro_ok')} | Zona alta vera: {ctx.get('true_high_zone')}\n"
+        f"Bear confirmations: {ctx.get('bear_confirmations')}/{ANTI_FADE_SUPER_BUY_MIN_BEAR_CONFIRMATIONS}\n{bears}"
+    )
+
+
 def should_block_by_buy_campaign_exhaustion(signal, symbol, setup_type, score, data):
     if not BUY_CAMPAIGN_EXHAUSTION_ENABLED:
         return False, {"active": False, "reason": "disabled", "winners": []}
@@ -9912,6 +10306,39 @@ def fast_direction_score(data, signal):
     return score, reasons
 
 
+def dynamic_fast_sl_points(data):
+    """
+    v35: SL fast adattivo.
+    TP resta veloce (2 punti), ma lo stop non resta più microscopico quando Gold M1 spika.
+    """
+    data = data or {}
+    base = max(to_float(FAST_SL_POINTS, 3.5), to_float(FAST_MIN_SL_POINTS, 3.5))
+
+    if FAST_USE_DYNAMIC_SL:
+        atr_candidates = [
+            data.get("atr"), data.get("atr14"), data.get("atr_14"),
+            data.get("m1_atr"), data.get("atr_m1"), data.get("range_atr")
+        ]
+        atr_values = [to_float(v, 0) for v in atr_candidates]
+        atr_values = [v for v in atr_values if v and v > 0]
+        if atr_values:
+            base = max(base, max(atr_values) * FAST_ATR_SL_MULT)
+
+        event_active = bool(
+            to_bool(data.get("event_mode"))
+            or to_bool(data.get("auto_event_pine"))
+            or to_float(data.get("m15_range_atr"), 0) >= BIG_MOVE_BREAKOUT_M15_ATR
+            or to_float(data.get("range_atr"), 0) >= 2.2
+            or to_bool(data.get("volume_spike"))
+        )
+        if event_active:
+            base = max(base, FAST_EVENT_SL_POINTS)
+
+    base = max(base, FAST_MIN_SL_POINTS)
+    base = min(base, FAST_MAX_SL_POINTS)
+    return round(base, 2)
+
+
 def fast_should_block(data, signal, entry, score=None, score_reasons=None):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     tf = str(data.get("tf", "")).strip()
@@ -9943,6 +10370,60 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
         if remaining > 0:
             return True, [
                 f"{consecutive_sl} SL fast consecutivi: pausa ancora {int(remaining // 60)} min"
+            ]
+
+    # v35: Master Gate del FAST.
+    # Il FAST resta parallelo, ma non può più fare BUY quando il Master Regime
+    # sta dicendo SELL_CONTROL, né SELL in BUY_CONTROL. Questo risolve il caso
+    # in cui il main bot blocca un BUY ma il FAST lo manda comunque e prende SL.
+    if FAST_MASTER_GATE_ENABLED and MASTER_REGIME_ENABLED:
+        master_ctx = get_master_regime_context(symbol, data)
+        master_mode = str(master_ctx.get("mode", "MIXED")).upper()
+
+        if master_mode == "SELL_CONTROL" and signal == "BUY" and FAST_BLOCK_BUY_IN_SELL_CONTROL:
+            return True, [
+                "FAST bloccato da Master Regime SELL_CONTROL: niente BUY veloci contro giornata sell",
+                master_ctx.get("reason", "")
+            ]
+
+        if master_mode == "BUY_CONTROL" and signal == "SELL" and FAST_BLOCK_SELL_IN_BUY_CONTROL:
+            return True, [
+                "FAST bloccato da Master Regime BUY_CONTROL: niente SELL veloci contro giornata buy",
+                master_ctx.get("reason", "")
+            ]
+
+        if master_mode == "CHAOS_CONTROL" and FAST_BLOCK_CHAOS_CONTROL:
+            return True, [
+                "FAST bloccato da Master Regime CHAOS_CONTROL: mercato tossico / troppi SL diretti",
+                master_ctx.get("reason", "")
+            ]
+
+        if signal == "SELL" and master_mode == "SELL_CONTROL" and score < FAST_SELL_CONTROL_MIN_SCORE:
+            return True, [
+                f"FAST SELL in SELL_CONTROL ma score basso {score}/{FAST_SELL_CONTROL_MIN_SCORE}"
+            ]
+
+        if signal == "BUY" and master_mode == "BUY_CONTROL" and score < FAST_BUY_CONTROL_MIN_SCORE:
+            return True, [
+                f"FAST BUY in BUY_CONTROL ma score basso {score}/{FAST_BUY_CONTROL_MIN_SCORE}"
+            ]
+
+    # v35: se Big Move Watch/Confirmed è attivo da TP3+, il FAST non fa contromano.
+    if FAST_BLOCK_COUNTER_BIG_MOVE_THESIS:
+        big_move_ctx = get_big_move_thesis_context(symbol, data)
+        big_direction = str(big_move_ctx.get("signal", "")).upper()
+        big_status = str(big_move_ctx.get("status", "")).upper()
+        big_tp = int(big_move_ctx.get("highest_tp", 0) or 0)
+        if (
+            big_move_ctx.get("active")
+            and big_direction in ["BUY", "SELL"]
+            and big_status in ["WATCH", "CONFIRMED"]
+            and big_tp >= FAST_BIG_MOVE_BLOCK_FROM_TP
+            and big_direction != signal
+        ):
+            return True, [
+                f"FAST bloccato: Big Move {big_direction} {big_status} già a TP{big_tp}; niente contromano",
+                big_move_ctx.get("reason", "")
             ]
 
     for trade in FAST_TRADES:
@@ -10059,6 +10540,8 @@ def build_fast_trade(data, signal):
         "entry": round(entry, 2),
         "sl": round(sl, 2),
         "tp": round(tp, 2),
+        "tp_points": round(FAST_TP_POINTS, 2),
+        "sl_points": round(sl_points, 2),
         "score": score,
         "status": "PENDING",
         "created": now_ts(),
@@ -10082,6 +10565,8 @@ def fast_message(trade):
     sl = fmt_price(trade.get("sl"))
     tp = fmt_price(trade.get("tp"))
     score = trade.get("score", 0)
+    tp_points = trade.get("tp_points", FAST_TP_POINTS)
+    sl_points = trade.get("sl_points", FAST_SL_POINTS)
     reasons = trade.get("reasons") or []
     reason_text = "\n".join([f"- {r}" for r in reasons]) if reasons else "- conferme base fast"
 
@@ -10102,8 +10587,8 @@ Entry: {html_code(entry)}
 SL: {html_code(sl)}
 TP: {html_code(tp)}
 
-🎯 Obiettivo veloce: {html_code(str(FAST_TP_POINTS) + ' punti')}
-🛑 Stop corto: {html_code(str(FAST_SL_POINTS) + ' punti')}
+🎯 Obiettivo veloce: {html_code(str(tp_points) + ' punti')}
+🛑 Stop smart: {html_code(str(sl_points) + ' punti')}
 🧠 Score fast: {html_code(str(score))}
 
 Lettura:
@@ -10126,6 +10611,7 @@ TP1: {tp}
 {tp}
 
 Score fast: {score}
+SL smart: {sl_points} punti
 """
 
 
@@ -10730,6 +11216,9 @@ def fast_trades():
         "today": len(fast_today_trades()),
         "tp_points": FAST_TP_POINTS,
         "sl_points": FAST_SL_POINTS,
+        "min_sl_points": FAST_MIN_SL_POINTS,
+        "event_sl_points": FAST_EVENT_SL_POINTS,
+        "master_gate_enabled": FAST_MASTER_GATE_ENABLED,
         "trades": FAST_TRADES[-100:]
     })
 
@@ -10985,9 +11474,9 @@ def webhook():
         extreme_info=precomputed_extreme_info
     )
 
-    # v31: FAST veramente parallelo.
-    # Lo provo prima dei blocchi del main bot: se il main viene bloccato, il FAST può comunque partire.
-    # Se poi il main viene accettato, il duplicate fast evita doppi ingressi sullo stesso movimento.
+    # v35: FAST parallelo ma non cieco.
+    # Di default NON lo provo prima dei blocchi principali: prima decide il Master Regime.
+    # Se vuoi tornare al comportamento aggressivo, metti FAST_AUTO_BEFORE_MAIN_BLOCKS=TRUE.
     fast_pre_result = {"status": "skipped"}
     if FAST_AUTO_BEFORE_MAIN_BLOCKS:
         fast_pre_result = maybe_send_fast_from_main_webhook(
@@ -11171,6 +11660,12 @@ Loss Recovery / True Max Zone:
 Big Move Thesis:
 {big_move_thesis_text(regime_ctx.get('big_move', {}))}
 
+Max Pullback Re-Arm v36:
+{max_pullback_rearm_text(regime_ctx.get('pullback_rearm', {}))}
+
+Anti-Fade Super BUY v36:
+{anti_fade_super_buy_text(regime_ctx.get('anti_fade_super_buy', {}))}
+
 Event Trap Flip:
 {event_trap_flip_text(regime_ctx.get('event_trap_flip', {}))}
 
@@ -11186,6 +11681,8 @@ Il bot usa una sola tesi dominante.
 - se il SELL ha già preso TP8/Runner, comprimo nuove entrate simili
 - dopo 2 SL SELL, accetto solo vera zona Max alta
 - se un trade è TP3+ e protetto, attivo Big Move Watch/Confirmed
+- v36: dopo BUY TP5+ non vendo pullback non invalidati con MAX_FADE prematuro
+- v36: se il pullback tiene supporto, il BUY può riarmarsi anche se prima c'era SELL_CONTROL
 - Event Trap Flip può ribaltare SUPER BUY in SUPER SELL da zona alta evento
 - Deep Extension deve essere realmente riarmata
 """
