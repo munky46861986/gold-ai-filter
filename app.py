@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v36 Max Pullback Re-Arm + Anti-Fade Super BUY"
+VERSION = "v37 Anti Whipsaw + Post SL Quarantine"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -883,16 +883,61 @@ SMART_KILL_PRE_BEAR_RISK_WEIGHT = float(os.getenv("SMART_KILL_PRE_BEAR_RISK_WEIG
 SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS = int(os.getenv("SMART_KILL_PRE_BEAR_COOLDOWN_SECONDS", "7200"))
 
 # =========================
+# v37: ANTI WHIPSAW + POST SL QUARANTINE
+# =========================
+# Obiettivo: evitare il caso visto su v36:
+# BUY MAX_DIP preso in SL -> subito SELL NORMAL dal basso -> SL.
+# Dopo uno SL diretto il bot non deve cambiare direzione in modo impulsivo.
+# I default sono nel codice: se Render non ti fa aggiungere variabili nuove, funziona comunque.
+POST_SL_QUARANTINE_ENABLED = os.getenv("POST_SL_QUARANTINE_ENABLED", "TRUE").upper() == "TRUE"
+POST_SL_QUARANTINE_SECONDS = int(os.getenv("POST_SL_QUARANTINE_SECONDS", "1800"))  # 30 minuti
+POST_SL_SAME_DIRECTION_SECONDS = int(os.getenv("POST_SL_SAME_DIRECTION_SECONDS", "900"))  # 15 minuti
+POST_SL_BLOCK_NORMAL_OPPOSITE = os.getenv("POST_SL_BLOCK_NORMAL_OPPOSITE", "TRUE").upper() == "TRUE"
+POST_SL_OPPOSITE_MIN_SCORE = int(os.getenv("POST_SL_OPPOSITE_MIN_SCORE", "20"))
+POST_SL_REENTRY_MIN_SCORE = int(os.getenv("POST_SL_REENTRY_MIN_SCORE", "24"))
+POST_SL_REQUIRE_MICRO_BOS = os.getenv("POST_SL_REQUIRE_MICRO_BOS", "TRUE").upper() == "TRUE"
+POST_SL_REQUIRE_RETEST_ZONE = os.getenv("POST_SL_REQUIRE_RETEST_ZONE", "TRUE").upper() == "TRUE"
+POST_SL_SELL_MIN_DAY_POSITION = float(os.getenv("POST_SL_SELL_MIN_DAY_POSITION", "0.45"))
+POST_SL_BUY_MAX_DAY_POSITION = float(os.getenv("POST_SL_BUY_MAX_DAY_POSITION", "0.55"))
+
+POST_SL_OPPOSITE_ALLOW_SETUPS = {
+    "MAX_FADE_SELL",
+    "MAX_VIEW_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "PRE_BEAR_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+    "MAX_FLIP_BUY",
+    "MAX_PULLBACK_REARM_BUY",
+    "DEEP_REBOUND_BUY",
+    "MAX_RECOVERY_BUY"
+}
+
+POST_SL_REENTRY_CAUTION_SETUPS = {
+    "NORMAL",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY",
+    "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
+    "MAX_FADE_SELL",
+    "REVERSAL_SELL",
+    "MAX_DIP_SELL"
+}
+
+# =========================
 # FAST SCALPER PARALLELO v1
 # =========================
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v8 Master Gate + Wider SL"
+FAST_VERSION = "Fast Scalper v9 Dynamic Wider SL + Anti Whipsaw"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
-FAST_SL_POINTS = float(os.getenv("FAST_SL_POINTS", "3.5"))
+FAST_SL_POINTS = max(float(os.getenv("FAST_SL_POINTS", "4.5")), 4.5)
 FAST_ENTRY_OFFSET = float(os.getenv("FAST_ENTRY_OFFSET", "0.0"))
 FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "8"))
 FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "1"))
@@ -937,10 +982,10 @@ FAST_BIG_MOVE_BLOCK_FROM_TP = int(os.getenv("FAST_BIG_MOVE_BLOCK_FROM_TP", "3"))
 FAST_SELL_CONTROL_MIN_SCORE = int(os.getenv("FAST_SELL_CONTROL_MIN_SCORE", "8"))
 FAST_BUY_CONTROL_MIN_SCORE = int(os.getenv("FAST_BUY_CONTROL_MIN_SCORE", "8"))
 FAST_USE_DYNAMIC_SL = os.getenv("FAST_USE_DYNAMIC_SL", "TRUE").upper() == "TRUE"
-FAST_MIN_SL_POINTS = float(os.getenv("FAST_MIN_SL_POINTS", "3.5"))
-FAST_EVENT_SL_POINTS = float(os.getenv("FAST_EVENT_SL_POINTS", "4.5"))
-FAST_MAX_SL_POINTS = float(os.getenv("FAST_MAX_SL_POINTS", "6.0"))
-FAST_ATR_SL_MULT = float(os.getenv("FAST_ATR_SL_MULT", "1.1"))
+FAST_MIN_SL_POINTS = max(float(os.getenv("FAST_MIN_SL_POINTS", "4.5")), 4.5)
+FAST_EVENT_SL_POINTS = max(float(os.getenv("FAST_EVENT_SL_POINTS", "6.0")), 6.0)
+FAST_MAX_SL_POINTS = max(float(os.getenv("FAST_MAX_SL_POINTS", "8.0")), 8.0)
+FAST_ATR_SL_MULT = max(float(os.getenv("FAST_ATR_SL_MULT", "1.3")), 1.3)
 FAST_REQUIRE_MOMENTUM_OR_REJECTION = os.getenv("FAST_REQUIRE_MOMENTUM_OR_REJECTION", "TRUE").upper() == "TRUE"
 FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE = os.getenv("FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE", "TRUE").upper() == "TRUE"
 FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.35"))
@@ -1452,6 +1497,12 @@ def health():
         "virtual_runner_enabled": VIRTUAL_RUNNER_ENABLED,
         "special_buy_flip_window_enabled": SPECIAL_BUY_FLIP_WINDOW_ENABLED,
         "post_sell_rebound_unlock_enabled": POST_SELL_REBOUND_UNLOCK_ENABLED,
+        "post_sl_quarantine_enabled": POST_SL_QUARANTINE_ENABLED,
+        "post_sl_quarantine_seconds": POST_SL_QUARANTINE_SECONDS,
+        "post_sl_opposite_min_score": POST_SL_OPPOSITE_MIN_SCORE,
+        "post_sl_reentry_min_score": POST_SL_REENTRY_MIN_SCORE,
+        "post_sl_require_micro_bos": POST_SL_REQUIRE_MICRO_BOS,
+        "post_sl_require_retest_zone": POST_SL_REQUIRE_RETEST_ZONE,
         "total_trades": len(OPEN_TRADES),
         "active_trades": active_trades_count(),
         "bias": BIAS,
@@ -3275,6 +3326,213 @@ def should_block_duplicate(signal, symbol, score):
 
     return True, recent
 
+
+
+# =========================
+# v37: ANTI WHIPSAW + POST SL QUARANTINE
+# =========================
+
+def latest_direct_loss_any(symbol, lookback_seconds):
+    now = now_ts()
+    symbol = str(symbol or "XAUUSD").upper()
+    losses = []
+
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if trade.get("status") != "LOSS":
+            continue
+        if int(trade.get("highest_tp", 0) or 0) > 0:
+            continue
+
+        closed = to_float(trade.get("closed") or trade.get("created") or 0, 0)
+        if closed and now - closed <= lookback_seconds:
+            losses.append(trade)
+
+    if not losses:
+        return None
+
+    return sorted(
+        losses,
+        key=lambda x: to_float(x.get("closed") or x.get("created") or 0, 0),
+        reverse=True
+    )[0]
+
+
+def post_sl_confirmation_ok(signal, data):
+    signal = normalize_signal(signal)
+    data = data or {}
+
+    day_position = to_float(data.get("day_position"), 0.5)
+    near_m15_high = to_bool(data.get("near_m15_high"))
+    near_m15_low = to_bool(data.get("near_m15_low"))
+    upper_wick = to_bool(data.get("upper_wick_strong")) or str(data.get("rejection", "")).upper() == "UPPER_WICK"
+    lower_wick = to_bool(data.get("lower_wick_strong")) or str(data.get("rejection", "")).upper() == "LOWER_WICK"
+    candle_dir = str(data.get("candle_dir", "")).upper()
+    ema20_slope = str(data.get("ema20_slope", "")).upper()
+    ema50_slope = str(data.get("ema50_slope", "")).upper()
+
+    micro_bos_bear = bool(
+        to_bool(data.get("micro_bos_bear"))
+        or to_bool(data.get("bear_micro_bos"))
+        or to_bool(data.get("bearish_micro_bos"))
+    )
+    micro_bos_bull = bool(
+        to_bool(data.get("micro_bos_bull"))
+        or to_bool(data.get("bull_micro_bos"))
+        or to_bool(data.get("bullish_micro_bos"))
+    )
+
+    if signal == "SELL":
+        bos_ok = (not POST_SL_REQUIRE_MICRO_BOS) or micro_bos_bear or candle_dir == "BEAR"
+        retest_ok = (not POST_SL_REQUIRE_RETEST_ZONE) or near_m15_high or upper_wick or day_position >= POST_SL_SELL_MIN_DAY_POSITION
+        momentum_ok = candle_dir == "BEAR" or ema20_slope == "DOWN" or ema50_slope == "DOWN"
+        return bool(bos_ok and retest_ok and momentum_ok), {
+            "micro_bos": micro_bos_bear,
+            "retest_zone": retest_ok,
+            "momentum": momentum_ok,
+            "day_position": day_position,
+            "near_m15_high": near_m15_high,
+            "upper_wick": upper_wick
+        }
+
+    if signal == "BUY":
+        bos_ok = (not POST_SL_REQUIRE_MICRO_BOS) or micro_bos_bull or candle_dir == "BULL"
+        retest_ok = (not POST_SL_REQUIRE_RETEST_ZONE) or near_m15_low or lower_wick or day_position <= POST_SL_BUY_MAX_DAY_POSITION
+        momentum_ok = candle_dir == "BULL" or ema20_slope == "UP" or ema50_slope == "UP"
+        return bool(bos_ok and retest_ok and momentum_ok), {
+            "micro_bos": micro_bos_bull,
+            "retest_zone": retest_ok,
+            "momentum": momentum_ok,
+            "day_position": day_position,
+            "near_m15_low": near_m15_low,
+            "lower_wick": lower_wick
+        }
+
+    return False, {"reason": "invalid signal"}
+
+
+def post_sl_quarantine_context(signal, symbol, setup_type, score, data):
+    """
+    v37: dopo uno SL diretto non si flippa subito direzione.
+    - Opposto NORMAL: bloccato durante la quarantena.
+    - Opposto speciale: passa solo con score alto + conferma/retest.
+    - Stessa direzione dopo SL: prudenza per evitare martellate ripetute.
+    """
+    ctx = {
+        "enabled": POST_SL_QUARANTINE_ENABLED,
+        "active": False,
+        "block": False,
+        "reason": "",
+        "last_loss": None,
+        "last_loss_signal": None,
+        "last_loss_setup": None,
+        "age_seconds": None,
+        "remaining_seconds": 0,
+        "confirmation_ok": False,
+        "confirmation": {}
+    }
+
+    if not POST_SL_QUARANTINE_ENABLED:
+        ctx["reason"] = "POST_SL_QUARANTINE disattivata"
+        return False, ctx
+
+    signal = normalize_signal(signal)
+    symbol = str(symbol or "XAUUSD").upper()
+    setup_type = str(setup_type or "NORMAL")
+    score = to_int(score, 0)
+
+    last_loss = latest_direct_loss_any(symbol, max(POST_SL_QUARANTINE_SECONDS, POST_SL_SAME_DIRECTION_SECONDS))
+    if not last_loss:
+        ctx["reason"] = "nessuno SL diretto recente"
+        return False, ctx
+
+    closed = to_float(last_loss.get("closed") or last_loss.get("created") or 0, 0)
+    age = now_ts() - closed if closed else 999999
+    last_signal = str(last_loss.get("signal", "")).upper()
+    last_setup = str(last_loss.get("setup_type", "NORMAL"))
+    opposite = signal in ["BUY", "SELL"] and last_signal in ["BUY", "SELL"] and signal != last_signal
+    same_direction = signal == last_signal
+    confirmation_ok, confirmation = post_sl_confirmation_ok(signal, data)
+
+    ctx.update({
+        "active": True,
+        "last_loss": last_loss,
+        "last_loss_signal": last_signal,
+        "last_loss_setup": last_setup,
+        "age_seconds": int(age),
+        "confirmation_ok": confirmation_ok,
+        "confirmation": confirmation
+    })
+
+    if opposite and age <= POST_SL_QUARANTINE_SECONDS:
+        ctx["remaining_seconds"] = int(max(0, POST_SL_QUARANTINE_SECONDS - age))
+
+        if setup_type == "NORMAL" and POST_SL_BLOCK_NORMAL_OPPOSITE:
+            ctx["block"] = True
+            ctx["reason"] = (
+                f"SL diretto {last_signal} appena chiuso: blocco {signal} NORMAL per evitare flip impulsivo"
+            )
+            return True, ctx
+
+        if setup_type not in POST_SL_OPPOSITE_ALLOW_SETUPS:
+            ctx["block"] = True
+            ctx["reason"] = (
+                f"setup {setup_type} non autorizzato durante quarantena post-SL"
+            )
+            return True, ctx
+
+        if score < POST_SL_OPPOSITE_MIN_SCORE:
+            ctx["block"] = True
+            ctx["reason"] = (
+                f"opposto post-SL con score basso {score}/{POST_SL_OPPOSITE_MIN_SCORE}"
+            )
+            return True, ctx
+
+        if not confirmation_ok:
+            ctx["block"] = True
+            ctx["reason"] = (
+                "opposto post-SL senza micro BOS/retest/momentum sufficiente"
+            )
+            return True, ctx
+
+        ctx["reason"] = "opposto post-SL consentito: setup speciale, score alto e conferma valida"
+        return False, ctx
+
+    if same_direction and age <= POST_SL_SAME_DIRECTION_SECONDS and setup_type in POST_SL_REENTRY_CAUTION_SETUPS:
+        ctx["remaining_seconds"] = int(max(0, POST_SL_SAME_DIRECTION_SECONDS - age))
+        if score < POST_SL_REENTRY_MIN_SCORE or not confirmation_ok:
+            ctx["block"] = True
+            ctx["reason"] = (
+                f"re-entry {signal} troppo presto dopo SL diretto: serve score {POST_SL_REENTRY_MIN_SCORE}+ e conferma pulita"
+            )
+            return True, ctx
+
+    ctx["reason"] = "quarantena non applicabile o conferme sufficienti"
+    return False, ctx
+
+
+def post_sl_quarantine_text(ctx):
+    last_loss = ctx.get("last_loss") or {}
+    confirmation = ctx.get("confirmation") or {}
+    mins = int((ctx.get("remaining_seconds") or 0) // 60)
+
+    return f"""Ultimo SL diretto:
+- ID: {last_loss.get('id', 'N/D')}
+- Direzione: {ctx.get('last_loss_signal')}
+- Setup: {ctx.get('last_loss_setup')}
+- Età: {ctx.get('age_seconds')} sec
+- Quarantena restante: {mins} min
+
+Conferma nuova direzione:
+- ok: {ctx.get('confirmation_ok')}
+- micro BOS: {confirmation.get('micro_bos')}
+- retest/zona: {confirmation.get('retest_zone')}
+- momentum: {confirmation.get('momentum')}
+- day_position: {confirmation.get('day_position')}
+
+Motivo:
+{ctx.get('reason')}"""
 
 # =========================
 # SL COOLDOWN v10
@@ -10517,14 +10775,17 @@ def build_fast_trade(data, signal):
         raise ValueError("prezzo mancante")
 
     # Entry mercato/copia rapida. L'offset resta a 0 per non cambiare il comportamento.
+    # v37: SL fast dinamico davvero usato. In v36 il valore sl_points poteva restare non definito.
+    sl_points = dynamic_fast_sl_points(data)
+
     if signal == "BUY":
         entry = price + FAST_ENTRY_OFFSET
         tp = entry + FAST_TP_POINTS
-        sl = entry - FAST_SL_POINTS
+        sl = entry - sl_points
     else:
         entry = price - FAST_ENTRY_OFFSET
         tp = entry - FAST_TP_POINTS
-        sl = entry + FAST_SL_POINTS
+        sl = entry + sl_points
 
     score, reasons = fast_direction_score(data, signal)
     blocked, block_reasons = fast_should_block(data, signal, entry, score, reasons)
@@ -11517,6 +11778,48 @@ News:
             "reason": "score_below_min",
             "score": score,
             "setup_type": setup_type,
+            "fast_pre": fast_pre_result
+        })
+
+    # =========================
+    # POST SL QUARANTINE BLOCK v37
+    # =========================
+
+    block_post_sl, post_sl_ctx = post_sl_quarantine_context(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_post_sl:
+        text = f"""🧊🚫 SEGNALE BLOCCATO {VERSION}
+
+Motivo: Anti Whipsaw / Post SL Quarantine
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{post_sl_quarantine_text(post_sl_ctx)}
+
+Azione:
+Dopo uno SL diretto il bot non flippa subito BUY ↔ SELL.
+Aspetta retest, micro BOS e zona migliore stile Max.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_post_sl_quarantine",
+            "score": score,
+            "setup_type": setup_type,
+            "last_loss_signal": post_sl_ctx.get("last_loss_signal"),
+            "last_loss_setup": post_sl_ctx.get("last_loss_setup"),
+            "remaining_seconds": post_sl_ctx.get("remaining_seconds"),
+            "confirmation_ok": post_sl_ctx.get("confirmation_ok"),
             "fast_pre": fast_pre_result
         })
 
