@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v38 Extreme Spike Fade + Anti Whipsaw"
+VERSION = "v39 Super BUY Lock + Fast Campaign Guard"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -343,6 +343,31 @@ EXTREME_SPIKE_FADE_ALLOW_AGAINST_DAILY_BUY = os.getenv("EXTREME_SPIKE_FADE_ALLOW
 EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS = os.getenv("EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE = int(os.getenv("EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE", "18"))
 EXTREME_SPIKE_FADE_REQUIRE_EVENT = os.getenv("EXTREME_SPIKE_FADE_REQUIRE_EVENT", "TRUE").upper() == "TRUE"
+
+# v39: Post Super BUY Guard
+# Dopo un BUY speciale arrivato a TP8/runner, non apro subito BEAR_CAMPAIGN/CONTINUATION
+# contro il movimento. Max prima lascia correre, poi eventualmente cerca un fade solo su failed retest alto.
+# Valori già incorporati nel codice: non devi per forza aggiungere nuove variabili su Render.
+POST_SUPER_BUY_GUARD_ENABLED = os.getenv("POST_SUPER_BUY_GUARD_ENABLED", "TRUE").upper() == "TRUE"
+POST_SUPER_BUY_GUARD_MIN_TP = int(os.getenv("POST_SUPER_BUY_GUARD_MIN_TP", "8"))
+POST_SUPER_BUY_GUARD_SECONDS = int(os.getenv("POST_SUPER_BUY_GUARD_SECONDS", "14400"))  # 4 ore
+POST_SUPER_BUY_GUARD_MIN_SCORE = int(os.getenv("POST_SUPER_BUY_GUARD_MIN_SCORE", "22"))
+POST_SUPER_BUY_GUARD_REQUIRE_FAILED_RETEST = os.getenv("POST_SUPER_BUY_GUARD_REQUIRE_FAILED_RETEST", "TRUE").upper() == "TRUE"
+POST_SUPER_BUY_GUARD_REQUIRE_BEARISH_CANDLE_OR_REJECTION = os.getenv("POST_SUPER_BUY_GUARD_REQUIRE_BEARISH_CANDLE_OR_REJECTION", "TRUE").upper() == "TRUE"
+POST_SUPER_BUY_GUARD_REQUIRE_MICRO_BOS = os.getenv("POST_SUPER_BUY_GUARD_REQUIRE_MICRO_BOS", "FALSE").upper() == "TRUE"
+POST_SUPER_BUY_GUARD_BLOCK_SETUPS = {
+    "NORMAL",
+    "MAX_FADE_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "PRE_BEAR_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+}
+POST_SUPER_BUY_GUARD_ALLOW_SETUPS = {"EXTREME_SPIKE_FADE_SELL"}
+
 
 # v20: Event State Machine + Synthetic Failed Retest Sell
 # Il Python non aspetta più obbligatoriamente un SELL dal Pine.
@@ -962,7 +987,7 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v9 Dynamic Wider SL + Anti Whipsaw"
+FAST_VERSION = "Fast Scalper v10 Campaign Guard + Smart SL"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -1017,6 +1042,26 @@ FAST_MAX_SL_POINTS = max(float(os.getenv("FAST_MAX_SL_POINTS", "8.0")), 8.0)
 FAST_ATR_SL_MULT = max(float(os.getenv("FAST_ATR_SL_MULT", "1.3")), 1.3)
 FAST_REQUIRE_MOMENTUM_OR_REJECTION = os.getenv("FAST_REQUIRE_MOMENTUM_OR_REJECTION", "TRUE").upper() == "TRUE"
 FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE = os.getenv("FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE", "TRUE").upper() == "TRUE"
+# v39: il FAST non deve nascere contro una campagna principale viva.
+FAST_BLOCK_OPPOSITE_MAIN_CAMPAIGN = os.getenv("FAST_BLOCK_OPPOSITE_MAIN_CAMPAIGN", "TRUE").upper() == "TRUE"
+FAST_BLOCK_OPPOSITE_MAIN_MIN_TP = int(os.getenv("FAST_BLOCK_OPPOSITE_MAIN_MIN_TP", "0"))
+FAST_BLOCK_OPPOSITE_MAIN_SECONDS = int(os.getenv("FAST_BLOCK_OPPOSITE_MAIN_SECONDS", "2400"))
+FAST_BLOCK_OPPOSITE_MAIN_SETUPS = {
+    "NORMAL",
+    "MAX_FADE_SELL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "PRE_BEAR_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
+    "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
+    "MAX_FLIP_BUY",
+    "DEEP_REBOUND_BUY",
+    "MAX_DIP_BUY",
+    "REVERSAL_BUY",
+}
 FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.35"))
 FAST_MIDDLE_HIGH = float(os.getenv("FAST_MIDDLE_HIGH", "0.65"))
 FAST_MAIN_ALLOWED_SETUPS = {
@@ -6488,6 +6533,164 @@ def should_block_by_master_regime(signal, symbol, setup_type, score, data):
     return False, ctx, "Master Regime coerente"
 
 
+
+# =========================
+# v39 POST SUPER BUY GUARD
+# =========================
+
+def get_post_super_buy_guard_context(signal, symbol, setup_type, score, data=None):
+    """
+    Protegge il caso visto nei log v38:
+    il bot prende un SUPER BUY / TP8 e poi non deve aprire una BEAR_CAMPAIGN prematura.
+    Il SELL contro quel runner passa solo come EXTREME_SPIKE_FADE_SELL e solo con failed retest alto.
+    """
+    data = data or {}
+    signal = str(signal or "").upper()
+    setup_type = str(setup_type or "NORMAL").upper()
+    symbol = str(symbol or "XAUUSD").upper()
+    score = int(score or 0)
+
+    ctx = {
+        "enabled": POST_SUPER_BUY_GUARD_ENABLED,
+        "active": False,
+        "block": False,
+        "allow": False,
+        "reason": "Post Super BUY Guard non attivo",
+        "setup_type": setup_type,
+        "score": score,
+        "required_score": POST_SUPER_BUY_GUARD_MIN_SCORE,
+        "recent_tp8_buys": 0,
+        "best_trade": None,
+        "age_seconds": None,
+        "event_spike": {},
+        "micro_bos": {},
+        "bearish_trigger_ok": False,
+        "failed_retest_ok": False,
+        "micro_ok": False,
+    }
+
+    if not POST_SUPER_BUY_GUARD_ENABLED:
+        ctx["reason"] = "POST_SUPER_BUY_GUARD_ENABLED = FALSE"
+        return ctx
+
+    if signal != "SELL":
+        ctx["reason"] = "Non è SELL"
+        return ctx
+
+    recent_big_buys = get_recent_tp_trades(
+        "BUY",
+        symbol,
+        min_tp=POST_SUPER_BUY_GUARD_MIN_TP,
+        lookback_seconds=POST_SUPER_BUY_GUARD_SECONDS,
+    )
+    ctx["recent_tp8_buys"] = len(recent_big_buys)
+
+    if not recent_big_buys:
+        ctx["reason"] = f"Nessun BUY TP{POST_SUPER_BUY_GUARD_MIN_TP}+ recente da proteggere"
+        return ctx
+
+    best = recent_big_buys[0]
+    event_time = (
+        best.get(f"tp{POST_SUPER_BUY_GUARD_MIN_TP}_time")
+        or best.get("last_tp_time")
+        or best.get("created")
+        or 0
+    )
+    age = now_ts() - event_time if event_time else None
+    ctx["best_trade"] = best
+    ctx["age_seconds"] = age
+    ctx["active"] = True
+
+    event_ctx = get_event_spike_context(data)
+    micro_ctx = micro_bos_bear_context(symbol, data)
+    ctx["event_spike"] = event_ctx
+    ctx["micro_bos"] = micro_ctx
+
+    candle_dir = str(data.get("candle_dir", "NEUTRAL")).upper()
+    rejection = str(data.get("rejection", "NONE")).upper()
+    upper_wick = to_bool(data.get("upper_wick_strong"))
+    ema20_down = str(data.get("ema20_slope", "FLAT")).upper() == "DOWN"
+    ema50_down = str(data.get("ema50_slope", "FLAT")).upper() == "DOWN"
+    near_m15_high = to_bool(data.get("near_m15_high"))
+
+    failed_retest_ok = bool(
+        event_ctx.get("failed_retest_zone")
+        or not POST_SUPER_BUY_GUARD_REQUIRE_FAILED_RETEST
+    )
+    bearish_trigger_ok = bool(
+        candle_dir == "BEAR"
+        or rejection == "UPPER_WICK"
+        or upper_wick
+        or near_m15_high
+        or (ema20_down and ema50_down)
+        or not POST_SUPER_BUY_GUARD_REQUIRE_BEARISH_CANDLE_OR_REJECTION
+    )
+    micro_ok = bool(
+        micro_ctx.get("confirmed")
+        or not POST_SUPER_BUY_GUARD_REQUIRE_MICRO_BOS
+    )
+    score_ok = score >= POST_SUPER_BUY_GUARD_MIN_SCORE
+    setup_allow = setup_type in POST_SUPER_BUY_GUARD_ALLOW_SETUPS
+
+    ctx.update({
+        "failed_retest_ok": failed_retest_ok,
+        "bearish_trigger_ok": bearish_trigger_ok,
+        "micro_ok": micro_ok,
+        "score_ok": score_ok,
+        "setup_allow": setup_allow,
+        "best_trade_id": best.get("id"),
+        "best_trade_setup": best.get("setup_type"),
+        "best_trade_highest_tp": best.get("highest_tp"),
+    })
+
+    if setup_allow and score_ok and failed_retest_ok and bearish_trigger_ok and micro_ok:
+        ctx["allow"] = True
+        ctx["block"] = False
+        ctx["reason"] = "EXTREME_SPIKE_FADE_SELL ammesso: BUY TP8 già pagato + failed retest alto confermato"
+        return ctx
+
+    if setup_type in POST_SUPER_BUY_GUARD_BLOCK_SETUPS:
+        ctx["block"] = True
+        if setup_allow:
+            missing = []
+            if not score_ok:
+                missing.append(f"score {score}/{POST_SUPER_BUY_GUARD_MIN_SCORE}")
+            if not failed_retest_ok:
+                missing.append("failed retest alto")
+            if not bearish_trigger_ok:
+                missing.append("candela/rejection bearish")
+            if not micro_ok:
+                missing.append("micro BOS")
+            ctx["reason"] = "Extreme fade non pronto: " + ", ".join(missing)
+        else:
+            ctx["reason"] = (
+                f"SUPER BUY TP{POST_SUPER_BUY_GUARD_MIN_TP}+ ancora fresco: "
+                f"blocco {setup_type}. Consentito solo EXTREME_SPIKE_FADE_SELL maturo."
+            )
+        return ctx
+
+    ctx["reason"] = "Setup SELL non gestito dal Post Super BUY Guard"
+    return ctx
+
+
+def post_super_buy_guard_text(ctx):
+    ctx = ctx or {}
+    best = ctx.get("best_trade") or {}
+    ev = ctx.get("event_spike") or {}
+    micro = ctx.get("micro_bos") or {}
+    age = ctx.get("age_seconds")
+    age_txt = "N/D" if age is None else f"{round(to_float(age), 1)}s"
+    return (
+        f"Active: {ctx.get('active')} | Block: {ctx.get('block')} | Allow: {ctx.get('allow')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"BUY protetto: {best.get('id', 'N/D')} | Setup: {best.get('setup_type', 'N/D')} | Highest TP: {best.get('highest_tp', 0)}\n"
+        f"Età dal TP8/evento: {age_txt} / {POST_SUPER_BUY_GUARD_SECONDS}s\n"
+        f"Setup SELL: {ctx.get('setup_type')} | Score: {ctx.get('score')}/{ctx.get('required_score')} | Score ok: {ctx.get('score_ok')}\n"
+        f"Failed retest ok: {ctx.get('failed_retest_ok')} | Bearish trigger ok: {ctx.get('bearish_trigger_ok')} | Micro ok: {ctx.get('micro_ok')}\n"
+        f"Spike: top {round(to_float(ev.get('top_position')), 2)} | retrace {round(to_float(ev.get('retrace_from_high')), 2)} | failed retest {ev.get('failed_retest_zone')}\n"
+        f"Micro BOS: {micro.get('confirmed')} | source: {micro.get('source')}"
+    )
+
 def get_regime_arbiter_context(symbol, data=None):
     symbol = str(symbol or "XAUUSD").upper()
     data = data or {}
@@ -6631,6 +6834,23 @@ def should_block_by_regime_arbiter(signal, symbol, setup_type, score, data):
         flip_window_ctx=flip_window_ctx
     )
     ctx["anti_fade_super_buy"] = anti_fade_ctx
+
+    # v39: priorità assoluta dopo SUPER BUY/TP8.
+    # Evita l'errore v38: BEAR_CAMPAIGN_SELL entrato troppo presto contro runner BUY.
+    post_super_buy_ctx = get_post_super_buy_guard_context(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+    ctx["post_super_buy_guard"] = post_super_buy_ctx
+    if post_super_buy_ctx.get("block"):
+        return (
+            True,
+            ctx,
+            post_super_buy_ctx.get("reason")
+        )
 
     if anti_fade_ctx.get("block"):
         return (
@@ -9487,9 +9707,35 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score, data=N
     # v38: se il BUY ha già pagato tanto e siamo nel top di uno spike evento,
     # l'Extreme Spike Fade SELL può superare il Recovery Lock. È il flip alto stile Max.
     if setup_type == "EXTREME_SPIKE_FADE_SELL" and int(score) >= EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE:
+        post_super_buy_ctx = get_post_super_buy_guard_context(
+            "SELL",
+            symbol,
+            setup_type,
+            score,
+            data or {}
+        )
+        ctx["post_super_buy_guard"] = post_super_buy_ctx
+        if post_super_buy_ctx.get("block"):
+            ctx["level"] = "POST_SUPER_BUY_GUARD"
+            ctx["reason"] = post_super_buy_ctx.get("reason")
+            return True, ctx
         ctx["level"] = "EXTREME_SPIKE_FADE_OVERRIDE"
         ctx["reason"] = "Recovery Lock bypassato: BUY già pagato + top spike evento / failed retest"
         return False, ctx
+
+    # v39: BEAR_CAMPAIGN/CONTINUATION non superano più il lock se il BUY TP8 è ancora fresco.
+    post_super_buy_ctx = get_post_super_buy_guard_context(
+        "SELL",
+        symbol,
+        setup_type,
+        score,
+        data or {}
+    )
+    ctx["post_super_buy_guard"] = post_super_buy_ctx
+    if post_super_buy_ctx.get("block"):
+        ctx["level"] = "POST_SUPER_BUY_GUARD"
+        ctx["reason"] = post_super_buy_ctx.get("reason")
+        return True, ctx
 
     # v23: failed recovery confermato può superare il Recovery Lock solo con score forte.
     if setup_type == "PRE_BEAR_SELL" and int(score) >= PRE_BEAR_SELL_MIN_SCORE:
@@ -10736,6 +10982,68 @@ def dynamic_fast_sl_points(data):
     return round(base, 2)
 
 
+
+# =========================
+# v39 FAST CAMPAIGN GUARD
+# =========================
+
+def get_fast_opposite_main_campaign_context(symbol, signal):
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+    opposite = "SELL" if signal == "BUY" else "BUY"
+
+    ctx = {
+        "enabled": FAST_BLOCK_OPPOSITE_MAIN_CAMPAIGN,
+        "active": False,
+        "block": False,
+        "reason": "Nessuna campagna principale opposta viva",
+        "opposite_trade": None,
+        "opposite_signal": opposite,
+    }
+
+    if not FAST_BLOCK_OPPOSITE_MAIN_CAMPAIGN:
+        ctx["reason"] = "FAST_BLOCK_OPPOSITE_MAIN_CAMPAIGN = FALSE"
+        return ctx
+
+    candidates = []
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("signal", "")).upper() != opposite:
+            continue
+        if trade.get("status") not in ["OPEN", "PENDING"]:
+            continue
+        setup = str(trade.get("setup_type", "NORMAL")).upper()
+        if setup not in FAST_BLOCK_OPPOSITE_MAIN_SETUPS:
+            continue
+        age = now_ts() - to_float(trade.get("created"), 0)
+        if age > FAST_BLOCK_OPPOSITE_MAIN_SECONDS:
+            continue
+        highest_tp = int(trade.get("highest_tp", 0) or 0)
+        if highest_tp < FAST_BLOCK_OPPOSITE_MAIN_MIN_TP:
+            continue
+        candidates.append(trade)
+
+    if not candidates:
+        return ctx
+
+    best = sorted(
+        candidates,
+        key=lambda x: (int(x.get("highest_tp", 0) or 0), x.get("last_tp_time") or x.get("created") or 0),
+        reverse=True,
+    )[0]
+
+    ctx.update({
+        "active": True,
+        "block": True,
+        "opposite_trade": best,
+        "reason": (
+            f"FAST {signal} bloccato: trade principale {opposite} ancora vivo "
+            f"({best.get('setup_type')} #{best.get('id')}, TP{best.get('highest_tp', 0)})"
+        ),
+    })
+    return ctx
+
 def fast_should_block(data, signal, entry, score=None, score_reasons=None):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     tf = str(data.get("tf", "")).strip()
@@ -10804,6 +11112,12 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
             return True, [
                 f"FAST BUY in BUY_CONTROL ma score basso {score}/{FAST_BUY_CONTROL_MIN_SCORE}"
             ]
+
+    # v39: blocca il FAST contro una campagna/trade principale viva.
+    # Evita che il motore veloce apra il contrario mentre la v29/v38 sta ancora gestendo la view principale.
+    fast_campaign_ctx = get_fast_opposite_main_campaign_context(symbol, signal)
+    if fast_campaign_ctx.get("block"):
+        return True, [fast_campaign_ctx.get("reason")]
 
     # v35: se Big Move Watch/Confirmed è attivo da TP3+, il FAST non fa contromano.
     if FAST_BLOCK_COUNTER_BIG_MOVE_THESIS:
@@ -12108,6 +12422,9 @@ Max Pullback Re-Arm v36:
 Anti-Fade Super BUY v36:
 {anti_fade_super_buy_text(regime_ctx.get('anti_fade_super_buy', {}))}
 
+Post Super BUY Guard v39:
+{post_super_buy_guard_text(regime_ctx.get('post_super_buy_guard', {}))}
+
 Event Trap Flip:
 {event_trap_flip_text(regime_ctx.get('event_trap_flip', {}))}
 
@@ -12125,6 +12442,7 @@ Il bot usa una sola tesi dominante.
 - se un trade è TP3+ e protetto, attivo Big Move Watch/Confirmed
 - v36: dopo BUY TP5+ non vendo pullback non invalidati con MAX_FADE prematuro
 - v36: se il pullback tiene supporto, il BUY può riarmarsi anche se prima c'era SELL_CONTROL
+- v39: dopo SUPER BUY/TP8 non apro BEAR_CAMPAIGN prematura; passa solo Extreme Spike Fade maturo
 - Event Trap Flip può ribaltare SUPER BUY in SUPER SELL da zona alta evento
 - Deep Extension deve essere realmente riarmata
 """
