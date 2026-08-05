@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v37 Anti Whipsaw + Post SL Quarantine"
+VERSION = "v38 Extreme Spike Fade + Anti Whipsaw"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -133,6 +133,7 @@ SETUP_WEIGHTS = {
     "SYNTHETIC_FAILED_RETEST_SELL": 18,
     "MAX_FAILED_RETEST_SELL": 14,
     "MAX_EVENT_SPIKE_SELL": 10,
+    "EXTREME_SPIKE_FADE_SELL": 15,
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
     "MAX_FLIP_BUY": 6,
@@ -179,6 +180,7 @@ CHAOS_SELL_SETUPS = {
     "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FADE_SELL",
     "REVERSAL_SELL",
@@ -322,6 +324,26 @@ FAILED_RETEST_BLOCK_EARLY_SELLS = os.getenv("FAILED_RETEST_BLOCK_EARLY_SELLS", "
 FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS = os.getenv("FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
 FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY = os.getenv("FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY", "TRUE").upper() == "TRUE"
 
+
+# v38: Extreme Spike Fade SELL
+# Patch nata dal caso Max 4167-4174: dopo un BUY enorme/runner e uno spike evento alto,
+# il bot non deve solo bloccare nuovi BUY; deve anche poter vendere il failed retest alto,
+# senza farsi bloccare dal Recovery Lock del BUY già pagato.
+EXTREME_SPIKE_FADE_SELL_ENABLED = os.getenv("EXTREME_SPIKE_FADE_SELL_ENABLED", "TRUE").upper() == "TRUE"
+EXTREME_SPIKE_FADE_MIN_BUY_TP = int(os.getenv("EXTREME_SPIKE_FADE_MIN_BUY_TP", "6"))
+EXTREME_SPIKE_FADE_BUY_LOOKBACK_SECONDS = int(os.getenv("EXTREME_SPIKE_FADE_BUY_LOOKBACK_SECONDS", "7200"))
+EXTREME_SPIKE_FADE_MIN_UP_POINTS = float(os.getenv("EXTREME_SPIKE_FADE_MIN_UP_POINTS", "55"))
+EXTREME_SPIKE_FADE_TOP_POSITION_MIN = float(os.getenv("EXTREME_SPIKE_FADE_TOP_POSITION_MIN", "0.82"))
+EXTREME_SPIKE_FADE_RETRACE_MIN = float(os.getenv("EXTREME_SPIKE_FADE_RETRACE_MIN", "2.0"))
+EXTREME_SPIKE_FADE_NEAR_HIGH_MAX_DISTANCE = float(os.getenv("EXTREME_SPIKE_FADE_NEAR_HIGH_MAX_DISTANCE", "18.0"))
+EXTREME_SPIKE_FADE_MIN_CONFIRMATIONS = int(os.getenv("EXTREME_SPIKE_FADE_MIN_CONFIRMATIONS", "5"))
+EXTREME_SPIKE_FADE_BASE_BONUS = int(os.getenv("EXTREME_SPIKE_FADE_BASE_BONUS", "22"))
+EXTREME_SPIKE_FADE_EVENT_BONUS = int(os.getenv("EXTREME_SPIKE_FADE_EVENT_BONUS", "5"))
+EXTREME_SPIKE_FADE_ALLOW_AGAINST_DAILY_BUY = os.getenv("EXTREME_SPIKE_FADE_ALLOW_AGAINST_DAILY_BUY", "TRUE").upper() == "TRUE"
+EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS = os.getenv("EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS", "TRUE").upper() == "TRUE"
+EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE = int(os.getenv("EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE", "18"))
+EXTREME_SPIKE_FADE_REQUIRE_EVENT = os.getenv("EXTREME_SPIKE_FADE_REQUIRE_EVENT", "TRUE").upper() == "TRUE"
+
 # v20: Event State Machine + Synthetic Failed Retest Sell
 # Il Python non aspetta più obbligatoriamente un SELL dal Pine.
 # I PRICE_UPDATE fanno avanzare una macchina a stati:
@@ -443,6 +465,7 @@ CAMPAIGN_ELIGIBLE_SETUPS = {
     "MAX_FAILED_RETEST_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FADE_SELL"
 }
@@ -661,7 +684,8 @@ TRUE_MAX_ZONE_ALLOWED_SETUPS = {
     "MAX_VIEW_SELL",
     "MAX_FAILED_RETEST_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 # v28: Big Move Thesis Engine.
@@ -695,7 +719,8 @@ BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_VIEW_SELL",
     "MAX_FAILED_RETEST_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 # v29: Event Trap Flip / Big Move Direction Flip.
@@ -719,7 +744,8 @@ EVENT_TRAP_FLIP_ALLOWED_SETUPS = {
     "BEAR_CAMPAIGN_SELL",
     "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 # v31: Max Flip Window.
@@ -740,7 +766,8 @@ SPECIAL_BUY_FLIP_ALLOWED_SETUPS = {
     "MAX_VIEW_SELL",
     "MAX_FAILED_RETEST_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 # v32: Max Rebound Buy Unlock.
@@ -850,10 +877,12 @@ MASTER_REGIME_SELL_SPECIAL_SETUPS = {
     "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_FAILED_RETEST_SELL",
     "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
     "MAX_VIEW_SELL",
     "MAX_FADE_SELL",
     "REVERSAL_SELL",
-    "MAX_DIP_SELL"
+    "MAX_DIP_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 MASTER_REGIME_REBOUND_BUY_SETUPS = {
@@ -1005,7 +1034,8 @@ FAST_MAIN_ALLOWED_SETUPS = {
     "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 
 # v30: Campaign Lock stile Max.
@@ -1024,7 +1054,8 @@ CAMPAIGN_PROFIT_LOCK_SELL_AFTER_BUY_ALLOW_SETUPS = {
     "BEAR_CONTINUATION_SELL",
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
-    "MAX_EVENT_SPIKE_SELL"
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL"
 }
 CAMPAIGN_PROFIT_LOCK_BUY_AFTER_SELL_ALLOW_SETUPS = {
     "MAX_RECOVERY_BUY",
@@ -2310,6 +2341,15 @@ def score_signal(data, signal):
         lookback_seconds=MAX_VIEW_LOOKBACK_SECONDS
     )
 
+    # v38 context:
+    # se un BUY ha già pagato TP6/TP8, lo spike alto può diventare zona fade SELL stile Max.
+    recent_spike_fade_buys = get_recent_tp_trades(
+        "BUY",
+        symbol,
+        min_tp=EXTREME_SPIKE_FADE_MIN_BUY_TP,
+        lookback_seconds=EXTREME_SPIKE_FADE_BUY_LOOKBACK_SECONDS
+    )
+
     # =========================
     # SETUP SPECIALI
     # =========================
@@ -2453,6 +2493,56 @@ def score_signal(data, signal):
         and event_sell_retest_guard_ok
         and day_bias == "SELL"
         and structure in ["HH", "BEARISH", "LH"]
+    )
+
+    # v38 EXTREME SPIKE FADE SELL:
+    # Caso Max: il prezzo esplode al rialzo da evento/news, il BUY ha già pagato TP6/TP8,
+    # poi in area alta nasce un SELL da exhaustion/failed retest anche se Daily/EMA/news restano bullish.
+    extreme_spike_fade_confirmations = 0
+    extreme_spike_fade_rejection = bool(
+        candle_dir == "BEAR"
+        or rejection == "UPPER_WICK"
+        or upper_wick_strong
+        or structure in ["BEARISH", "LH", "HH"]
+        or event_spike_ctx.get("failed_retest_zone")
+        or event_spike_ctx.get("retrace_from_high", 0) >= EXTREME_SPIKE_FADE_RETRACE_MIN
+    )
+    extreme_spike_fade_zone = bool(
+        event_spike_ctx.get("top_position", 0) >= EXTREME_SPIKE_FADE_TOP_POSITION_MIN
+        or near_day_high
+        or near_m15_high
+        or (day_position >= 0.82 if day_position >= 0 else False)
+    )
+    extreme_spike_fade_near_high = bool(
+        event_spike_ctx.get("retrace_from_high", 999999) <= EXTREME_SPIKE_FADE_NEAR_HIGH_MAX_DISTANCE
+    )
+
+    if event_spike_up_confirmed and event_spike_ctx.get("up_points", 0) >= EXTREME_SPIKE_FADE_MIN_UP_POINTS:
+        extreme_spike_fade_confirmations += 1
+    if extreme_spike_fade_zone:
+        extreme_spike_fade_confirmations += 1
+    if extreme_spike_fade_near_high:
+        extreme_spike_fade_confirmations += 1
+    if extreme_spike_fade_rejection:
+        extreme_spike_fade_confirmations += 1
+    if len(recent_spike_fade_buys) >= 1:
+        extreme_spike_fade_confirmations += 1
+    if macro_event_mode:
+        extreme_spike_fade_confirmations += 1
+    if event_spike_ctx.get("pullback_done") or event_spike_ctx.get("failed_retest_zone"):
+        extreme_spike_fade_confirmations += 1
+
+    extreme_spike_fade_sell = (
+        EXTREME_SPIKE_FADE_SELL_ENABLED
+        and signal == "SELL"
+        and (macro_event_mode or not EXTREME_SPIKE_FADE_REQUIRE_EVENT)
+        and event_spike_up_confirmed
+        and event_spike_ctx.get("up_points", 0) >= EXTREME_SPIKE_FADE_MIN_UP_POINTS
+        and len(recent_spike_fade_buys) >= 1
+        and extreme_spike_fade_zone
+        and extreme_spike_fade_near_high
+        and extreme_spike_fade_rejection
+        and extreme_spike_fade_confirmations >= EXTREME_SPIKE_FADE_MIN_CONFIRMATIONS
     )
 
     # MAX VIEW SELL v16:
@@ -2732,6 +2822,30 @@ def score_signal(data, signal):
             score += 2
             reasons.append("Conferma candela bearish su continuation")
 
+    elif extreme_spike_fade_sell:
+        setup_type = "EXTREME_SPIKE_FADE_SELL"
+        score += EXTREME_SPIKE_FADE_BASE_BONUS
+        reasons.append(
+            f"EXTREME SPIKE FADE SELL: top evento dopo BUY TP{EXTREME_SPIKE_FADE_MIN_BUY_TP}+ ({extreme_spike_fade_confirmations} conferme)"
+        )
+        reasons.append(event_spike_status_text(event_spike_ctx))
+        reasons.append(
+            f"BUY già pagati: {len(recent_spike_fade_buys)} trade almeno TP{EXTREME_SPIKE_FADE_MIN_BUY_TP}"
+        )
+        if macro_event_mode:
+            score += EXTREME_SPIKE_FADE_EVENT_BONUS
+            reasons.append("Evento/news attivo: spike maturo, possibile fade stile Max")
+        if extreme_spike_fade_zone:
+            score += 3
+            reasons.append("Zona alta estrema / top spike confermato")
+        if extreme_spike_fade_rejection:
+            score += 3
+            reasons.append("Rejection/fallimento retest alto confermato")
+        if day_bias == "BUY" and EXTREME_SPIKE_FADE_ALLOW_AGAINST_DAILY_BUY:
+            reasons.append("Daily BUY ignorato: SELL da extreme spike fade post-runner")
+        if active_news_bias == "BULLISH_GOLD" and EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS:
+            reasons.append("News bullish ignorate: BUY già pagato e spike in zona estrema")
+
     elif max_failed_retest_sell:
         setup_type = "MAX_FAILED_RETEST_SELL"
         score += FAILED_RETEST_SELL_BASE_BONUS
@@ -2957,6 +3071,7 @@ def score_signal(data, signal):
                 or bear_campaign_sell
                 or bear_continuation_sell
                 or max_fade_sell
+                or (extreme_spike_fade_sell and EXTREME_SPIKE_FADE_ALLOW_AGAINST_BULLISH_NEWS)
                 or (max_failed_retest_sell and FAILED_RETEST_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_view_sell and MAX_VIEW_ALLOW_SELL_AGAINST_BULLISH_NEWS)
                 or (max_event_spike_sell and EVENT_SPIKE_ALLOW_SELL_AGAINST_BULLISH_NEWS)
@@ -2967,6 +3082,8 @@ def score_signal(data, signal):
                     reasons.append("SELL contro news bullish permesso: BEAR CAMPAIGN")
                 elif bear_continuation_sell and BEAR_CONTINUATION_IGNORE_BULLISH_NEWS:
                     reasons.append("SELL contro news bullish permesso: BEAR CONTINUATION")
+                elif extreme_spike_fade_sell:
+                    reasons.append("SELL contro news bullish permesso: EXTREME SPIKE FADE dopo BUY già pagato")
                 elif max_failed_retest_sell:
                     reasons.append("SELL contro news bullish permesso: MAX FAILED RETEST SELL")
                 elif max_event_spike_sell:
@@ -3129,6 +3246,9 @@ def score_signal(data, signal):
             elif bear_continuation_sell and BEAR_CONTINUATION_ALLOW_AGAINST_DAILY_BUY:
                 score -= 1
                 reasons.append("Daily BUY ma bearish continuation già confermata")
+            elif extreme_spike_fade_sell and EXTREME_SPIKE_FADE_ALLOW_AGAINST_DAILY_BUY:
+                score -= 1
+                reasons.append("Daily BUY ma extreme spike fade SELL post-runner")
             elif max_failed_retest_sell and FAILED_RETEST_ALLOW_AGAINST_DAILY_BUY:
                 score -= 1
                 reasons.append("Daily BUY ma failed retest SELL post-evento")
@@ -3169,6 +3289,7 @@ def score_signal(data, signal):
                 or (bear_continuation_sell and bear_state_name in ["RELIEF_RALLY", "LOWER_HIGH_ARMED"])
                 or (max_fade_sell and rejection == "UPPER_WICK")
                 or (max_failed_retest_sell and event_spike_ctx.get("failed_retest_zone"))
+                or (extreme_spike_fade_sell and extreme_spike_fade_zone)
                 or (max_view_sell and max_view_top_zone)
                 or (max_event_spike_sell and event_spike_top_zone)
             ):
@@ -3180,6 +3301,8 @@ def score_signal(data, signal):
                     reasons.append("Candela verde accettata: failed retest SELL")
                 elif max_event_spike_sell:
                     reasons.append("Candela verde accettata: SELL post spike evento")
+                elif extreme_spike_fade_sell:
+                    reasons.append("Candela verde accettata: fade da spike estremo già maturo")
                 elif max_view_sell:
                     reasons.append("Candela verde accettata: SELL da top/exhaustion")
                 else:
@@ -3205,7 +3328,7 @@ def score_signal(data, signal):
             reasons.append("EMA50 DOWN")
 
         if ema20_slope == "UP":
-            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or extreme_spike_fade_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA20 UP ma setup SELL speciale")
             else:
@@ -3213,7 +3336,7 @@ def score_signal(data, signal):
                 reasons.append("EMA20 UP")
 
         if ema50_slope == "UP":
-            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or max_view_sell or max_event_spike_sell:
+            if reversal_sell or pre_bear_sell or bear_campaign_sell or bear_continuation_sell or max_fade_sell or max_failed_retest_sell or extreme_spike_fade_sell or max_view_sell or max_event_spike_sell:
                 score -= 1
                 reasons.append("EMA50 UP ma setup SELL speciale")
             else:
@@ -3236,6 +3359,9 @@ def score_signal(data, signal):
             elif max_event_spike_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma SELL post-evento ancora valido")
+            elif extreme_spike_fade_sell:
+                score -= 1
+                reasons.append("Volume bullish ma extreme spike fade SELL ancora valido")
             elif max_view_sell:
                 score -= 1
                 reasons.append("Volume spike bullish ma SELL da exhaustion/top ancora valido")
@@ -5501,6 +5627,7 @@ def event_trap_flip_context(signal, symbol, setup_type, score, data, special_ctx
     )
 
     extreme_ok, extreme_info = extreme_zone_info("SELL", data)
+    event_spike_ctx = get_event_spike_context(data)
     day_position = to_float(data.get("day_position"), -1)
     zone_ok = bool(
         extreme_ok
@@ -5508,6 +5635,7 @@ def event_trap_flip_context(signal, symbol, setup_type, score, data, special_ctx
         or to_bool(data.get("near_day_high", "false"))
         or to_bool(data.get("max_zone_sell_local", "false"))
         or to_bool(data.get("true_max_zone_sell_local", "false"))
+        or event_spike_ctx.get("top_position", 0) >= EXTREME_SPIKE_FADE_TOP_POSITION_MIN
         or str(data.get("rejection", "")).upper() == "UPPER_WICK"
         or to_bool(data.get("upper_wick_strong", "false"))
     )
@@ -5524,12 +5652,16 @@ def event_trap_flip_context(signal, symbol, setup_type, score, data, special_ctx
         upper_rejection
         or candle_bear
         or event_retrace_from_high >= EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH
+        or event_spike_ctx.get("failed_retest_zone")
+        or event_spike_ctx.get("retrace_from_high", 0) >= EXTREME_SPIKE_FADE_RETRACE_MIN
         or not EVENT_TRAP_FLIP_REQUIRE_REJECTION
     )
 
     micro_ctx = micro_bos_bear_context(symbol, data)
     event_breakdown_ok = bool(
         event_retrace_from_high >= EVENT_TRAP_FLIP_MIN_RETRACE_FROM_HIGH
+        or event_spike_ctx.get("retrace_from_high", 0) >= EXTREME_SPIKE_FADE_RETRACE_MIN
+        or event_spike_ctx.get("failed_retest_zone")
         or event_close_position <= EVENT_TRAP_FLIP_MAX_EVENT_CLOSE_POSITION
         or candle_bear
         or to_bool(data.get("event_trap_flip_sell_local", "false"))
@@ -9352,6 +9484,13 @@ def should_block_sell_by_recovery_lock(signal, symbol, setup_type, score, data=N
         ctx["best_trade"] = recovery_dominance.get("best_trade")
         return True, ctx
 
+    # v38: se il BUY ha già pagato tanto e siamo nel top di uno spike evento,
+    # l'Extreme Spike Fade SELL può superare il Recovery Lock. È il flip alto stile Max.
+    if setup_type == "EXTREME_SPIKE_FADE_SELL" and int(score) >= EXTREME_SPIKE_FADE_BYPASS_RECOVERY_LOCK_SCORE:
+        ctx["level"] = "EXTREME_SPIKE_FADE_OVERRIDE"
+        ctx["reason"] = "Recovery Lock bypassato: BUY già pagato + top spike evento / failed retest"
+        return False, ctx
+
     # v23: failed recovery confermato può superare il Recovery Lock solo con score forte.
     if setup_type == "PRE_BEAR_SELL" and int(score) >= PRE_BEAR_SELL_MIN_SCORE:
         return False, ctx
@@ -12507,6 +12646,7 @@ Azione:
 Il bot non combatte un BUY Recovery/Dip che sta funzionando.
 SELL NORMAL bloccati.
 MAX_FADE_SELL consentiti solo se score >= {RECOVERY_LOCK_MAX_FADE_MIN_SCORE} e setup davvero forte.
+EXTREME_SPIKE_FADE_SELL può passare se BUY già pagato e spike evento è in failed retest alto.
 """
         send_telegram(text)
 
