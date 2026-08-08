@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v39 Super BUY Lock + Fast Campaign Guard"
+VERSION = "v40 Official Trade + Thesis Labels"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -32,6 +32,24 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Europe/Rome")
 
 DUPLICATE_SECONDS = int(os.getenv("DUPLICATE_SECONDS", "1200"))
 DUPLICATE_SCORE_DELTA = int(os.getenv("DUPLICATE_SCORE_DELTA", "4"))
+
+# v40: chiarezza Telegram.
+# La logica operativa della v39 resta invariata: cambia soprattutto come vengono mostrati
+# i messaggi, per distinguere OPERAZIONI UFFICIALI da TESI/AVVISI e DEBUG.
+MESSAGE_LABELS_ENABLED = os.getenv("MESSAGE_LABELS_ENABLED", "TRUE").upper() == "TRUE"
+
+# SMART = invia solo blocchi utili come tesi/rischio; ALL = invia tutto; OFF = nasconde tutti i blocchi.
+BLOCKED_SIGNAL_VISIBILITY = os.getenv("BLOCKED_SIGNAL_VISIBILITY", "SMART").upper()
+
+# Di default riduco rumore: duplicati e low-score banali non arrivano su Telegram.
+DUPLICATE_BLOCK_TELEGRAM_ENABLED = os.getenv("DUPLICATE_BLOCK_TELEGRAM_ENABLED", "FALSE").upper() == "TRUE"
+LOW_SCORE_DEBUG_TELEGRAM_ENABLED = os.getenv("LOW_SCORE_DEBUG_TELEGRAM_ENABLED", "FALSE").upper() == "TRUE"
+THESIS_BLOCK_TELEGRAM_ENABLED = os.getenv("THESIS_BLOCK_TELEGRAM_ENABLED", "TRUE").upper() == "TRUE"
+RISK_BLOCK_TELEGRAM_ENABLED = os.getenv("RISK_BLOCK_TELEGRAM_ENABLED", "TRUE").upper() == "TRUE"
+FAST_BLOCK_TELEGRAM_ENABLED = os.getenv("FAST_BLOCK_TELEGRAM_ENABLED", "FALSE").upper() == "TRUE"
+
+OFFICIAL_TRADE_LABEL_ENABLED = os.getenv("OFFICIAL_TRADE_LABEL_ENABLED", "TRUE").upper() == "TRUE"
+THESIS_NOT_TRADE_WARNING_ENABLED = os.getenv("THESIS_NOT_TRADE_WARNING_ENABLED", "TRUE").upper() == "TRUE"
 
 # v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -1215,7 +1233,178 @@ def to_bool(value):
     return str(value).lower() == "true"
 
 
+
+def _text_has_any(value, tokens):
+    haystack = str(value or "").lower()
+    return any(str(token).lower() in haystack for token in tokens)
+
+
+def _classify_blocked_message(text):
+    """Classifica i messaggi bloccati per non confonderli con trade copiabili.
+
+    Ritorna: (category, send_allowed, header)
+    - thesis: lettura utile / tesi direzionale, ma NON entry
+    - risk: filtro rischio operativo, utile ma NON entry
+    - debug_duplicate/debug_low_score: rumore tecnico, nascosto di default
+    """
+    raw = str(text or "")
+    low = raw.lower()
+
+    if "duplicato stesso movimento" in low or "duplicato fast" in low:
+        header = (
+            "🧾 DEBUG / DUPLICATO — NON È UNA NUOVA OPERAZIONE\n"
+            "Serve solo a dire che il bot ha visto lo stesso movimento già coperto.\n"
+        )
+        return "debug_duplicate", DUPLICATE_BLOCK_TELEGRAM_ENABLED, header
+
+    thesis_tokens = [
+        "score finale: -999",
+        "parte alta dello spike",
+        "event active:",
+        "failed retest",
+        "event trap flip",
+        "master regime",
+        "one direction control",
+        "sell_control",
+        "buy_control",
+        "regime arbiter",
+        "bear state",
+        "bearish continuation",
+        "lower high",
+        "deep extension",
+        "big move thesis",
+        "super buy",
+        "post super buy",
+        "max pullback re-arm",
+        "anti-fade super buy",
+        "sell profit lock",
+        "recovery lock",
+        "buy fatigue",
+        "campaign",
+        "exhaustion",
+        "chaos day",
+        "extreme zone",
+        "event state machine",
+        "pre-bear",
+        "cold start warmup",
+        "post sl quarantine",
+    ]
+
+    if _text_has_any(raw, thesis_tokens):
+        header = (
+            "🧭 TESI / AVVISO — NON COPIARE SU MT4\n"
+            "È una lettura del contesto: utile per capire la direzione o il rischio, "
+            "ma NON è un'entry ufficiale.\n"
+        )
+        return "thesis", THESIS_BLOCK_TELEGRAM_ENABLED, header
+
+    risk_tokens = [
+        "conflict resolver",
+        "stop temporaneo",
+        "sl cooldown",
+        "daily kill",
+        "quarantine",
+        "bloccato",
+    ]
+
+    if _text_has_any(raw, risk_tokens):
+        header = (
+            "🛡 FILTRO RISCHIO — NON COPIARE SU MT4\n"
+            "Il bot ha scelto di NON entrare. Usa questo messaggio solo come controllo rischio.\n"
+        )
+        return "risk", RISK_BLOCK_TELEGRAM_ENABLED, header
+
+    header = (
+        "🧾 DEBUG BASSO SCORE — NON OPERATIVO\n"
+        "Segnale grezzo scartato: non usarlo come trade.\n"
+    )
+    return "debug_low_score", LOW_SCORE_DEBUG_TELEGRAM_ENABLED, header
+
+
+def _blocked_message_allowed(category, default_allowed):
+    mode = str(BLOCKED_SIGNAL_VISIBILITY or "SMART").upper()
+    if mode == "ALL":
+        return True
+    if mode in ["OFF", "SILENT", "NONE"]:
+        return False
+    return bool(default_allowed)
+
+
+def prepare_telegram_message(text: str):
+    """Aggiunge etichette operative e può silenziare debug non utili.
+
+    Non cambia la logica trading: modifica solo il modo in cui il messaggio viene mostrato.
+    """
+    if not MESSAGE_LABELS_ENABLED:
+        return text, True
+
+    raw = str(text or "")
+    stripped = raw.strip()
+    if not stripped:
+        return text, True
+
+    already_labeled = any(label in stripped for label in [
+        "OPERAZIONE UFFICIALE",
+        "FAST UFFICIALE",
+        "TESI / AVVISO",
+        "FILTRO RISCHIO",
+        "DEBUG / DUPLICATO",
+        "DEBUG BASSO SCORE",
+    ])
+    if already_labeled:
+        return text, True
+
+    official_trade_tokens = [
+        "GOLD BUY AI FILTER",
+        "GOLD SELL AI FILTER",
+        "GOLD BUY AUTONOMO",
+        "GOLD SELL AUTONOMO",
+    ]
+    if OFFICIAL_TRADE_LABEL_ENABLED and _text_has_any(stripped, official_trade_tokens) and "trade id" in stripped.lower():
+        header = (
+            "✅ OPERAZIONE UFFICIALE — COPIABILE SU MT4\n"
+            "Usa Entry/SL/TP di questo messaggio. I messaggi BLOCCATI sotto sono solo filtri/tesi.\n\n"
+        )
+        return header + raw, True
+
+    if OFFICIAL_TRADE_LABEL_ENABLED and "Fast Scalper" in stripped and "Apro una nuova operazione" in stripped:
+        header = (
+            "⚡ FAST UFFICIALE — TP PICCOLO COPIABILE\n"
+            "Motore veloce separato: Entry/SL/TP sono pensati per scalp rapido.\n\n"
+        )
+        return header + raw, True
+
+    if "FAST SCALP BLOCCATO" in stripped:
+        allowed = _blocked_message_allowed("debug_fast", FAST_BLOCK_TELEGRAM_ENABLED)
+        header = (
+            "🧾 DEBUG FAST BLOCCATO — NON È UNA NUOVA OPERAZIONE\n"
+            "Il fast non ha le condizioni minime: niente copia su MT4.\n\n"
+        )
+        return header + raw, allowed
+
+    blocked_tokens = [
+        "SEGNALE BLOCCATO",
+        "BUY BLOCCATO",
+        "SELL BLOCCATO",
+    ]
+    if _text_has_any(stripped, blocked_tokens):
+        category, default_allowed, header = _classify_blocked_message(raw)
+        allowed = _blocked_message_allowed(category, default_allowed)
+        warning = ""
+        if THESIS_NOT_TRADE_WARNING_ENABLED and category in ["thesis", "risk"]:
+            warning = "Regola pratica: aspetta OPERAZIONE UFFICIALE prima di copiare.\n\n"
+        return header + warning + raw, allowed
+
+    return text, True
+
 def send_telegram(text: str, parse_mode: str = None):
+    text, should_send = prepare_telegram_message(text)
+
+    if not should_send:
+        print("TELEGRAM SKIPPED BY MESSAGE FILTER")
+        print(str(text)[:1200])
+        return True
+
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("TELEGRAM NON CONFIGURATO")
         print(text)
@@ -1554,6 +1743,14 @@ def health():
     return jsonify({
         "status": "ok",
         "version": VERSION,
+        "message_labels_enabled": MESSAGE_LABELS_ENABLED,
+        "blocked_signal_visibility": BLOCKED_SIGNAL_VISIBILITY,
+        "duplicate_block_telegram_enabled": DUPLICATE_BLOCK_TELEGRAM_ENABLED,
+        "low_score_debug_telegram_enabled": LOW_SCORE_DEBUG_TELEGRAM_ENABLED,
+        "thesis_block_telegram_enabled": THESIS_BLOCK_TELEGRAM_ENABLED,
+        "risk_block_telegram_enabled": RISK_BLOCK_TELEGRAM_ENABLED,
+        "fast_block_telegram_enabled": FAST_BLOCK_TELEGRAM_ENABLED,
+        "official_trade_label_enabled": OFFICIAL_TRADE_LABEL_ENABLED,
         "fast_version": FAST_VERSION,
         "fast_engine_enabled": FAST_ENGINE_ENABLED,
         "fast_total_trades": len(FAST_TRADES),
@@ -13119,7 +13316,19 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
         if tp:
             lines.append(f"🎯 TP{i}: {tp}")
 
+    entry_copy = f"{entry_low} - {entry_high}" if entry_low and entry_high else str(price)
+    tp1_copy = data.get("tp1", "")
     lines.extend([
+        "",
+        "📋 COPIA RAPIDA MT4",
+        f"Symbol: {symbol}",
+        f"Type: {signal}",
+        f"Entry: {entry_copy}",
+        f"SL: {sl}",
+        f"TP: {tp1_copy}",
+        "",
+        "Nota: copia solo se il messaggio sopra è OPERAZIONE UFFICIALE.",
+        "I messaggi BLOCCATI/TESI non sono entry.",
         "",
         f"🧠 Score finale: {score}",
         f"✅ Score minimo: {MIN_SCORE}",
