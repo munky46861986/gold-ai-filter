@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v40 Official Trade + Thesis Labels"
+VERSION = "v41 Max Discipline + One Campaign Mode"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -50,6 +50,47 @@ FAST_BLOCK_TELEGRAM_ENABLED = os.getenv("FAST_BLOCK_TELEGRAM_ENABLED", "FALSE").
 
 OFFICIAL_TRADE_LABEL_ENABLED = os.getenv("OFFICIAL_TRADE_LABEL_ENABLED", "TRUE").upper() == "TRUE"
 THESIS_NOT_TRADE_WARNING_ENABLED = os.getenv("THESIS_NOT_TRADE_WARNING_ENABLED", "TRUE").upper() == "TRUE"
+
+# v41: Max Discipline + One Campaign Mode.
+# Obiettivo: meno operazioni ufficiali, meno layering automatico, più gestione stile Max.
+# Tutte le variabili hanno default nel codice: su Render NON devi aggiungere nulla.
+MAX_DISCIPLINE_ENABLED = os.getenv("MAX_DISCIPLINE_ENABLED", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_WINDOW_SECONDS = int(os.getenv("MAX_DISCIPLINE_WINDOW_SECONDS", "3600"))
+MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION = int(os.getenv("MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION", "3"))
+MAX_DISCIPLINE_MAX_NORMAL_PER_DIRECTION = int(os.getenv("MAX_DISCIPLINE_MAX_NORMAL_PER_DIRECTION", "1"))
+MAX_DISCIPLINE_MIN_NEW_ENTRY_DISTANCE = float(os.getenv("MAX_DISCIPLINE_MIN_NEW_ENTRY_DISTANCE", "4.0"))
+MAX_DISCIPLINE_REENTRY_MIN_SCORE = int(os.getenv("MAX_DISCIPLINE_REENTRY_MIN_SCORE", "24"))
+MAX_DISCIPLINE_NORMAL_AFTER_TP_BLOCK = os.getenv("MAX_DISCIPLINE_NORMAL_AFTER_TP_BLOCK", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_SPECIAL_AFTER_TP_BLOCK = os.getenv("MAX_DISCIPLINE_SPECIAL_AFTER_TP_BLOCK", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_SPECIAL_TP_LOCK_LEVEL = int(os.getenv("MAX_DISCIPLINE_SPECIAL_TP_LOCK_LEVEL", "3"))
+MAX_DISCIPLINE_CONTINUATION_NEEDS_RETEST = os.getenv("MAX_DISCIPLINE_CONTINUATION_NEEDS_RETEST", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_CONTINUATION_LOW_POSITION = float(os.getenv("MAX_DISCIPLINE_CONTINUATION_LOW_POSITION", "0.48"))
+MAX_DISCIPLINE_EARLY_DAILY_GUARD = os.getenv("MAX_DISCIPLINE_EARLY_DAILY_GUARD", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_DIRECT_SL_LIMIT = int(os.getenv("MAX_DISCIPLINE_DIRECT_SL_LIMIT", "2"))
+MAX_DISCIPLINE_DIRECT_SL_LOOKBACK_SECONDS = int(os.getenv("MAX_DISCIPLINE_DIRECT_SL_LOOKBACK_SECONDS", "7200"))
+MAX_DISCIPLINE_EVENT_MAX_NORMAL_SCORE = int(os.getenv("MAX_DISCIPLINE_EVENT_MAX_NORMAL_SCORE", "13"))
+MAX_DISCIPLINE_BLOCK_NORMAL_IN_EVENT = os.getenv("MAX_DISCIPLINE_BLOCK_NORMAL_IN_EVENT", "TRUE").upper() == "TRUE"
+MAX_DISCIPLINE_A_PLUS_SETUPS = {
+    "MAX_DIP_BUY",
+    "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
+    "MAX_FLIP_BUY",
+    "DEEP_REBOUND_BUY",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "PRE_BEAR_SELL"
+}
+
+# v41: FAST più disciplinato. Deve essere un bonus piccolo, non un secondo bot che sovratrada.
+FAST_DISCIPLINE_ENABLED = os.getenv("FAST_DISCIPLINE_ENABLED", "TRUE").upper() == "TRUE"
+FAST_MAX_PER_DIRECTION_WINDOW = int(os.getenv("FAST_MAX_PER_DIRECTION_WINDOW", "1"))
+FAST_DISCIPLINE_WINDOW_SECONDS = int(os.getenv("FAST_DISCIPLINE_WINDOW_SECONDS", "1800"))
+FAST_REQUIRE_MAIN_CONTEXT = os.getenv("FAST_REQUIRE_MAIN_CONTEXT", "TRUE").upper() == "TRUE"
+FAST_MAIN_CONTEXT_MIN_TP = int(os.getenv("FAST_MAIN_CONTEXT_MIN_TP", "1"))
+FAST_DISCIPLINE_A_PLUS_SCORE = int(os.getenv("FAST_DISCIPLINE_A_PLUS_SCORE", "10"))
 
 # v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -1753,6 +1794,12 @@ def health():
         "official_trade_label_enabled": OFFICIAL_TRADE_LABEL_ENABLED,
         "fast_version": FAST_VERSION,
         "fast_engine_enabled": FAST_ENGINE_ENABLED,
+        "max_discipline_enabled": MAX_DISCIPLINE_ENABLED,
+        "max_discipline_window_seconds": MAX_DISCIPLINE_WINDOW_SECONDS,
+        "max_discipline_max_official_per_direction": MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION,
+        "max_discipline_direct_sl_limit": MAX_DISCIPLINE_DIRECT_SL_LIMIT,
+        "fast_discipline_enabled": FAST_DISCIPLINE_ENABLED,
+        "fast_max_per_direction_window": FAST_MAX_PER_DIRECTION_WINDOW,
         "fast_total_trades": len(FAST_TRADES),
         "fast_active_trades": len(fast_active_trades()),
         "fast_tp_points": FAST_TP_POINTS,
@@ -11261,6 +11308,20 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
     if len(today) >= FAST_MAX_TRADES_PER_DAY:
         return True, [f"limite trade fast giornaliero raggiunto ({FAST_MAX_TRADES_PER_DAY})"]
 
+    if FAST_DISCIPLINE_ENABLED:
+        recent_fast_same = recent_fast_trades(symbol, signal, FAST_DISCIPLINE_WINDOW_SECONDS)
+        if len(recent_fast_same) >= FAST_MAX_PER_DIRECTION_WINDOW:
+            return True, [
+                f"FAST v41: già mandato {len(recent_fast_same)} FAST {signal} negli ultimi {int(FAST_DISCIPLINE_WINDOW_SECONDS // 60)} min"
+            ]
+
+        if FAST_REQUIRE_MAIN_CONTEXT:
+            main_ok, main_trade = has_main_context_for_fast(symbol, signal)
+            if not main_ok and score < FAST_DISCIPLINE_A_PLUS_SCORE:
+                return True, [
+                    f"FAST v41: manca contesto principale {signal} già valido/TP{FAST_MAIN_CONTEXT_MIN_TP}; score {score}/{FAST_DISCIPLINE_A_PLUS_SCORE}"
+                ]
+
     direct_sl = fast_direct_sl_today(symbol)
     if len(direct_sl) >= FAST_MAX_DIRECT_SL_PER_DAY:
         return True, [f"limite SL fast giornaliero raggiunto ({FAST_MAX_DIRECT_SL_PER_DAY})"]
@@ -11656,6 +11717,258 @@ def handle_fast_price_update(data):
         send_telegram(msg)
 
     return updates
+
+
+# =========================
+# v41 MAX DISCIPLINE / ONE CAMPAIGN MODE
+# =========================
+
+def trade_entry_mid(trade):
+    low = to_float(trade.get("entry_low"), 0)
+    high = to_float(trade.get("entry_high"), 0)
+    if low and high:
+        return (low + high) / 2.0
+    return low or high or to_float(trade.get("entry"), 0)
+
+
+def data_entry_mid(data):
+    low = to_float(data.get("entry_low"), 0)
+    high = to_float(data.get("entry_high"), 0)
+    price = get_price_from_data(data) if "get_price_from_data" in globals() else to_float(data.get("price"), 0)
+    if low and high:
+        return (low + high) / 2.0
+    return low or high or price
+
+
+def trade_is_recent(trade, window_seconds):
+    created = to_float(trade.get("created"), 0)
+    if not created:
+        return False
+    return now_ts() - created <= window_seconds
+
+
+def is_a_plus_setup(setup_type, score=0):
+    setup = str(setup_type or "NORMAL").upper()
+    return setup in MAX_DISCIPLINE_A_PLUS_SETUPS or int(score or 0) >= MAX_DISCIPLINE_REENTRY_MIN_SCORE
+
+
+def recent_main_trades(symbol, signal=None, window_seconds=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal) if signal else None
+    window_seconds = window_seconds or MAX_DISCIPLINE_WINDOW_SECONDS
+    out = []
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if signal and str(trade.get("signal", "")).upper() != signal:
+            continue
+        if not trade_is_recent(trade, window_seconds):
+            continue
+        if trade.get("status") in ["CANCELLED", "EXPIRED"]:
+            continue
+        out.append(trade)
+    return sorted(out, key=lambda x: to_float(x.get("created"), 0), reverse=True)
+
+
+def same_direction_winners(symbol, signal, min_tp=1, window_seconds=None):
+    winners = []
+    for trade in recent_main_trades(symbol, signal, window_seconds):
+        if int(trade.get("highest_tp", 0) or 0) >= int(min_tp):
+            winners.append(trade)
+    return winners
+
+
+def max_discipline_context(signal, symbol, setup_type, score, data):
+    signal = normalize_signal(signal)
+    symbol = str(symbol or "XAUUSD").upper()
+    setup = str(setup_type or "NORMAL").upper()
+    score = int(score or 0)
+    price = get_price_from_data(data) if "get_price_from_data" in globals() else to_float(data.get("price"), 0)
+    entry_mid = data_entry_mid(data)
+    day_position = to_float(data.get("day_position"), -1)
+    event_active = bool(
+        to_bool(data.get("event_mode"))
+        or to_bool(data.get("auto_event_pine"))
+        or to_bool(data.get("volume_spike"))
+        or to_float(data.get("m15_range_atr"), 0) >= to_float(globals().get("BIG_MOVE_BREAKOUT_M15_ATR", 2.0), 2.0)
+        or to_float(data.get("range_atr"), 0) >= 2.2
+    )
+    extreme_ok, extreme_info = extreme_zone_info(signal, data)
+    recent_same = recent_main_trades(symbol, signal, MAX_DISCIPLINE_WINDOW_SECONDS)
+    recent_normal_same = [t for t in recent_same if str(t.get("setup_type", "NORMAL")).upper() == "NORMAL"]
+    winners_tp1 = same_direction_winners(symbol, signal, 1, MAX_DISCIPLINE_WINDOW_SECONDS)
+    winners_tp3 = same_direction_winners(symbol, signal, MAX_DISCIPLINE_SPECIAL_TP_LOCK_LEVEL, MAX_DISCIPLINE_WINDOW_SECONDS)
+    direct_losses_recent = get_recent_direct_losses_total(symbol, MAX_DISCIPLINE_DIRECT_SL_LOOKBACK_SECONDS)
+    direct_losses_today = get_today_direct_losses(symbol)
+
+    nearest_distance = None
+    if entry_mid:
+        distances = []
+        for trade in recent_same:
+            old_mid = trade_entry_mid(trade)
+            if old_mid:
+                distances.append(abs(entry_mid - old_mid))
+        if distances:
+            nearest_distance = min(distances)
+
+    ctx = {
+        "enabled": MAX_DISCIPLINE_ENABLED,
+        "block": False,
+        "reason": "Disciplina Max: OK",
+        "reasons": [],
+        "symbol": symbol,
+        "signal": signal,
+        "setup": setup,
+        "score": score,
+        "price": price,
+        "entry_mid": entry_mid,
+        "day_position": day_position,
+        "event_active": event_active,
+        "extreme_ok": extreme_ok,
+        "extreme_info": extreme_info,
+        "recent_same": recent_same,
+        "recent_normal_same": recent_normal_same,
+        "winners_tp1": winners_tp1,
+        "winners_tp3": winners_tp3,
+        "direct_losses_recent": direct_losses_recent,
+        "direct_losses_today": direct_losses_today,
+        "nearest_distance": nearest_distance,
+    }
+
+    if not MAX_DISCIPLINE_ENABLED:
+        ctx["reason"] = "MAX_DISCIPLINE_ENABLED = FALSE"
+        return ctx
+
+    def add(reason):
+        ctx["reasons"].append(reason)
+
+    # 1) Dopo 2 SL diretti il bot diventa subito più prudente: niente NORMAL,
+    # niente entry basse/medie, passa solo A+ da zona Max.
+    if MAX_DISCIPLINE_EARLY_DAILY_GUARD:
+        sl_count = max(len(direct_losses_recent), len(direct_losses_today))
+        if sl_count >= MAX_DISCIPLINE_DIRECT_SL_LIMIT:
+            if setup == "NORMAL":
+                add(f"Early guard: {sl_count} SL diretti; NORMAL bloccato")
+            elif score < MAX_DISCIPLINE_REENTRY_MIN_SCORE and not extreme_ok:
+                add(
+                    f"Early guard: {sl_count} SL diretti; serve A+ score {MAX_DISCIPLINE_REENTRY_MIN_SCORE}+ o zona estrema"
+                )
+
+    # 2) News/event mode: se c'è spike/news, i NORMAL non devono diventare operazioni ufficiali.
+    # Devono restare tesi finché non c'è setup speciale o score davvero alto.
+    if MAX_DISCIPLINE_BLOCK_NORMAL_IN_EVENT and event_active and setup == "NORMAL" and score <= MAX_DISCIPLINE_EVENT_MAX_NORMAL_SCORE:
+        add(f"Evento/news attivo: NORMAL con score {score}/{MAX_DISCIPLINE_EVENT_MAX_NORMAL_SCORE} declassato a tesi")
+
+    # 3) Una volta che la direzione ha già pagato TP1/TP2, non si continua a mandare NORMAL.
+    if MAX_DISCIPLINE_NORMAL_AFTER_TP_BLOCK and setup == "NORMAL" and winners_tp1:
+        best = winners_tp1[0]
+        add(
+            f"Direzione {signal} già pagata: trade #{best.get('id')} a TP{best.get('highest_tp', 0)}; nuovo NORMAL diventa gestione/tesi"
+        )
+
+    # 4) Se una campagna speciale ha già TP3+, i nuovi speciali stessa direzione passano solo se c'è prezzo molto migliore.
+    if MAX_DISCIPLINE_SPECIAL_AFTER_TP_BLOCK and setup != "NORMAL" and winners_tp3:
+        if nearest_distance is not None and nearest_distance < MAX_DISCIPLINE_MIN_NEW_ENTRY_DISTANCE and score < MAX_DISCIPLINE_REENTRY_MIN_SCORE:
+            best = winners_tp3[0]
+            add(
+                f"Campagna {signal} già viva a TP{best.get('highest_tp', 0)}; nuova entry troppo vicina ({round(nearest_distance, 2)} punti)"
+            )
+
+    # 5) Limite ufficiali nella stessa direzione: il bot può continuare a leggere la tesi,
+    # ma non deve mandare 5-6 operazioni copiabili nello stesso movimento.
+    if len(recent_same) >= MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION:
+        if not (is_a_plus_setup(setup, score) and extreme_ok and (nearest_distance is None or nearest_distance >= MAX_DISCIPLINE_MIN_NEW_ENTRY_DISTANCE)):
+            add(
+                f"Troppe operazioni ufficiali {signal} nella finestra: {len(recent_same)}/{MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION}"
+            )
+
+    if setup == "NORMAL" and len(recent_normal_same) >= MAX_DISCIPLINE_MAX_NORMAL_PER_DIRECTION:
+        add(
+            f"NORMAL {signal} già usato nella finestra: {len(recent_normal_same)}/{MAX_DISCIPLINE_MAX_NORMAL_PER_DIRECTION}"
+        )
+
+    # 6) Continuation/campaign SELL non deve inseguire il prezzo basso: serve retest alto o score A+.
+    continuation_setups = {
+        "BEAR_CONTINUATION_SELL",
+        "SYNTHETIC_BEAR_CONTINUATION_SELL",
+        "BEAR_CAMPAIGN_SELL",
+        "SYNTHETIC_FAILED_RETEST_SELL",
+        "MAX_FAILED_RETEST_SELL",
+    }
+    if (
+        MAX_DISCIPLINE_CONTINUATION_NEEDS_RETEST
+        and signal == "SELL"
+        and setup in continuation_setups
+        and day_position >= 0
+        and day_position <= MAX_DISCIPLINE_CONTINUATION_LOW_POSITION
+        and not extreme_ok
+        and score < MAX_DISCIPLINE_REENTRY_MIN_SCORE
+    ):
+        add(
+            f"SELL continuation troppo basso nel range ({round(day_position, 2)}): serve retest alto/zona Max o score {MAX_DISCIPLINE_REENTRY_MIN_SCORE}+"
+        )
+
+    if ctx["reasons"]:
+        ctx["block"] = True
+        ctx["reason"] = ctx["reasons"][0]
+
+    return ctx
+
+
+def should_block_by_max_discipline(signal, symbol, setup_type, score, data):
+    ctx = max_discipline_context(signal, symbol, setup_type, score, data)
+    return bool(ctx.get("block")), ctx
+
+
+def max_discipline_text(ctx):
+    recent_same = ctx.get("recent_same", []) or []
+    winners_tp1 = ctx.get("winners_tp1", []) or []
+    winners_tp3 = ctx.get("winners_tp3", []) or []
+    direct_recent = ctx.get("direct_losses_recent", []) or []
+    direct_today = ctx.get("direct_losses_today", []) or []
+    reasons = ctx.get("reasons", []) or [ctx.get("reason", "Disciplina Max")]
+    lines = [
+        f"Motivo principale: {ctx.get('reason')}",
+        f"Ufficiali stessa direzione nella finestra: {len(recent_same)} / {MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION}",
+        f"Trade stessa direzione già a TP1+: {len(winners_tp1)}",
+        f"Trade stessa direzione già a TP{MAX_DISCIPLINE_SPECIAL_TP_LOCK_LEVEL}+: {len(winners_tp3)}",
+        f"SL diretti recenti: {len(direct_recent)} / guard {MAX_DISCIPLINE_DIRECT_SL_LIMIT}",
+        f"SL diretti oggi: {len(direct_today)} / guard {MAX_DISCIPLINE_DIRECT_SL_LIMIT}",
+        f"Day position: {round(ctx.get('day_position', -1), 3) if isinstance(ctx.get('day_position', -1), (int, float)) else ctx.get('day_position')}",
+        f"Evento/news attivo: {ctx.get('event_active')}",
+        f"Zona estrema OK: {ctx.get('extreme_ok')}",
+        f"Distanza da entry recente più vicina: {round(ctx.get('nearest_distance'), 2) if isinstance(ctx.get('nearest_distance'), (int, float)) else 'N/D'}",
+        "",
+        "Regole scattate:",
+    ]
+    lines.extend([f"- {r}" for r in reasons])
+    return "\n".join(lines)
+
+
+def recent_fast_trades(symbol, signal=None, window_seconds=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal) if signal else None
+    window_seconds = window_seconds or FAST_DISCIPLINE_WINDOW_SECONDS
+    out = []
+    for trade in FAST_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if signal and str(trade.get("signal", "")).upper() != signal:
+            continue
+        created = to_float(trade.get("created"), 0)
+        if created and now_ts() - created <= window_seconds:
+            out.append(trade)
+    return sorted(out, key=lambda x: to_float(x.get("created"), 0), reverse=True)
+
+
+def has_main_context_for_fast(symbol, signal):
+    signal = normalize_signal(signal)
+    for trade in recent_main_trades(symbol, signal, MAX_DISCIPLINE_WINDOW_SECONDS):
+        if int(trade.get("highest_tp", 0) or 0) >= FAST_MAIN_CONTEXT_MIN_TP:
+            return True, trade
+        if trade.get("status") in ["PENDING", "OPEN"] and str(trade.get("setup_type", "NORMAL")).upper() != "NORMAL":
+            return True, trade
+    return False, None
 
 # =========================
 # TRADE MANAGEMENT
@@ -13208,6 +13521,50 @@ Favorisco MAX_DIP_BUY se il fondo viene confermato.
             "setup_type": setup_type,
             "recent_tp_sells": len(recent_tp8_sells)
         })
+
+    # =========================
+    # v41 MAX DISCIPLINE / ONE CAMPAIGN MODE
+    # =========================
+
+    block_max_discipline, max_discipline_ctx = should_block_by_max_discipline(
+        signal,
+        symbol,
+        setup_type,
+        score,
+        data
+    )
+
+    if block_max_discipline:
+        text = f"""🧭 SEGNALE BLOCCATO {VERSION}
+
+Motivo: Max Discipline / One Campaign Mode
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+{max_discipline_text(max_discipline_ctx)}
+
+Azione:
+La lettura può essere utile come TESI, ma non diventa una nuova operazione ufficiale.
+Il bot evita layering eccessivo: dopo una direzione già pagata gestisce, protegge e aspetta nuova zona Max.
+"""
+        send_telegram(text)
+
+        return jsonify({
+            "status": "blocked_max_discipline",
+            "score": score,
+            "setup_type": setup_type,
+            "max_discipline_reason": max_discipline_ctx.get("reason"),
+            "recent_same_direction": len(max_discipline_ctx.get("recent_same", [])),
+            "winners_tp1": len(max_discipline_ctx.get("winners_tp1", [])),
+            "winners_tp3": len(max_discipline_ctx.get("winners_tp3", [])),
+            "direct_losses_recent": len(max_discipline_ctx.get("direct_losses_recent", [])),
+            "direct_losses_today": len(max_discipline_ctx.get("direct_losses_today", []))
+        })
+
 
     # =========================
     # DUPLICATE BLOCK
