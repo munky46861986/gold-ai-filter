@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v41 Max Discipline + One Campaign Mode"
+VERSION = "v42 Fast Clean 2 Points + Max Discipline"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -84,13 +84,13 @@ MAX_DISCIPLINE_A_PLUS_SETUPS = {
     "PRE_BEAR_SELL"
 }
 
-# v41: FAST più disciplinato. Deve essere un bonus piccolo, non un secondo bot che sovratrada.
+# v42: FAST più presente ma ancora filtrato. Obiettivo: più scalp puliti da 2 punti, senza copiare i blocchi.
 FAST_DISCIPLINE_ENABLED = os.getenv("FAST_DISCIPLINE_ENABLED", "TRUE").upper() == "TRUE"
-FAST_MAX_PER_DIRECTION_WINDOW = int(os.getenv("FAST_MAX_PER_DIRECTION_WINDOW", "1"))
-FAST_DISCIPLINE_WINDOW_SECONDS = int(os.getenv("FAST_DISCIPLINE_WINDOW_SECONDS", "1800"))
-FAST_REQUIRE_MAIN_CONTEXT = os.getenv("FAST_REQUIRE_MAIN_CONTEXT", "TRUE").upper() == "TRUE"
-FAST_MAIN_CONTEXT_MIN_TP = int(os.getenv("FAST_MAIN_CONTEXT_MIN_TP", "1"))
-FAST_DISCIPLINE_A_PLUS_SCORE = int(os.getenv("FAST_DISCIPLINE_A_PLUS_SCORE", "10"))
+FAST_MAX_PER_DIRECTION_WINDOW = int(os.getenv("FAST_MAX_PER_DIRECTION_WINDOW", "3"))
+FAST_DISCIPLINE_WINDOW_SECONDS = int(os.getenv("FAST_DISCIPLINE_WINDOW_SECONDS", "1200"))
+FAST_REQUIRE_MAIN_CONTEXT = os.getenv("FAST_REQUIRE_MAIN_CONTEXT", "FALSE").upper() == "TRUE"
+FAST_MAIN_CONTEXT_MIN_TP = int(os.getenv("FAST_MAIN_CONTEXT_MIN_TP", "0"))
+FAST_DISCIPLINE_A_PLUS_SCORE = int(os.getenv("FAST_DISCIPLINE_A_PLUS_SCORE", "8"))
 
 # v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -1046,20 +1046,20 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v10 Campaign Guard + Smart SL"
+FAST_VERSION = "Fast Scalper v11 Clean 2-Point Mode"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
 FAST_SL_POINTS = max(float(os.getenv("FAST_SL_POINTS", "4.5")), 4.5)
 FAST_ENTRY_OFFSET = float(os.getenv("FAST_ENTRY_OFFSET", "0.0"))
-FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "8"))
-FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "1"))
-FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "600"))
-FAST_DUPLICATE_PRICE_DISTANCE = float(os.getenv("FAST_DUPLICATE_PRICE_DISTANCE", "1.0"))
-FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "8"))
-FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "3"))
+FAST_MIN_SCORE = int(os.getenv("FAST_MIN_SCORE", "7"))
+FAST_MAX_ACTIVE_TRADES = int(os.getenv("FAST_MAX_ACTIVE_TRADES", "2"))
+FAST_DUPLICATE_SECONDS = int(os.getenv("FAST_DUPLICATE_SECONDS", "240"))
+FAST_DUPLICATE_PRICE_DISTANCE = float(os.getenv("FAST_DUPLICATE_PRICE_DISTANCE", "0.8"))
+FAST_MAX_TRADES_PER_DAY = int(os.getenv("FAST_MAX_TRADES_PER_DAY", "18"))
+FAST_MAX_DIRECT_SL_PER_DAY = int(os.getenv("FAST_MAX_DIRECT_SL_PER_DAY", "4"))
 FAST_MAX_CONSECUTIVE_SL = int(os.getenv("FAST_MAX_CONSECUTIVE_SL", "2"))
-FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS = int(os.getenv("FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS", "3600"))
+FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS = int(os.getenv("FAST_STOP_AFTER_CONSECUTIVE_SL_SECONDS", "2700"))
 FAST_PAUSE_ALERT_ENABLED = os.getenv("FAST_PAUSE_ALERT_ENABLED", "TRUE").upper() == "TRUE"
 FAST_PAUSE_ALERT_COOLDOWN_SECONDS = int(os.getenv("FAST_PAUSE_ALERT_COOLDOWN_SECONDS", "900"))
 FAST_PAUSE_NOTIFIED = {}
@@ -1070,20 +1070,20 @@ FAST_MAIN_DOMINANCE_TP_LEVEL = int(os.getenv("FAST_MAIN_DOMINANCE_TP_LEVEL", "3"
 FAST_MAIN_DOMINANCE_LOOKBACK_SECONDS = int(os.getenv("FAST_MAIN_DOMINANCE_LOOKBACK_SECONDS", "7200"))
 FAST_BLOCK_HIGH_SPIKE_BUY = os.getenv("FAST_BLOCK_HIGH_SPIKE_BUY", "TRUE").upper() == "TRUE"
 FAST_BLOCK_LOW_SPIKE_SELL = os.getenv("FAST_BLOCK_LOW_SPIKE_SELL", "TRUE").upper() == "TRUE"
-FAST_HIGH_POSITION_BLOCK = float(os.getenv("FAST_HIGH_POSITION_BLOCK", "0.86"))
-FAST_LOW_POSITION_BLOCK = float(os.getenv("FAST_LOW_POSITION_BLOCK", "0.14"))
+FAST_HIGH_POSITION_BLOCK = float(os.getenv("FAST_HIGH_POSITION_BLOCK", "0.91"))
+FAST_LOW_POSITION_BLOCK = float(os.getenv("FAST_LOW_POSITION_BLOCK", "0.09"))
 FAST_REQUIRE_PRICE_FRESH = os.getenv("FAST_REQUIRE_PRICE_FRESH", "TRUE").upper() == "TRUE"
 FAST_MAX_ALERT_PRICE_DISTANCE = float(os.getenv("FAST_MAX_ALERT_PRICE_DISTANCE", "8.0"))
 FAST_USE_HTML_COPY_FORMAT = os.getenv("FAST_USE_HTML_COPY_FORMAT", "TRUE").upper() == "TRUE"
 FAST_AUTO_FROM_MAIN_WEBHOOK = os.getenv("FAST_AUTO_FROM_MAIN_WEBHOOK", "TRUE").upper() == "TRUE"
 # v31: il FAST può nascere anche se il main bot poi blocca il segnale.
 # Così è davvero parallelo: TP/SL piccoli, più operazioni, senza rovinare la view Max principale.
-FAST_AUTO_BEFORE_MAIN_BLOCKS = os.getenv("FAST_AUTO_BEFORE_MAIN_BLOCKS", "FALSE").upper() == "TRUE"
+FAST_AUTO_BEFORE_MAIN_BLOCKS = os.getenv("FAST_AUTO_BEFORE_MAIN_BLOCKS", "TRUE").upper() == "TRUE"
 FAST_ALLOW_DEEP_REBOUND_COUNTER = os.getenv("FAST_ALLOW_DEEP_REBOUND_COUNTER", "TRUE").upper() == "TRUE"
 FAST_SEND_BLOCKED_FROM_MAIN = os.getenv("FAST_SEND_BLOCKED_FROM_MAIN", "FALSE").upper() == "TRUE"
 # v32: il fast resta parallelo ma non deve sparare segnali 50/50.
 FAST_QUALITY_GATE_ENABLED = os.getenv("FAST_QUALITY_GATE_ENABLED", "TRUE").upper() == "TRUE"
-FAST_MIN_REASON_COUNT = int(os.getenv("FAST_MIN_REASON_COUNT", "7"))
+FAST_MIN_REASON_COUNT = int(os.getenv("FAST_MIN_REASON_COUNT", "6"))
 # v35: il FAST è parallelo, ma non deve più andare contro il Master Regime.
 # I default sono già dentro il codice: se Render non ti fa aggiungere variabili, funziona lo stesso.
 FAST_MASTER_GATE_ENABLED = os.getenv("FAST_MASTER_GATE_ENABLED", "TRUE").upper() == "TRUE"
@@ -1091,9 +1091,9 @@ FAST_BLOCK_BUY_IN_SELL_CONTROL = os.getenv("FAST_BLOCK_BUY_IN_SELL_CONTROL", "TR
 FAST_BLOCK_SELL_IN_BUY_CONTROL = os.getenv("FAST_BLOCK_SELL_IN_BUY_CONTROL", "TRUE").upper() == "TRUE"
 FAST_BLOCK_CHAOS_CONTROL = os.getenv("FAST_BLOCK_CHAOS_CONTROL", "TRUE").upper() == "TRUE"
 FAST_BLOCK_COUNTER_BIG_MOVE_THESIS = os.getenv("FAST_BLOCK_COUNTER_BIG_MOVE_THESIS", "TRUE").upper() == "TRUE"
-FAST_BIG_MOVE_BLOCK_FROM_TP = int(os.getenv("FAST_BIG_MOVE_BLOCK_FROM_TP", "3"))
-FAST_SELL_CONTROL_MIN_SCORE = int(os.getenv("FAST_SELL_CONTROL_MIN_SCORE", "8"))
-FAST_BUY_CONTROL_MIN_SCORE = int(os.getenv("FAST_BUY_CONTROL_MIN_SCORE", "8"))
+FAST_BIG_MOVE_BLOCK_FROM_TP = int(os.getenv("FAST_BIG_MOVE_BLOCK_FROM_TP", "5"))
+FAST_SELL_CONTROL_MIN_SCORE = int(os.getenv("FAST_SELL_CONTROL_MIN_SCORE", "7"))
+FAST_BUY_CONTROL_MIN_SCORE = int(os.getenv("FAST_BUY_CONTROL_MIN_SCORE", "7"))
 FAST_USE_DYNAMIC_SL = os.getenv("FAST_USE_DYNAMIC_SL", "TRUE").upper() == "TRUE"
 FAST_MIN_SL_POINTS = max(float(os.getenv("FAST_MIN_SL_POINTS", "4.5")), 4.5)
 FAST_EVENT_SL_POINTS = max(float(os.getenv("FAST_EVENT_SL_POINTS", "6.0")), 6.0)
@@ -1121,8 +1121,9 @@ FAST_BLOCK_OPPOSITE_MAIN_SETUPS = {
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
 }
-FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.35"))
-FAST_MIDDLE_HIGH = float(os.getenv("FAST_MIDDLE_HIGH", "0.65"))
+FAST_MIDDLE_LOW = float(os.getenv("FAST_MIDDLE_LOW", "0.42"))
+FAST_MIDDLE_HIGH = float(os.getenv("FAST_MIDDLE_HIGH", "0.58"))
+FAST_MIDDLE_A_PLUS_SCORE = int(os.getenv("FAST_MIDDLE_A_PLUS_SCORE", "9"))
 FAST_MAIN_ALLOWED_SETUPS = {
     "NORMAL",
     "MAX_PULLBACK_REARM_BUY",
@@ -11312,14 +11313,14 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
         recent_fast_same = recent_fast_trades(symbol, signal, FAST_DISCIPLINE_WINDOW_SECONDS)
         if len(recent_fast_same) >= FAST_MAX_PER_DIRECTION_WINDOW:
             return True, [
-                f"FAST v41: già mandato {len(recent_fast_same)} FAST {signal} negli ultimi {int(FAST_DISCIPLINE_WINDOW_SECONDS // 60)} min"
+                f"FAST v42: già mandato {len(recent_fast_same)} FAST {signal} negli ultimi {int(FAST_DISCIPLINE_WINDOW_SECONDS // 60)} min"
             ]
 
         if FAST_REQUIRE_MAIN_CONTEXT:
             main_ok, main_trade = has_main_context_for_fast(symbol, signal)
             if not main_ok and score < FAST_DISCIPLINE_A_PLUS_SCORE:
                 return True, [
-                    f"FAST v41: manca contesto principale {signal} già valido/TP{FAST_MAIN_CONTEXT_MIN_TP}; score {score}/{FAST_DISCIPLINE_A_PLUS_SCORE}"
+                    f"FAST v42: manca contesto principale {signal} già valido/TP{FAST_MAIN_CONTEXT_MIN_TP}; score {score}/{FAST_DISCIPLINE_A_PLUS_SCORE}"
                 ]
 
     direct_sl = fast_direct_sl_today(symbol)
@@ -11456,9 +11457,9 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
                     return True, ["SELL fast bloccato: manca momentum o rejection alta"]
 
         if FAST_BLOCK_MIDDLE_WITHOUT_BIG_MOVE and not main_direction:
-            if FAST_MIDDLE_LOW <= day_position <= FAST_MIDDLE_HIGH:
+            if FAST_MIDDLE_LOW <= day_position <= FAST_MIDDLE_HIGH and score < FAST_MIDDLE_A_PLUS_SCORE:
                 return True, [
-                    f"fast bloccato nel mezzo del range ({round(day_position, 2)}): serve big move o zona estrema"
+                    f"fast bloccato nel mezzo del range ({round(day_position, 2)}): serve big move/zona estrema oppure score A+ {score}/{FAST_MIDDLE_A_PLUS_SCORE}"
                 ]
 
     if FAST_BLOCK_HIGH_SPIKE_BUY and signal == "BUY" and day_position >= FAST_HIGH_POSITION_BLOCK and not lower_wick:
@@ -11545,7 +11546,7 @@ def fast_message(trade):
     if FAST_USE_HTML_COPY_FORMAT:
         return f"""⚡ {html.escape(FAST_VERSION)}
 
-Apro una nuova operazione 🚀
+FAST 2 PUNTI — OPERAZIONE UFFICIALE 🚀
 {html_code(symbol + ' ' + signal)}
 
 Entry: {html_code(entry)}
@@ -11570,7 +11571,7 @@ Nota: tocca/tieni premuto sui valori grigi per copiarli dal telefono."""
 
     return f"""⚡ {FAST_VERSION}
 
-Apro una nuova operazione 🚀
+FAST 2 PUNTI — OPERAZIONE UFFICIALE 🚀
 {symbol} {signal}
 
 Entry: {entry}
@@ -11604,7 +11605,7 @@ Motivi:
 {reason_text}
 
 Azione:
-Il motore veloce non forza trade piccoli quando il contesto non è pulito."""
+Il motore veloce cerca più segnali da 2 punti, ma questo è stato filtrato perché il contesto non è abbastanza pulito."""
 
 
 def save_fast_trade(trade):
