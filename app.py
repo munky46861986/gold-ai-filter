@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v42 Fast Clean 2 Points + Max Discipline"
+VERSION = "v43 Asian Session Daily Thesis + Fast Clean 2 Points"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -91,6 +91,55 @@ FAST_DISCIPLINE_WINDOW_SECONDS = int(os.getenv("FAST_DISCIPLINE_WINDOW_SECONDS",
 FAST_REQUIRE_MAIN_CONTEXT = os.getenv("FAST_REQUIRE_MAIN_CONTEXT", "FALSE").upper() == "TRUE"
 FAST_MAIN_CONTEXT_MIN_TP = int(os.getenv("FAST_MAIN_CONTEXT_MIN_TP", "0"))
 FAST_DISCIPLINE_A_PLUS_SCORE = int(os.getenv("FAST_DISCIPLINE_A_PLUS_SCORE", "8"))
+
+
+# v43: Asian Session Daily Thesis.
+# Obiettivo: dalle 00:05 il bot non guarda solo il singolo segnale, ma costruisce
+# una tesi giornaliera stile Max: Asia scarica/accumula, Londra conferma o ribalta,
+# NY gestisce estensione/fade. Serve soprattutto a non vendere basso dopo Asia ribassista
+# se Londra sta recuperando, e a non comprare spike alto dopo Asia rialzista già pagata.
+ASIAN_THESIS_ENABLED = os.getenv("ASIAN_THESIS_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_ALERT_ENABLED = os.getenv("ASIAN_THESIS_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_START_HOUR = int(os.getenv("ASIAN_THESIS_START_HOUR", "0"))
+ASIAN_THESIS_START_MINUTE = int(os.getenv("ASIAN_THESIS_START_MINUTE", "5"))
+ASIAN_THESIS_END_HOUR = int(os.getenv("ASIAN_THESIS_END_HOUR", "7"))
+ASIAN_THESIS_END_MINUTE = int(os.getenv("ASIAN_THESIS_END_MINUTE", "30"))
+ASIAN_THESIS_MIN_POINTS = float(os.getenv("ASIAN_THESIS_MIN_POINTS", "18.0"))
+ASIAN_THESIS_STRONG_POINTS = float(os.getenv("ASIAN_THESIS_STRONG_POINTS", "28.0"))
+ASIAN_THESIS_RECOVERY_POINTS = float(os.getenv("ASIAN_THESIS_RECOVERY_POINTS", "8.0"))
+ASIAN_THESIS_RECOVERY_RATIO = float(os.getenv("ASIAN_THESIS_RECOVERY_RATIO", "0.38"))
+ASIAN_THESIS_BREAKOUT_BUFFER = float(os.getenv("ASIAN_THESIS_BREAKOUT_BUFFER", "2.0"))
+ASIAN_THESIS_LOW_POSITION_BLOCK_SELL = float(os.getenv("ASIAN_THESIS_LOW_POSITION_BLOCK_SELL", "0.34"))
+ASIAN_THESIS_HIGH_POSITION_BLOCK_BUY = float(os.getenv("ASIAN_THESIS_HIGH_POSITION_BLOCK_BUY", "0.66"))
+ASIAN_THESIS_REVERSAL_BUY_MIN_SCORE = int(os.getenv("ASIAN_THESIS_REVERSAL_BUY_MIN_SCORE", "7"))
+ASIAN_THESIS_REVERSAL_SELL_MIN_SCORE = int(os.getenv("ASIAN_THESIS_REVERSAL_SELL_MIN_SCORE", "7"))
+ASIAN_THESIS_COUNTER_FAST_MIN_SCORE = int(os.getenv("ASIAN_THESIS_COUNTER_FAST_MIN_SCORE", "9"))
+ASIAN_THESIS_FAST_BLOCK_ENABLED = os.getenv("ASIAN_THESIS_FAST_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_MAIN_BLOCK_ENABLED = os.getenv("ASIAN_THESIS_MAIN_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_MASTER_OVERRIDE_ENABLED = os.getenv("ASIAN_THESIS_MASTER_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_AFTER_TP_LOCK_ENABLED = os.getenv("ASIAN_THESIS_AFTER_TP_LOCK_ENABLED", "TRUE").upper() == "TRUE"
+ASIAN_THESIS_AFTER_TP_LOCK_LEVEL = int(os.getenv("ASIAN_THESIS_AFTER_TP_LOCK_LEVEL", "3"))
+ASIAN_THESIS_AFTER_TP_LOCK_SECONDS = int(os.getenv("ASIAN_THESIS_AFTER_TP_LOCK_SECONDS", "5400"))
+ASIAN_THESIS_BUY_SETUPS = {
+    "NORMAL",
+    "REVERSAL_BUY",
+    "MAX_DIP_BUY",
+    "MAX_RECOVERY_BUY",
+    "MAX_PULLBACK_REARM_BUY",
+    "MAX_FLIP_BUY",
+    "DEEP_REBOUND_BUY",
+}
+ASIAN_THESIS_SELL_SETUPS = {
+    "NORMAL",
+    "BEAR_CAMPAIGN_SELL",
+    "BEAR_CONTINUATION_SELL",
+    "PRE_BEAR_SELL",
+    "MAX_FAILED_RETEST_SELL",
+    "MAX_EVENT_SPIKE_SELL",
+    "EXTREME_SPIKE_FADE_SELL",
+    "SYNTHETIC_BEAR_CONTINUATION_SELL",
+    "SYNTHETIC_FAILED_RETEST_SELL",
+}
 
 # v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -522,6 +571,7 @@ BEAR_SYNTHETIC_TP8 = float(os.getenv("BEAR_SYNTHETIC_TP8", "25"))
 # Runtime memory, alimentata da PRICE_UPDATE.
 BEAR_CONTINUATION_STATE = {}
 PRICE_HISTORY = {}
+DAILY_THESIS_STATE = {}
 
 # v22: Campaign Manager / Thesis Persistence
 # Una campagna SELL gestisce una sola tesi ribassista con più leg controllate.
@@ -1046,7 +1096,7 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v11 Clean 2-Point Mode"
+FAST_VERSION = "Fast Scalper v12 Clean 2-Point + Daily Thesis"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -1526,7 +1576,8 @@ def runtime_state_payload():
         "bear_campaign_state": BEAR_CAMPAIGN_STATE,
         "pre_bear_state": PRE_BEAR_STATE,
         "regime_arbiter_state": REGIME_ARBITER_STATE,
-        "warmup_tracker": WARMUP_TRACKER
+        "warmup_tracker": WARMUP_TRACKER,
+        "daily_thesis_state": DAILY_THESIS_STATE
     }
 
 
@@ -1814,6 +1865,8 @@ def health():
         "fast_send_blocked_from_main": FAST_SEND_BLOCKED_FROM_MAIN,
         "fast_quality_gate_enabled": FAST_QUALITY_GATE_ENABLED,
         "fast_min_reason_count": FAST_MIN_REASON_COUNT,
+        "asian_thesis_enabled": ASIAN_THESIS_ENABLED,
+        "asian_thesis_state": DAILY_THESIS_STATE,
         "max_flip_buy_after_sell_be_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED,
         "virtual_runner_enabled": VIRTUAL_RUNNER_ENABLED,
         "special_buy_flip_window_enabled": SPECIAL_BUY_FLIP_WINDOW_ENABLED,
@@ -6680,6 +6733,20 @@ def get_master_regime_context(symbol, data=None):
         )
     )
 
+    # v43: la tesi Asia/Londra può correggere SELL_CONTROL troppo meccanico.
+    daily_thesis = update_daily_thesis(data) if ASIAN_THESIS_ENABLED else {"preferred": "WAIT", "status": "DISABLED"}
+    preferred_thesis = str(daily_thesis.get("preferred", "WAIT")).upper()
+    thesis_status = str(daily_thesis.get("status", "")).upper()
+    if ASIAN_THESIS_MASTER_OVERRIDE_ENABLED:
+        if mode == "SELL_CONTROL" and preferred_thesis == "BUY" and thesis_status in ["REVERSAL_BUY_WATCH", "RANGE_REBOUND_BUY", "ASIA_RANGE_BREAKOUT_BUY"]:
+            mode = "POST_ASIA_REVERSAL_BUY"
+            reason = "Daily Thesis v43: Asia ha scaricato ma Londra/Europa recupera; non resto SELL_CONTROL cieco"
+            bullish_votes.append("Daily Thesis BUY/reversal")
+        elif mode == "BUY_CONTROL" and preferred_thesis == "SELL" and thesis_status in ["FADE_SELL_WATCH", "RANGE_FADE_SELL", "ASIA_RANGE_BREAKOUT_SELL"]:
+            mode = "POST_ASIA_FADE_SELL"
+            reason = "Daily Thesis v43: Asia ha comprato ma zona alta/fade SELL confermata"
+            bearish_votes.append("Daily Thesis SELL/fade")
+
     return {
         "enabled": MASTER_REGIME_ENABLED,
         "mode": mode,
@@ -6706,6 +6773,7 @@ def get_master_regime_context(symbol, data=None):
         "allow_lower_high_sell": allow_lower_high_sell,
         "price_action_bearish": price_action_bearish,
         "price_action_bullish": price_action_bullish,
+        "daily_thesis": daily_thesis,
     }
 
 
@@ -6725,7 +6793,8 @@ def master_regime_status_text(ctx):
         f"BUY direct SL: {ctx.get('buy_direct_losses')} | BUY lock: {ctx.get('buy_failure_lock')}\n"
         f"SELL TP{MASTER_REGIME_REBOUND_BUY_MIN_SELL_TP}+ recenti: {ctx.get('recent_deep_sells')} | Rebound BUY area: {ctx.get('rebound_buy_area')}\n"
         f"Day position: {round(to_float(ctx.get('day_position'), 0), 3)} | Window drop: {rw.get('drop')} | Rebound low: {rw.get('rebound_from_low')}\n"
-        f"Allow lower-high SELL: {ctx.get('allow_lower_high_sell')} | Allow rebound BUY: {ctx.get('allow_rebound_buy')}"
+        f"Allow lower-high SELL: {ctx.get('allow_lower_high_sell')} | Allow rebound BUY: {ctx.get('allow_rebound_buy')}\n"
+        f"Daily Thesis: {ctx.get('daily_thesis', {}).get('status')} -> {ctx.get('daily_thesis', {}).get('preferred')}"
     )
 
 
@@ -6741,23 +6810,50 @@ def should_block_by_master_regime(signal, symbol, setup_type, score, data):
     if mode == "SELL_CONTROL" and signal == "BUY" and MASTER_REGIME_BLOCK_BUY_IN_SELL_CONTROL:
         pullback_rearm_ctx = max_pullback_rearm_buy_context(signal, symbol, data)
         ctx["pullback_rearm"] = pullback_rearm_ctx
+        thesis_ctx = ctx.get("daily_thesis", {}) or {}
+        thesis_buy_allowed = bool(
+            ASIAN_THESIS_MASTER_OVERRIDE_ENABLED
+            and str(thesis_ctx.get("preferred", "")).upper() == "BUY"
+            and str(thesis_ctx.get("status", "")).upper() in ["REVERSAL_BUY_WATCH", "RANGE_REBOUND_BUY", "ASIA_RANGE_BREAKOUT_BUY"]
+            and setup_type in ASIAN_THESIS_BUY_SETUPS
+            and int(score) >= ASIAN_THESIS_REVERSAL_BUY_MIN_SCORE
+        )
         buy_allowed = (
-            setup_type in MASTER_REGIME_REBOUND_BUY_SETUPS
-            and (
-                ctx.get("allow_rebound_buy")
-                or (
-                    setup_type == "MAX_PULLBACK_REARM_BUY"
-                    and pullback_rearm_ctx.get("allow")
-                    and MAX_PULLBACK_REARM_ALLOW_IN_SELL_CONTROL
+            thesis_buy_allowed
+            or (
+                setup_type in MASTER_REGIME_REBOUND_BUY_SETUPS
+                and (
+                    ctx.get("allow_rebound_buy")
+                    or (
+                        setup_type == "MAX_PULLBACK_REARM_BUY"
+                        and pullback_rearm_ctx.get("allow")
+                        and MAX_PULLBACK_REARM_ALLOW_IN_SELL_CONTROL
+                    )
                 )
+                and int(score) >= min(MASTER_REGIME_REBOUND_BUY_MIN_SCORE, MAX_PULLBACK_REARM_SCORE_FLOOR)
             )
-            and int(score) >= min(MASTER_REGIME_REBOUND_BUY_MIN_SCORE, MAX_PULLBACK_REARM_SCORE_FLOOR)
         )
         if not buy_allowed:
             return (
                 True,
                 ctx,
                 "Master Regime SELL_CONTROL: BUY bloccato. Non compro rimbalzi/minimi dentro giornata sell."
+            )
+
+    if mode == "POST_ASIA_REVERSAL_BUY" and signal == "SELL":
+        if setup_type == "NORMAL" or int(score) < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            return (
+                True,
+                ctx,
+                "Daily Thesis v43: Asia ha già scaricato e Londra recupera; SELL bloccato finché non arriva retest alto/A+."
+            )
+
+    if mode == "POST_ASIA_FADE_SELL" and signal == "BUY":
+        if setup_type == "NORMAL" or int(score) < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            return (
+                True,
+                ctx,
+                "Daily Thesis v43: Asia ha già comprato e siamo in fade alto; BUY bloccato finché non arriva pullback vero/A+."
             )
 
     if mode == "BUY_CONTROL" and signal == "SELL" and MASTER_REGIME_BLOCK_COUNTER_SELL_IN_BUY_CONTROL:
@@ -8522,6 +8618,351 @@ def recent_bear_history(symbol, seconds=None):
     cutoff = now_ts() - seconds
     return [p for p in history if p.get("time", 0) >= cutoff]
 
+
+
+# =========================
+# v43 ASIAN SESSION DAILY THESIS
+# =========================
+
+def _thesis_local_dt(ts=None):
+    try:
+        return datetime.fromtimestamp(ts or now_ts(), ZoneInfo(USER_TIMEZONE))
+    except Exception:
+        return datetime.fromtimestamp(ts or now_ts(), timezone.utc)
+
+
+def _thesis_day_key(ts=None):
+    return _thesis_local_dt(ts).strftime("%Y-%m-%d")
+
+
+def _minutes_of_day(dt):
+    return dt.hour * 60 + dt.minute
+
+
+def _asian_start_minute():
+    return ASIAN_THESIS_START_HOUR * 60 + ASIAN_THESIS_START_MINUTE
+
+
+def _asian_end_minute():
+    return ASIAN_THESIS_END_HOUR * 60 + ASIAN_THESIS_END_MINUTE
+
+
+def get_daily_thesis_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    day_key = _thesis_day_key()
+    state = DAILY_THESIS_STATE.get(symbol)
+    if not isinstance(state, dict) or state.get("day_key") != day_key:
+        state = {
+            "day_key": day_key,
+            "symbol": symbol,
+            "status": "COLLECTING_ASIA",
+            "preferred": "WAIT",
+            "direction": "WAIT",
+            "reason": "Raccolta dati Asia in corso",
+            "asian_open": 0,
+            "asian_high": 0,
+            "asian_low": 0,
+            "asian_close": 0,
+            "asian_range": 0,
+            "asian_move": 0,
+            "asian_direction": "WAIT",
+            "session": "ASIA",
+            "last_price": 0,
+            "last_alert_signature": None,
+            "updated": 0,
+        }
+        DAILY_THESIS_STATE[symbol] = state
+    return state
+
+
+def _asian_points_from_history(symbol):
+    history = PRICE_HISTORY.get(str(symbol or "XAUUSD").upper(), []) or []
+    day_key = _thesis_day_key()
+    start_m = _asian_start_minute()
+    end_m = _asian_end_minute()
+    points = []
+    for p in history:
+        ts = to_float(p.get("time"), 0)
+        if not ts:
+            continue
+        dt = _thesis_local_dt(ts)
+        if dt.strftime("%Y-%m-%d") != day_key:
+            continue
+        minute = _minutes_of_day(dt)
+        if start_m <= minute <= end_m:
+            points.append(p)
+    return points
+
+
+def _current_session_name(ts=None):
+    minute = _minutes_of_day(_thesis_local_dt(ts))
+    if minute < _asian_start_minute():
+        return "PRE_ASIA"
+    if minute <= _asian_end_minute():
+        return "ASIA"
+    if minute < 13 * 60 + 30:
+        return "LONDON"
+    if minute < 17 * 60 + 30:
+        return "NEW_YORK"
+    return "LATE_US"
+
+
+def update_daily_thesis(data, force=False):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    state = get_daily_thesis_state(symbol)
+    price = get_price_from_data(data)
+    if not ASIAN_THESIS_ENABLED:
+        state.update({"status": "DISABLED", "preferred": "WAIT", "direction": "WAIT", "reason": "ASIAN_THESIS_ENABLED = FALSE"})
+        return state
+
+    points = _asian_points_from_history(symbol)
+    session = _current_session_name()
+    state["session"] = session
+    if price:
+        state["last_price"] = price
+
+    if points:
+        first = points[0]
+        last = points[-1]
+        asian_open = to_float(first.get("price"), 0)
+        asian_close = to_float(last.get("price"), 0)
+        asian_high = max(to_float(p.get("high"), to_float(p.get("price"), 0)) for p in points)
+        asian_low = min(to_float(p.get("low"), to_float(p.get("price"), 0)) for p in points)
+        asian_range = max(0, asian_high - asian_low)
+        asian_move = asian_close - asian_open
+    else:
+        asian_open = asian_close = asian_high = asian_low = asian_range = asian_move = 0
+
+    direction = "RANGE"
+    if asian_move >= ASIAN_THESIS_MIN_POINTS:
+        direction = "BUY"
+    elif asian_move <= -ASIAN_THESIS_MIN_POINTS:
+        direction = "SELL"
+
+    preferred = "WAIT"
+    status = "COLLECTING_ASIA" if session == "ASIA" else "ASIA_READY"
+    reason = "Asia ancora in formazione"
+    day_position = to_float(data.get("day_position"), -1)
+    recovery_from_low = (price - asian_low) if price and asian_low else 0
+    retrace_from_high = (asian_high - price) if price and asian_high else 0
+    range_pos = ((price - asian_low) / asian_range) if price and asian_range > 0 else None
+    broke_asian_high = bool(price and asian_high and price >= asian_high + ASIAN_THESIS_BREAKOUT_BUFFER)
+    broke_asian_low = bool(price and asian_low and price <= asian_low - ASIAN_THESIS_BREAKOUT_BUFFER)
+    recovered_mid = bool(price and asian_low and asian_high and price >= asian_low + asian_range * ASIAN_THESIS_RECOVERY_RATIO)
+    recovered_open = bool(price and asian_open and price >= asian_open + ASIAN_THESIS_BREAKOUT_BUFFER)
+    rejected_high = bool(price and asian_high and retrace_from_high >= ASIAN_THESIS_RECOVERY_POINTS)
+    rejected_low = bool(price and asian_low and recovery_from_low >= ASIAN_THESIS_RECOVERY_POINTS)
+
+    if session == "ASIA":
+        preferred = "WAIT"
+        reason = "00:05-07:30: raccolgo high/low Asia, evito di innamorarmi del primo impulso"
+    elif direction == "SELL":
+        if recovered_mid or recovered_open:
+            preferred = "BUY"
+            status = "REVERSAL_BUY_WATCH"
+            reason = "Asia ha scaricato, ma Londra/Europa sta recuperando: non inseguo SELL bassi, cerco BUY/reversal da supporto"
+        elif broke_asian_low:
+            preferred = "SELL"
+            status = "ASIA_SELL_CONTINUATION"
+            reason = "Asia ribassista confermata sotto il minimo: SELL solo su pullback/retest, non sul minimo se già esteso"
+        else:
+            preferred = "WAIT"
+            status = "POST_ASIA_SELL_BALANCE"
+            reason = "Asia ribassista ma recupero non ancora confermato: aspetto rottura o rientro nel range"
+    elif direction == "BUY":
+        if rejected_high and (range_pos is not None and range_pos >= 0.55):
+            preferred = "SELL"
+            status = "FADE_SELL_WATCH"
+            reason = "Asia rialzista già estesa, prezzo respinto in alto: cerco solo SELL/fade da zona alta confermata"
+        elif broke_asian_high:
+            preferred = "BUY"
+            status = "ASIA_BUY_CONTINUATION"
+            reason = "Asia rialzista confermata sopra massimo: BUY solo su pullback/retest, non inseguire spike"
+        else:
+            preferred = "WAIT"
+            status = "POST_ASIA_BUY_BALANCE"
+            reason = "Asia rialzista ma non voglio comprare alto senza pullback"
+    else:
+        if broke_asian_high:
+            preferred = "BUY"
+            status = "ASIA_RANGE_BREAKOUT_BUY"
+            reason = "Asia laterale, rottura sopra massimo: scenario BUY se tiene il retest"
+        elif broke_asian_low:
+            preferred = "SELL"
+            status = "ASIA_RANGE_BREAKOUT_SELL"
+            reason = "Asia laterale, rottura sotto minimo: scenario SELL se tiene il retest"
+        elif rejected_low:
+            preferred = "BUY"
+            status = "RANGE_REBOUND_BUY"
+            reason = "Asia laterale, reazione dal basso: scalping BUY più pulito"
+        elif rejected_high:
+            preferred = "SELL"
+            status = "RANGE_FADE_SELL"
+            reason = "Asia laterale, reazione dall'alto: scalping SELL più pulito"
+        else:
+            preferred = "RANGE"
+            status = "ASIA_RANGE"
+            reason = "Asia in range: preferisco FAST piccoli e niente convinzione forte"
+
+    # Protezione Max: dopo TP profondi nella stessa direzione, la tesi diventa gestione.
+    if ASIAN_THESIS_AFTER_TP_LOCK_ENABLED and preferred in ["BUY", "SELL"]:
+        winners = get_recent_tp_trades(preferred, symbol, min_tp=ASIAN_THESIS_AFTER_TP_LOCK_LEVEL, lookback_seconds=ASIAN_THESIS_AFTER_TP_LOCK_SECONDS)
+        if winners:
+            best = winners[0]
+            state["after_tp_lock"] = True
+            state["after_tp_lock_trade"] = best.get("id")
+            state["after_tp_lock_tp"] = best.get("highest_tp", 0)
+        else:
+            state["after_tp_lock"] = False
+            state["after_tp_lock_trade"] = None
+            state["after_tp_lock_tp"] = 0
+    else:
+        state["after_tp_lock"] = False
+        state["after_tp_lock_trade"] = None
+        state["after_tp_lock_tp"] = 0
+
+    state.update({
+        "status": status,
+        "preferred": preferred,
+        "direction": preferred,
+        "reason": reason,
+        "asian_open": round(asian_open, 3) if asian_open else 0,
+        "asian_high": round(asian_high, 3) if asian_high else 0,
+        "asian_low": round(asian_low, 3) if asian_low else 0,
+        "asian_close": round(asian_close, 3) if asian_close else 0,
+        "asian_range": round(asian_range, 3) if asian_range else 0,
+        "asian_move": round(asian_move, 3) if asian_move else 0,
+        "asian_direction": direction,
+        "range_position": round(range_pos, 3) if isinstance(range_pos, (int, float)) else None,
+        "recovery_from_low": round(recovery_from_low, 3),
+        "retrace_from_high": round(retrace_from_high, 3),
+        "broke_asian_high": broke_asian_high,
+        "broke_asian_low": broke_asian_low,
+        "recovered_mid": recovered_mid,
+        "recovered_open": recovered_open,
+        "day_position": round(day_position, 3) if day_position >= 0 else day_position,
+        "updated": now_ts(),
+        "updated_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    return state
+
+
+def get_daily_thesis_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    if data is not None:
+        return update_daily_thesis(data)
+    return get_daily_thesis_state(symbol)
+
+
+def daily_thesis_signature(ctx):
+    if not ctx:
+        return None
+    return "|".join([
+        str(ctx.get("day_key")),
+        str(ctx.get("session")),
+        str(ctx.get("status")),
+        str(ctx.get("preferred")),
+        str(ctx.get("asian_direction")),
+        str(ctx.get("after_tp_lock")),
+    ])
+
+
+def daily_thesis_text(ctx):
+    if not ctx:
+        return "Daily Thesis: N/D"
+    return (
+        f"Status: {ctx.get('status')} | Preferred: {ctx.get('preferred')} | Sessione: {ctx.get('session')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: "
+        f"Open {ctx.get('asian_open')} | High {ctx.get('asian_high')} | Low {ctx.get('asian_low')} | Close {ctx.get('asian_close')}\n"
+        f"Asia dir: {ctx.get('asian_direction')} | Move {ctx.get('asian_move')} | Range {ctx.get('asian_range')} | Range pos {ctx.get('range_position')}\n"
+        f"Recovery low: {ctx.get('recovery_from_low')} | Retrace high: {ctx.get('retrace_from_high')}\n"
+        f"Break high: {ctx.get('broke_asian_high')} | Break low: {ctx.get('broke_asian_low')} | Recovered mid/open: {ctx.get('recovered_mid')}/{ctx.get('recovered_open')}\n"
+        f"After TP lock: {ctx.get('after_tp_lock')} | Trade: {ctx.get('after_tp_lock_trade')} | TP: {ctx.get('after_tp_lock_tp')}"
+    )
+
+
+def maybe_daily_thesis_alert(symbol, data):
+    if not ASIAN_THESIS_ALERT_ENABLED:
+        return None
+    ctx = update_daily_thesis(data)
+    if not ctx or ctx.get("status") in ["COLLECTING_ASIA", "DISABLED"]:
+        return None
+    sig = daily_thesis_signature(ctx)
+    if sig and sig == ctx.get("last_alert_signature"):
+        return None
+    ctx["last_alert_signature"] = sig
+    return f"""🧭 DAILY THESIS v43 — NON È ENTRY
+
+Symbol: {symbol}
+
+{daily_thesis_text(ctx)}
+
+Azione pratica:
+- I FAST da 2 punti devono rispettare questa tesi.
+- Se Asia ha già venduto tanto, non inseguo SELL bassi: cerco recupero BUY o aspetto retest alto.
+- Se Asia ha già comprato tanto, non compro spike alto: cerco pullback o fade SELL da zona alta.
+- Operazione ufficiale solo quando arriva il messaggio copiabile."""
+
+
+def daily_thesis_allows_counter(ctx, signal, setup_type, score, data):
+    if not ASIAN_THESIS_ENABLED or not ctx:
+        return False
+    preferred = str(ctx.get("preferred", "WAIT")).upper()
+    status = str(ctx.get("status", "")).upper()
+    signal = normalize_signal(signal)
+    setup = str(setup_type or "NORMAL").upper()
+    score = int(score or 0)
+    if preferred == signal:
+        return True
+    if signal == "BUY" and status == "REVERSAL_BUY_WATCH" and setup in ASIAN_THESIS_BUY_SETUPS and score >= ASIAN_THESIS_REVERSAL_BUY_MIN_SCORE:
+        return True
+    if signal == "SELL" and status in ["FADE_SELL_WATCH", "RANGE_FADE_SELL"] and setup in ASIAN_THESIS_SELL_SETUPS and score >= ASIAN_THESIS_REVERSAL_SELL_MIN_SCORE:
+        return True
+    return False
+
+
+def daily_thesis_block_context(signal, symbol, setup_type, score, data, is_fast=False):
+    ctx = update_daily_thesis(data)
+    signal = normalize_signal(signal)
+    setup = str(setup_type or "NORMAL").upper()
+    score = int(score or 0)
+    preferred = str(ctx.get("preferred", "WAIT")).upper()
+    status = str(ctx.get("status", "")).upper()
+    day_position = to_float(data.get("day_position"), ctx.get("day_position", -1))
+    reasons = []
+
+    if not ASIAN_THESIS_ENABLED:
+        return {"block": False, "reason": "Daily thesis disabled", "ctx": ctx, "reasons": []}
+
+    # Asia ha venduto tanto e siamo bassi: non inseguire altri SELL deboli.
+    if signal == "SELL" and status in ["REVERSAL_BUY_WATCH", "POST_ASIA_SELL_BALANCE"]:
+        if day_position >= 0 and day_position <= ASIAN_THESIS_LOW_POSITION_BLOCK_SELL and score < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            reasons.append("Daily Thesis: Asia già ribassista e prezzo basso; non inseguo SELL, aspetto recupero BUY o retest alto")
+        elif preferred == "BUY" and score < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            reasons.append("Daily Thesis preferisce BUY/reversal: SELL ammesso solo A+ o da zona alta")
+
+    # Asia ha comprato tanto e siamo alti: non inseguire BUY deboli.
+    if signal == "BUY" and status in ["FADE_SELL_WATCH", "POST_ASIA_BUY_BALANCE"]:
+        if day_position >= ASIAN_THESIS_HIGH_POSITION_BLOCK_BUY and score < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            reasons.append("Daily Thesis: Asia già rialzista e prezzo alto; non inseguo BUY, aspetto pullback o fade SELL")
+        elif preferred == "SELL" and score < ASIAN_THESIS_COUNTER_FAST_MIN_SCORE:
+            reasons.append("Daily Thesis preferisce SELL/fade: BUY ammesso solo A+ o da zona bassa")
+
+    # Se c'è già TP3+ nella direzione della tesi, il bot deve gestire e non moltiplicare entry.
+    if ctx.get("after_tp_lock") and preferred == signal and setup == "NORMAL":
+        reasons.append(f"Daily Thesis: direzione {signal} già pagata TP{ctx.get('after_tp_lock_tp')}; nuovo NORMAL diventa tesi/gestione")
+
+    # In range asiatico il FAST può lavorare, ma i main NORMAL non devono diventare convinzione forte.
+    if not is_fast and preferred == "RANGE" and setup == "NORMAL" and score < MAX_DISCIPLINE_REENTRY_MIN_SCORE:
+        reasons.append("Daily Thesis: Asia in range; NORMAL main resta tesi, meglio FAST puliti o aspettare breakout")
+
+    return {
+        "block": bool(reasons),
+        "reason": reasons[0] if reasons else "Daily Thesis ok",
+        "ctx": ctx,
+        "reasons": reasons,
+    }
 
 def _bearish_context_from_data(data):
     return (
@@ -11305,6 +11746,11 @@ def fast_should_block(data, signal, entry, score=None, score_reasons=None):
     if len(fast_active_trades(symbol)) >= FAST_MAX_ACTIVE_TRADES:
         return True, [f"troppi fast trade attivi sul simbolo ({FAST_MAX_ACTIVE_TRADES})"]
 
+    if ASIAN_THESIS_FAST_BLOCK_ENABLED:
+        dt_block = daily_thesis_block_context(signal, symbol, "FAST", score, data, is_fast=True)
+        if dt_block.get("block"):
+            return True, [dt_block.get("reason", "Daily Thesis fast block")]
+
     today = fast_today_trades(symbol)
     if len(today) >= FAST_MAX_TRADES_PER_DAY:
         return True, [f"limite trade fast giornaliero raggiunto ({FAST_MAX_TRADES_PER_DAY})"]
@@ -11843,6 +12289,14 @@ def max_discipline_context(signal, symbol, setup_type, score, data):
     def add(reason):
         ctx["reasons"].append(reason)
 
+    # v43) Daily Thesis sopra la disciplina: prima capisco il film della giornata.
+    if ASIAN_THESIS_MAIN_BLOCK_ENABLED:
+        daily_block = daily_thesis_block_context(signal, symbol, setup, score, data, is_fast=False)
+        ctx["daily_thesis"] = daily_block.get("ctx")
+        if daily_block.get("block"):
+            for r in daily_block.get("reasons", []):
+                add(r)
+
     # 1) Dopo 2 SL diretti il bot diventa subito più prudente: niente NORMAL,
     # niente entry basse/medie, passa solo A+ da zona Max.
     if MAX_DISCIPLINE_EARLY_DAILY_GUARD:
@@ -11939,6 +12393,9 @@ def max_discipline_text(ctx):
         f"Evento/news attivo: {ctx.get('event_active')}",
         f"Zona estrema OK: {ctx.get('extreme_ok')}",
         f"Distanza da entry recente più vicina: {round(ctx.get('nearest_distance'), 2) if isinstance(ctx.get('nearest_distance'), (int, float)) else 'N/D'}",
+        "",
+        "Daily Thesis:",
+        daily_thesis_text(ctx.get("daily_thesis", {})),
         "",
         "Regole scattate:",
     ]
@@ -12584,6 +13041,12 @@ def webhook():
         # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
         bear_result = process_bear_continuation_state_machine(data)
 
+        # v43: aggiorna e notifica la tesi giornaliera Asia/Londra/NY.
+        daily_thesis_ctx = update_daily_thesis(data)
+        daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
+        if daily_thesis_alert:
+            send_telegram(daily_thesis_alert)
+
         # v23: failed recovery prima del bear impulse completo.
         pre_bear_result = process_pre_bear_thesis(data)
         deep_extension_ctx = get_deep_extension_context(
@@ -12629,6 +13092,9 @@ def webhook():
             "bear_trade_id": bear_result.get("trade_id"),
             "bear_state": bear_result.get("state"),
             "bear_reason": bear_result.get("reason"),
+            "daily_thesis_status": daily_thesis_ctx.get("status"),
+            "daily_thesis_preferred": daily_thesis_ctx.get("preferred"),
+            "daily_thesis_reason": daily_thesis_ctx.get("reason"),
             "max_flip_buy_triggered": max_flip_buy_result.get("triggered"),
             "max_flip_buy_trade_id": max_flip_buy_result.get("trade_id"),
             "max_flip_buy_reason": max_flip_buy_result.get("reason"),
