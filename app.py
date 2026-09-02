@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v43 Asian Session Daily Thesis + Fast Clean 2 Points"
+VERSION = "v44 Session Intelligence + Fast Clean 2 Points"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -140,6 +140,43 @@ ASIAN_THESIS_SELL_SETUPS = {
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
 }
+
+# v44: Session Intelligence.
+# Asia crea la prima mappa, Europa/Londra può confermare o ribaltare,
+# New York può continuare, fare fade o cambiare scenario.
+# Serve a non restare bloccati nella tesi della notte quando Max cambia lettura.
+SESSION_INTELLIGENCE_ENABLED = os.getenv("SESSION_INTELLIGENCE_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_THESIS_ALERT_ENABLED = os.getenv("SESSION_THESIS_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_THESIS_ALERT_MIN_SECONDS = int(os.getenv("SESSION_THESIS_ALERT_MIN_SECONDS", "900"))
+SESSION_PERSIST_THESIS = os.getenv("SESSION_PERSIST_THESIS", "TRUE").upper() == "TRUE"
+SESSION_BREAKOUT_BUFFER = float(os.getenv("SESSION_BREAKOUT_BUFFER", "2.0"))
+SESSION_REVERSAL_POINTS = float(os.getenv("SESSION_REVERSAL_POINTS", "8.0"))
+SESSION_TREND_POINTS = float(os.getenv("SESSION_TREND_POINTS", "12.0"))
+SESSION_STRONG_TREND_POINTS = float(os.getenv("SESSION_STRONG_TREND_POINTS", "25.0"))
+SESSION_RETEST_DISTANCE = float(os.getenv("SESSION_RETEST_DISTANCE", "4.0"))
+SESSION_COUNTER_MIN_SCORE = int(os.getenv("SESSION_COUNTER_MIN_SCORE", "9"))
+SESSION_FAST_FOLLOW_ACTIVE_THESIS = os.getenv("SESSION_FAST_FOLLOW_ACTIVE_THESIS", "TRUE").upper() == "TRUE"
+SESSION_MAIN_BLOCK_ENABLED = os.getenv("SESSION_MAIN_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_BLOCK_COUNTER_FAST_ENABLED = os.getenv("SESSION_BLOCK_COUNTER_FAST_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_OPEN_AFTER_RESTART_WARMUP_SECONDS = int(os.getenv("SESSION_OPEN_AFTER_RESTART_WARMUP_SECONDS", "600"))
+
+EUROPE_SESSION_START_HOUR = int(os.getenv("EUROPE_SESSION_START_HOUR", "8"))
+EUROPE_SESSION_START_MINUTE = int(os.getenv("EUROPE_SESSION_START_MINUTE", "0"))
+EUROPE_SESSION_END_HOUR = int(os.getenv("EUROPE_SESSION_END_HOUR", "12"))
+EUROPE_SESSION_END_MINUTE = int(os.getenv("EUROPE_SESSION_END_MINUTE", "30"))
+
+NY_SESSION_START_HOUR = int(os.getenv("NY_SESSION_START_HOUR", "14"))
+NY_SESSION_START_MINUTE = int(os.getenv("NY_SESSION_START_MINUTE", "30"))
+NY_SESSION_END_HOUR = int(os.getenv("NY_SESSION_END_HOUR", "17"))
+NY_SESSION_END_MINUTE = int(os.getenv("NY_SESSION_END_MINUTE", "30"))
+
+LATE_US_SESSION_END_HOUR = int(os.getenv("LATE_US_SESSION_END_HOUR", "22"))
+LATE_US_SESSION_END_MINUTE = int(os.getenv("LATE_US_SESSION_END_MINUTE", "0"))
+
+TELEGRAM_HEARTBEAT_ENABLED = os.getenv("TELEGRAM_HEARTBEAT_ENABLED", "TRUE").upper() == "TRUE"
+TELEGRAM_HEARTBEAT_SECONDS = int(os.getenv("TELEGRAM_HEARTBEAT_SECONDS", "1800"))
+WEBHOOK_STALE_WARNING_SECONDS = int(os.getenv("WEBHOOK_STALE_WARNING_SECONDS", "1800"))
+TELEGRAM_ERROR_ALERT_ENABLED = os.getenv("TELEGRAM_ERROR_ALERT_ENABLED", "TRUE").upper() == "TRUE"
 
 # v10: Stop temporaneo dopo SL diretti
 SL_COOLDOWN_ENABLED = os.getenv("SL_COOLDOWN_ENABLED", "TRUE").upper() == "TRUE"
@@ -572,6 +609,14 @@ BEAR_SYNTHETIC_TP8 = float(os.getenv("BEAR_SYNTHETIC_TP8", "25"))
 BEAR_CONTINUATION_STATE = {}
 PRICE_HISTORY = {}
 DAILY_THESIS_STATE = {}
+SESSION_THESIS_STATE = {}
+
+# v44 diagnostics / heartbeat
+LAST_WEBHOOK_TS = 0
+LAST_WEBHOOK_KIND = "NONE"
+LAST_TELEGRAM_TS = 0
+LAST_TELEGRAM_ERROR = ""
+LAST_HEARTBEAT_TS = 0
 
 # v22: Campaign Manager / Thesis Persistence
 # Una campagna SELL gestisce una sola tesi ribassista con più leg controllate.
@@ -1096,7 +1141,7 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v12 Clean 2-Point + Daily Thesis"
+FAST_VERSION = "Fast Scalper v13 Clean 2-Point + Session Intelligence"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -1490,6 +1535,8 @@ def prepare_telegram_message(text: str):
     return text, True
 
 def send_telegram(text: str, parse_mode: str = None):
+    global LAST_TELEGRAM_TS, LAST_TELEGRAM_ERROR
+
     text, should_send = prepare_telegram_message(text)
 
     if not should_send:
@@ -1517,8 +1564,11 @@ def send_telegram(text: str, parse_mode: str = None):
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
+        LAST_TELEGRAM_TS = now_ts()
+        LAST_TELEGRAM_ERROR = ""
         return True
     except Exception as e:
+        LAST_TELEGRAM_ERROR = str(e)
         print(f"ERRORE TELEGRAM: {e}")
         print(text)
         return False
@@ -1577,7 +1627,12 @@ def runtime_state_payload():
         "pre_bear_state": PRE_BEAR_STATE,
         "regime_arbiter_state": REGIME_ARBITER_STATE,
         "warmup_tracker": WARMUP_TRACKER,
-        "daily_thesis_state": DAILY_THESIS_STATE
+        "daily_thesis_state": DAILY_THESIS_STATE,
+        "session_thesis_state": SESSION_THESIS_STATE,
+        "last_webhook_ts": LAST_WEBHOOK_TS,
+        "last_webhook_kind": LAST_WEBHOOK_KIND,
+        "last_telegram_ts": LAST_TELEGRAM_TS,
+        "last_telegram_error": LAST_TELEGRAM_ERROR
     }
 
 
@@ -1619,6 +1674,10 @@ def load_runtime_state():
     global RUNTIME_STATE_RESTORED_AT
     global RUNTIME_STATE_SAVED_AT
     global RUNTIME_STATE_LAST_SAVE
+    global LAST_WEBHOOK_TS
+    global LAST_WEBHOOK_KIND
+    global LAST_TELEGRAM_TS
+    global LAST_TELEGRAM_ERROR
 
     RUNTIME_STATE_RESTORED = False
 
@@ -1678,6 +1737,19 @@ def load_runtime_state():
             WARMUP_TRACKER,
             payload.get("warmup_tracker")
         )
+        _restore_dict(
+            DAILY_THESIS_STATE,
+            payload.get("daily_thesis_state")
+        )
+        _restore_dict(
+            SESSION_THESIS_STATE,
+            payload.get("session_thesis_state")
+        )
+
+        LAST_WEBHOOK_TS = to_float(payload.get("last_webhook_ts"), 0)
+        LAST_WEBHOOK_KIND = str(payload.get("last_webhook_kind") or "RESTORED")
+        LAST_TELEGRAM_TS = to_float(payload.get("last_telegram_ts"), 0)
+        LAST_TELEGRAM_ERROR = str(payload.get("last_telegram_error") or "")
 
         # Pruning difensivo dello storico.
         cutoff = now_ts() - BEAR_HISTORY_SECONDS
@@ -1836,6 +1908,14 @@ def health():
     return jsonify({
         "status": "ok",
         "version": VERSION,
+        "last_webhook_ts": LAST_WEBHOOK_TS,
+        "last_webhook_local": local_datetime(LAST_WEBHOOK_TS).strftime("%Y-%m-%d %H:%M:%S") if LAST_WEBHOOK_TS else None,
+        "seconds_since_webhook": round(now_ts() - LAST_WEBHOOK_TS, 1) if LAST_WEBHOOK_TS else None,
+        "last_webhook_kind": LAST_WEBHOOK_KIND,
+        "last_telegram_ts": LAST_TELEGRAM_TS,
+        "last_telegram_local": local_datetime(LAST_TELEGRAM_TS).strftime("%Y-%m-%d %H:%M:%S") if LAST_TELEGRAM_TS else None,
+        "seconds_since_telegram": round(now_ts() - LAST_TELEGRAM_TS, 1) if LAST_TELEGRAM_TS else None,
+        "last_telegram_error": LAST_TELEGRAM_ERROR,
         "message_labels_enabled": MESSAGE_LABELS_ENABLED,
         "blocked_signal_visibility": BLOCKED_SIGNAL_VISIBILITY,
         "duplicate_block_telegram_enabled": DUPLICATE_BLOCK_TELEGRAM_ENABLED,
@@ -1866,6 +1946,9 @@ def health():
         "fast_quality_gate_enabled": FAST_QUALITY_GATE_ENABLED,
         "fast_min_reason_count": FAST_MIN_REASON_COUNT,
         "asian_thesis_enabled": ASIAN_THESIS_ENABLED,
+        "session_intelligence_enabled": SESSION_INTELLIGENCE_ENABLED,
+        "session_thesis_alert_enabled": SESSION_THESIS_ALERT_ENABLED,
+        "session_thesis_state": SESSION_THESIS_STATE,
         "asian_thesis_state": DAILY_THESIS_STATE,
         "max_flip_buy_after_sell_be_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED,
         "virtual_runner_enabled": VIRTUAL_RUNNER_ENABLED,
@@ -2124,6 +2207,39 @@ def health():
         "timezone": USER_TIMEZONE
     })
 
+
+
+@app.route("/diag")
+def diag():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    ctx = get_daily_thesis_context(symbol)
+    return jsonify({
+        "status": "ok",
+        "version": VERSION,
+        "symbol": symbol,
+        "now_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_webhook_ts": LAST_WEBHOOK_TS,
+        "last_webhook_local": local_datetime(LAST_WEBHOOK_TS).strftime("%Y-%m-%d %H:%M:%S") if LAST_WEBHOOK_TS else None,
+        "seconds_since_webhook": round(now_ts() - LAST_WEBHOOK_TS, 1) if LAST_WEBHOOK_TS else None,
+        "last_webhook_kind": LAST_WEBHOOK_KIND,
+        "last_telegram_ts": LAST_TELEGRAM_TS,
+        "last_telegram_local": local_datetime(LAST_TELEGRAM_TS).strftime("%Y-%m-%d %H:%M:%S") if LAST_TELEGRAM_TS else None,
+        "seconds_since_telegram": round(now_ts() - LAST_TELEGRAM_TS, 1) if LAST_TELEGRAM_TS else None,
+        "last_telegram_error": LAST_TELEGRAM_ERROR,
+        "session_intelligence_enabled": SESSION_INTELLIGENCE_ENABLED,
+        "session_thesis": ctx,
+        "fast_active": len(fast_active_trades(symbol)),
+        "main_active": active_trades_count(),
+        "runtime_state_restored": RUNTIME_STATE_RESTORED,
+        "runtime_state_file": RUNTIME_STATE_FILE,
+    })
+
+
+@app.route("/heartbeat")
+def heartbeat():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    ok = maybe_system_heartbeat(symbol, {"symbol": symbol})
+    return jsonify({"sent": ok, "version": VERSION, "symbol": symbol})
 
 @app.route("/test")
 def test():
@@ -6734,17 +6850,17 @@ def get_master_regime_context(symbol, data=None):
     )
 
     # v43: la tesi Asia/Londra può correggere SELL_CONTROL troppo meccanico.
-    daily_thesis = update_daily_thesis(data) if ASIAN_THESIS_ENABLED else {"preferred": "WAIT", "status": "DISABLED"}
+    daily_thesis = update_session_intelligence(data) if ASIAN_THESIS_ENABLED else {"preferred": "WAIT", "status": "DISABLED"}
     preferred_thesis = str(daily_thesis.get("preferred", "WAIT")).upper()
     thesis_status = str(daily_thesis.get("status", "")).upper()
     if ASIAN_THESIS_MASTER_OVERRIDE_ENABLED:
         if mode == "SELL_CONTROL" and preferred_thesis == "BUY" and thesis_status in ["REVERSAL_BUY_WATCH", "RANGE_REBOUND_BUY", "ASIA_RANGE_BREAKOUT_BUY"]:
             mode = "POST_ASIA_REVERSAL_BUY"
-            reason = "Daily Thesis v43: Asia ha scaricato ma Londra/Europa recupera; non resto SELL_CONTROL cieco"
+            reason = "Session Thesis v44: Asia ha scaricato ma Europa/Londra recupera; non resto SELL_CONTROL cieco"
             bullish_votes.append("Daily Thesis BUY/reversal")
         elif mode == "BUY_CONTROL" and preferred_thesis == "SELL" and thesis_status in ["FADE_SELL_WATCH", "RANGE_FADE_SELL", "ASIA_RANGE_BREAKOUT_SELL"]:
             mode = "POST_ASIA_FADE_SELL"
-            reason = "Daily Thesis v43: Asia ha comprato ma zona alta/fade SELL confermata"
+            reason = "Session Thesis v44: Asia/Europa ha comprato ma zona alta/fade SELL confermata"
             bearish_votes.append("Daily Thesis SELL/fade")
 
     return {
@@ -8963,6 +9079,584 @@ def daily_thesis_block_context(signal, symbol, setup_type, score, data, is_fast=
         "ctx": ctx,
         "reasons": reasons,
     }
+
+
+# =========================
+# v44 SESSION INTELLIGENCE
+# =========================
+
+
+def _minute_of_day_from_ts(ts=None):
+    dt = _thesis_local_dt(ts)
+    return dt.hour * 60 + dt.minute
+
+
+def _minutes_from_hm(hour, minute):
+    return int(hour) * 60 + int(minute)
+
+
+def _europe_start_minutes():
+    return _minutes_from_hm(EUROPE_SESSION_START_HOUR, EUROPE_SESSION_START_MINUTE)
+
+
+def _europe_end_minutes():
+    return _minutes_from_hm(EUROPE_SESSION_END_HOUR, EUROPE_SESSION_END_MINUTE)
+
+
+def _ny_start_minutes():
+    return _minutes_from_hm(NY_SESSION_START_HOUR, NY_SESSION_START_MINUTE)
+
+
+def _ny_end_minutes():
+    return _minutes_from_hm(NY_SESSION_END_HOUR, NY_SESSION_END_MINUTE)
+
+
+def _late_us_end_minutes():
+    return _minutes_from_hm(LATE_US_SESSION_END_HOUR, LATE_US_SESSION_END_MINUTE)
+
+
+def session_intelligence_name(ts=None):
+    minute = _minute_of_day_from_ts(ts)
+    if _asian_start_minute() <= minute <= _asian_end_minute():
+        return "ASIA"
+    if _europe_start_minutes() <= minute <= _europe_end_minutes():
+        return "EUROPE"
+    if _ny_start_minutes() <= minute <= _ny_end_minutes():
+        return "NEWYORK"
+    if _ny_end_minutes() < minute <= _late_us_end_minutes():
+        return "LATE_US"
+    if _europe_end_minutes() < minute < _ny_start_minutes():
+        return "PRE_NY"
+    return "OFF_HOURS"
+
+
+def get_session_thesis_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    key = _thesis_day_key()
+    state = SESSION_THESIS_STATE.get(symbol)
+    if not isinstance(state, dict) or state.get("day_key") != key:
+        state = {
+            "day_key": key,
+            "symbol": symbol,
+            "sessions": {},
+            "active_session": session_intelligence_name(),
+            "preferred": "WAIT",
+            "status": "COLLECTING",
+            "reason": "raccolgo dati sessione",
+            "last_alert_signature": None,
+            "last_alert_ts": 0,
+            "updated": now_ts(),
+        }
+        SESSION_THESIS_STATE[symbol] = state
+    return state
+
+
+def _session_range_template(name):
+    return {
+        "name": name,
+        "open": 0,
+        "high": 0,
+        "low": 0,
+        "close": 0,
+        "range": 0,
+        "move": 0,
+        "position": None,
+        "started": 0,
+        "updated": 0,
+    }
+
+
+def _update_session_range(container, name, data):
+    price = get_price_from_data(data)
+    if not price:
+        return container.get(name) or _session_range_template(name)
+
+    bar_open = to_float(data.get("open"), price)
+    bar_high = to_float(data.get("high"), price)
+    bar_low = to_float(data.get("low"), price)
+    bar_close = to_float(data.get("close"), price)
+
+    sess = container.setdefault(name, _session_range_template(name))
+    if not sess.get("open"):
+        sess["open"] = bar_open or price
+        sess["high"] = bar_high or price
+        sess["low"] = bar_low or price
+        sess["started"] = now_ts()
+
+    sess["high"] = max(to_float(sess.get("high"), price), bar_high or price, price)
+    sess["low"] = min(to_float(sess.get("low"), price), bar_low or price, price)
+    sess["close"] = bar_close or price
+    sess["range"] = round(to_float(sess.get("high"), 0) - to_float(sess.get("low"), 0), 3)
+    sess["move"] = round(to_float(sess.get("close"), 0) - to_float(sess.get("open"), 0), 3)
+    rng = to_float(sess.get("range"), 0)
+    sess["position"] = round((price - to_float(sess.get("low"), price)) / rng, 3) if rng > 0 else None
+    sess["updated"] = now_ts()
+    return sess
+
+
+def _history_range_between(symbol, start_minute, end_minute):
+    history = PRICE_HISTORY.get(str(symbol or "XAUUSD").upper(), []) or []
+    day_key = _thesis_day_key()
+    points = []
+    for p in history:
+        if not isinstance(p, dict):
+            continue
+        ts = to_float(p.get("time"), 0)
+        if not ts:
+            continue
+        dt = _thesis_local_dt(ts)
+        if dt.strftime("%Y-%m-%d") != day_key:
+            continue
+        minute = dt.hour * 60 + dt.minute
+        if start_minute <= minute <= end_minute:
+            points.append(p)
+    if not points:
+        return None
+    first = points[0]
+    last = points[-1]
+    high = max(to_float(p.get("high"), p.get("price", 0)) for p in points)
+    low = min(to_float(p.get("low"), p.get("price", 0)) for p in points)
+    open_ = to_float(first.get("open"), first.get("price", 0))
+    close = to_float(last.get("close"), last.get("price", 0))
+    rng = high - low
+    return {
+        "open": round(open_, 3),
+        "high": round(high, 3),
+        "low": round(low, 3),
+        "close": round(close, 3),
+        "range": round(rng, 3),
+        "move": round(close - open_, 3),
+        "position": None,
+        "from_history": True,
+    }
+
+
+def _backfill_asia_from_history(symbol, ctx):
+    if not ctx:
+        return ctx
+    if to_float(ctx.get("asian_open"), 0) and to_float(ctx.get("asian_high"), 0) and to_float(ctx.get("asian_low"), 0):
+        return ctx
+    hist_range = _history_range_between(symbol, _asian_start_minute(), _asian_end_minute())
+    if not hist_range:
+        ctx["asian_missing"] = True
+        return ctx
+    ctx["asian_open"] = hist_range["open"]
+    ctx["asian_high"] = hist_range["high"]
+    ctx["asian_low"] = hist_range["low"]
+    ctx["asian_close"] = hist_range["close"]
+    ctx["asian_range"] = hist_range["range"]
+    ctx["asian_move"] = hist_range["move"]
+    move = hist_range["move"]
+    if move >= ASIAN_THESIS_MIN_POINTS:
+        ctx["asian_direction"] = "BUY"
+    elif move <= -ASIAN_THESIS_MIN_POINTS:
+        ctx["asian_direction"] = "SELL"
+    else:
+        ctx["asian_direction"] = "RANGE"
+    ctx["asian_missing"] = False
+    ctx["asian_backfilled_from_history"] = True
+    return ctx
+
+
+def _range_position(price, low, high):
+    low = to_float(low, 0)
+    high = to_float(high, 0)
+    if not price or not low or not high or high <= low:
+        return None
+    return round((price - low) / (high - low), 3)
+
+
+def _session_reference_range(state, active_session):
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    if active_session == "NEWYORK":
+        return sessions.get("EUROPE") or sessions.get("ASIA")
+    if active_session == "LATE_US":
+        return sessions.get("NEWYORK") or sessions.get("EUROPE") or sessions.get("ASIA")
+    return sessions.get("ASIA")
+
+
+def _session_range_text(name, sess):
+    if not isinstance(sess, dict) or not sess.get("open"):
+        return f"{name}: N/D"
+    return (
+        f"{name}: Open {round(to_float(sess.get('open')), 3)} | High {round(to_float(sess.get('high')), 3)} | "
+        f"Low {round(to_float(sess.get('low')), 3)} | Close {round(to_float(sess.get('close')), 3)} | "
+        f"Move {round(to_float(sess.get('move')), 3)} | Range {round(to_float(sess.get('range')), 3)} | Pos {sess.get('position')}"
+    )
+
+
+def _session_direction_from_move(move):
+    move = to_float(move, 0)
+    if move >= SESSION_TREND_POINTS:
+        return "BUY"
+    if move <= -SESSION_TREND_POINTS:
+        return "SELL"
+    return "RANGE"
+
+
+def _bullish_context_from_data(data):
+    return (
+        str(data.get("ema20_slope", "")).upper() == "UP"
+        or str(data.get("ema50_slope", "")).upper() == "UP"
+        or str(data.get("candle_dir", "")).upper() == "BULL"
+        or str(data.get("h1_bias", "")).upper() == "BUY"
+        or str(data.get("day_bias", "")).upper() == "BUY"
+        or str(data.get("rejection", "")).upper() == "LOWER_WICK"
+        or to_bool(data.get("lower_wick_strong", "false"))
+    )
+
+
+def _session_decision(active_session, base_ctx, sess_state, data):
+    price = get_price_from_data(data)
+    sessions = sess_state.get("sessions", {})
+    current = sessions.get(active_session) or {}
+    ref = _session_reference_range(sess_state, active_session) or {}
+
+    base_preferred = str(base_ctx.get("preferred", "WAIT")).upper()
+    base_status = str(base_ctx.get("status", "")).upper()
+    base_reason = str(base_ctx.get("reason", ""))
+
+    if active_session in ["ASIA", "OFF_HOURS"] or not SESSION_INTELLIGENCE_ENABLED:
+        return base_preferred, base_status, base_reason, {}
+
+    if active_session == "PRE_NY":
+        return base_preferred, "PRE_NY_MANAGE", "Tra Europa e New York: non forzo, gestisco ciò che ha già pagato e aspetto la sessione USA", {}
+
+    cur_open = to_float(current.get("open"), price)
+    cur_high = to_float(current.get("high"), price)
+    cur_low = to_float(current.get("low"), price)
+    cur_close = to_float(current.get("close"), price)
+    cur_move = cur_close - cur_open if cur_open and cur_close else 0
+    cur_range = cur_high - cur_low if cur_high and cur_low else 0
+
+    ref_high = to_float(ref.get("high"), base_ctx.get("asian_high", 0))
+    ref_low = to_float(ref.get("low"), base_ctx.get("asian_low", 0))
+    ref_open = to_float(ref.get("open"), base_ctx.get("asian_open", 0))
+    ref_mid = ref_low + (ref_high - ref_low) * 0.5 if ref_high and ref_low else 0
+
+    broke_ref_high = bool(price and ref_high and price >= ref_high + SESSION_BREAKOUT_BUFFER)
+    broke_ref_low = bool(price and ref_low and price <= ref_low - SESSION_BREAKOUT_BUFFER)
+    recovered_ref_mid = bool(price and ref_mid and price >= ref_mid + SESSION_BREAKOUT_BUFFER)
+    lost_ref_mid = bool(price and ref_mid and price <= ref_mid - SESSION_BREAKOUT_BUFFER)
+    retrace_from_session_high = cur_high - price if cur_high and price else 0
+    recovery_from_session_low = price - cur_low if cur_low and price else 0
+    bearish_now = _bearish_context_from_data(data)
+    bullish_now = _bullish_context_from_data(data)
+
+    info = {
+        "current_move": round(cur_move, 3),
+        "current_range": round(cur_range, 3),
+        "reference_high": round(ref_high, 3) if ref_high else 0,
+        "reference_low": round(ref_low, 3) if ref_low else 0,
+        "reference_mid": round(ref_mid, 3) if ref_mid else 0,
+        "broke_ref_high": broke_ref_high,
+        "broke_ref_low": broke_ref_low,
+        "recovered_ref_mid": recovered_ref_mid,
+        "lost_ref_mid": lost_ref_mid,
+        "retrace_session_high": round(retrace_from_session_high, 3),
+        "recovery_session_low": round(recovery_from_session_low, 3),
+    }
+
+    # Londra/Europa: corregge la lettura asiatica. È il pezzo che mancava quando Max
+    # compra dopo uno scarico notturno invece di inseguire SELL bassi.
+    if active_session == "EUROPE":
+        if base_preferred == "SELL" and (recovered_ref_mid or cur_move >= SESSION_REVERSAL_POINTS) and bullish_now:
+            return "BUY", "EUROPE_REVERSAL_BUY", "Europa recupera lo scarico Asia: non inseguo SELL bassi, cerco BUY/retest", info
+        if base_preferred == "BUY" and (lost_ref_mid or cur_move <= -SESSION_REVERSAL_POINTS) and bearish_now:
+            return "SELL", "EUROPE_FADE_SELL", "Europa rifiuta il BUY asiatico: preparo SELL/fade da zona alta", info
+        if broke_ref_high or cur_move >= SESSION_TREND_POINTS:
+            return "BUY", "EUROPE_BREAKOUT_BUY", "Europa/Londra rompe il massimo di riferimento o costruisce trend BUY", info
+        if broke_ref_low or cur_move <= -SESSION_TREND_POINTS:
+            return "SELL", "EUROPE_BREAKOUT_SELL", "Europa/Londra rompe il minimo di riferimento o costruisce trend SELL", info
+        return base_preferred if base_preferred in ["BUY", "SELL"] else "RANGE", "EUROPE_BALANCE", "Europa non ha ancora confermato un cambio netto: lavoro più leggero/FAST", info
+
+    # New York: può continuare la mattina o ribaltarla. È la sessione dove Max spesso
+    # passa da BUY a SELL/fade oppure da SELL a recovery BUY.
+    if active_session == "NEWYORK":
+        if retrace_from_session_high >= SESSION_REVERSAL_POINTS and bearish_now:
+            return "SELL", "NY_FADE_SELL", "New York respinge la zona alta: SELL/fade ammesso se confermato", info
+        if recovery_from_session_low >= SESSION_REVERSAL_POINTS and bullish_now:
+            return "BUY", "NY_REBOUND_BUY", "New York reagisce dal basso: BUY/recovery ammesso se confermato", info
+        if broke_ref_high or cur_move >= SESSION_TREND_POINTS:
+            return "BUY", "NY_CONTINUATION_BUY", "New York conferma estensione BUY sopra la sessione precedente", info
+        if broke_ref_low or cur_move <= -SESSION_TREND_POINTS:
+            return "SELL", "NY_CONTINUATION_SELL", "New York conferma estensione SELL sotto la sessione precedente", info
+        return base_preferred if base_preferred in ["BUY", "SELL"] else "RANGE", "NY_BALANCE", "New York in equilibrio: meglio FAST puliti o attesa di rottura", info
+
+    if active_session == "LATE_US":
+        direction = _session_direction_from_move(cur_move)
+        if direction == "BUY":
+            return "BUY", "LATE_US_BUY_CONTINUATION", "Late US ancora in pressione BUY: solo continuation/pullback puliti", info
+        if direction == "SELL":
+            return "SELL", "LATE_US_SELL_CONTINUATION", "Late US ancora in pressione SELL: solo continuation/retest puliti", info
+        return "RANGE", "LATE_US_MANAGE", "Late US: gestione, meno nuove operazioni, evitare overtrading", info
+
+    return base_preferred, base_status, base_reason, info
+
+
+def update_session_intelligence(data, force=False):
+    # Base v43: mantiene tutta la logica Asia già esistente.
+    base = update_daily_thesis(data, force=force)
+    if not SESSION_INTELLIGENCE_ENABLED:
+        return base
+
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+    active = session_intelligence_name()
+    sess_state = get_session_thesis_state(symbol)
+    sess_state["active_session"] = active
+    sess_state["updated"] = now_ts()
+    sess_state["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Copio Asia anche nello stato sessionale, così Europa/NY hanno un riferimento.
+    if to_float(base.get("asian_open"), 0):
+        asia_sess = sess_state.setdefault("sessions", {}).setdefault("ASIA", _session_range_template("ASIA"))
+        asia_sess.update({
+            "open": base.get("asian_open"),
+            "high": base.get("asian_high"),
+            "low": base.get("asian_low"),
+            "close": base.get("asian_close"),
+            "range": base.get("asian_range"),
+            "move": base.get("asian_move"),
+            "position": base.get("range_position"),
+            "updated": now_ts(),
+        })
+    else:
+        _backfill_asia_from_history(symbol, base)
+        if to_float(base.get("asian_open"), 0):
+            asia_sess = sess_state.setdefault("sessions", {}).setdefault("ASIA", _session_range_template("ASIA"))
+            asia_sess.update({
+                "open": base.get("asian_open"),
+                "high": base.get("asian_high"),
+                "low": base.get("asian_low"),
+                "close": base.get("asian_close"),
+                "range": base.get("asian_range"),
+                "move": base.get("asian_move"),
+                "position": base.get("range_position"),
+                "updated": now_ts(),
+            })
+
+    if active in ["EUROPE", "NEWYORK", "LATE_US"]:
+        _update_session_range(sess_state.setdefault("sessions", {}), active, data)
+
+    session_pref, session_status, session_reason, info = _session_decision(active, base, sess_state, data)
+
+    sess_state.update({
+        "preferred": session_pref,
+        "status": session_status,
+        "reason": session_reason,
+        "price": round(price, 3) if price else 0,
+        "decision_info": info,
+    })
+
+    # Espongo la decisione v44 dentro lo stesso ctx usato da tutto il bot.
+    base["asia_status"] = base.get("status")
+    base["asia_preferred"] = base.get("preferred")
+    base["asia_reason"] = base.get("reason")
+    base["session"] = active
+    base["session_status"] = session_status
+    base["session_preferred"] = session_pref
+    base["session_reason"] = session_reason
+    base["session_info"] = info
+    base["session_ranges"] = sess_state.get("sessions", {})
+    base["status"] = session_status
+    base["preferred"] = session_pref
+    base["direction"] = session_pref
+    base["reason"] = session_reason
+    base["updated"] = now_ts()
+    base["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    if SESSION_PERSIST_THESIS:
+        save_runtime_state(force=False)
+    return base
+
+
+# Override v43 helpers: da qui in poi "daily thesis" significa Asia + Europa + New York.
+
+def get_daily_thesis_context(symbol, data=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    if data is not None:
+        return update_session_intelligence(data)
+    state = get_daily_thesis_state(symbol)
+    sess_state = get_session_thesis_state(symbol)
+    if SESSION_INTELLIGENCE_ENABLED and isinstance(sess_state, dict):
+        state["session_ranges"] = sess_state.get("sessions", {})
+        state["session"] = sess_state.get("active_session", state.get("session"))
+        state["session_status"] = sess_state.get("status")
+        state["session_preferred"] = sess_state.get("preferred")
+        state["session_reason"] = sess_state.get("reason")
+        state["status"] = sess_state.get("status", state.get("status"))
+        state["preferred"] = sess_state.get("preferred", state.get("preferred"))
+        state["reason"] = sess_state.get("reason", state.get("reason"))
+    return state
+
+
+def daily_thesis_signature(ctx):
+    if not ctx:
+        return None
+    return "|".join([
+        str(ctx.get("day_key")),
+        str(ctx.get("session")),
+        str(ctx.get("session_status", ctx.get("status"))),
+        str(ctx.get("session_preferred", ctx.get("preferred"))),
+        str(ctx.get("asian_direction")),
+        str(ctx.get("after_tp_lock")),
+    ])
+
+
+def daily_thesis_text(ctx):
+    if not ctx:
+        return "Session Thesis: N/D"
+    ranges = ctx.get("session_ranges", {}) if isinstance(ctx.get("session_ranges"), dict) else {}
+    session_info = ctx.get("session_info", {}) if isinstance(ctx.get("session_info"), dict) else {}
+    extra = ""
+    if ranges:
+        extra = (
+            "\n" + _session_range_text("Europa", ranges.get("EUROPE")) +
+            "\n" + _session_range_text("New York", ranges.get("NEWYORK")) +
+            "\n" + _session_range_text("Late US", ranges.get("LATE_US"))
+        )
+    info_line = ""
+    if session_info:
+        info_line = (
+            f"\nRef High/Low: {session_info.get('reference_high')}/{session_info.get('reference_low')} | "
+            f"Break ref H/L: {session_info.get('broke_ref_high')}/{session_info.get('broke_ref_low')} | "
+            f"Move sessione: {session_info.get('current_move')} | Range sessione: {session_info.get('current_range')}"
+        )
+    return (
+        f"Status: {ctx.get('status')} | Preferred: {ctx.get('preferred')} | Sessione: {ctx.get('session')}\n"
+        f"Reason: {ctx.get('reason')}\n"
+        f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: "
+        f"Open {ctx.get('asian_open')} | High {ctx.get('asian_high')} | Low {ctx.get('asian_low')} | Close {ctx.get('asian_close')}\n"
+        f"Asia dir: {ctx.get('asian_direction')} | Move {ctx.get('asian_move')} | Range {ctx.get('asian_range')} | Range pos {ctx.get('range_position')}\n"
+        f"Recovery low: {ctx.get('recovery_from_low')} | Retrace high: {ctx.get('retrace_from_high')}\n"
+        f"Break high: {ctx.get('broke_asian_high')} | Break low: {ctx.get('broke_asian_low')} | Recovered mid/open: {ctx.get('recovered_mid')}/{ctx.get('recovered_open')}\n"
+        f"After TP lock: {ctx.get('after_tp_lock')} | Trade: {ctx.get('after_tp_lock_trade')} | TP: {ctx.get('after_tp_lock_tp')}"
+        f"{extra}{info_line}"
+    )
+
+
+def maybe_daily_thesis_alert(symbol, data):
+    if not ASIAN_THESIS_ALERT_ENABLED and not SESSION_THESIS_ALERT_ENABLED:
+        return None
+    ctx = update_session_intelligence(data)
+    if not ctx or ctx.get("status") in ["COLLECTING_ASIA", "DISABLED"]:
+        return None
+    sig = daily_thesis_signature(ctx)
+    last_ts = to_float(ctx.get("last_alert_ts"), 0)
+    if sig and sig == ctx.get("last_alert_signature") and now_ts() - last_ts < SESSION_THESIS_ALERT_MIN_SECONDS:
+        return None
+    if now_ts() - last_ts < SESSION_THESIS_ALERT_MIN_SECONDS and sig == ctx.get("last_alert_signature"):
+        return None
+    ctx["last_alert_signature"] = sig
+    ctx["last_alert_ts"] = now_ts()
+    return f"""🧭 SESSION THESIS v44 — NON È ENTRY
+
+Symbol: {symbol}
+
+{daily_thesis_text(ctx)}
+
+Azione pratica:
+- Asia dà la prima mappa, ma Europa e New York possono ribaltarla.
+- I FAST da 2 punti devono rispettare la sessione attiva.
+- Se una sessione ha già pagato tanto, non inseguo il minimo/massimo: cerco retest o cambio scenario.
+- Operazione ufficiale solo quando arriva il messaggio copiabile."""
+
+
+def daily_thesis_allows_counter(ctx, signal, setup_type, score, data):
+    if not ASIAN_THESIS_ENABLED or not ctx:
+        return False
+    preferred = str(ctx.get("session_preferred", ctx.get("preferred", "WAIT"))).upper()
+    status = str(ctx.get("session_status", ctx.get("status", ""))).upper()
+    signal = normalize_signal(signal)
+    setup = str(setup_type or "NORMAL").upper()
+    score = int(score or 0)
+    if preferred == signal:
+        return True
+    if signal == "BUY" and status in ["REVERSAL_BUY_WATCH", "RANGE_REBOUND_BUY", "EUROPE_REVERSAL_BUY", "NY_REBOUND_BUY"] and setup in ASIAN_THESIS_BUY_SETUPS and score >= ASIAN_THESIS_REVERSAL_BUY_MIN_SCORE:
+        return True
+    if signal == "SELL" and status in ["FADE_SELL_WATCH", "RANGE_FADE_SELL", "EUROPE_FADE_SELL", "NY_FADE_SELL"] and setup in ASIAN_THESIS_SELL_SETUPS and score >= ASIAN_THESIS_REVERSAL_SELL_MIN_SCORE:
+        return True
+    return False
+
+
+def daily_thesis_block_context(signal, symbol, setup_type, score, data, is_fast=False):
+    ctx = update_session_intelligence(data)
+    signal = normalize_signal(signal)
+    setup = str(setup_type or "NORMAL").upper()
+    score = int(score or 0)
+    preferred = str(ctx.get("session_preferred", ctx.get("preferred", "WAIT"))).upper()
+    status = str(ctx.get("session_status", ctx.get("status", ""))).upper()
+    session = str(ctx.get("session", "")).upper()
+    day_position = to_float(data.get("day_position"), ctx.get("day_position", -1))
+    reasons = []
+
+    if not ASIAN_THESIS_ENABLED:
+        return {"block": False, "reason": "Daily thesis disabled", "ctx": ctx, "reasons": []}
+
+    # v44: se Europa/NY hanno una preferenza netta, FAST e NORMAL non devono andare contro,
+    # salvo setup A+ o score molto forte.
+    is_normal_like = setup in ["NORMAL", "FAST"]
+    counter_min = max(ASIAN_THESIS_COUNTER_FAST_MIN_SCORE, SESSION_COUNTER_MIN_SCORE)
+    if SESSION_INTELLIGENCE_ENABLED and preferred in ["BUY", "SELL"] and signal != preferred:
+        if is_fast and SESSION_BLOCK_COUNTER_FAST_ENABLED and score < counter_min:
+            reasons.append(f"Session Intelligence: {session} preferisce {preferred}; FAST {signal} bloccato contro sessione")
+        elif SESSION_MAIN_BLOCK_ENABLED and is_normal_like and score < counter_min:
+            reasons.append(f"Session Intelligence: {session} preferisce {preferred}; {signal} NORMAL passa solo A+/score alto")
+
+    # Asia ha venduto tanto e siamo bassi: non inseguire altri SELL deboli.
+    if signal == "SELL" and status in ["REVERSAL_BUY_WATCH", "POST_ASIA_SELL_BALANCE", "EUROPE_REVERSAL_BUY", "NY_REBOUND_BUY"]:
+        if day_position >= 0 and day_position <= ASIAN_THESIS_LOW_POSITION_BLOCK_SELL and score < counter_min:
+            reasons.append("Session Thesis: scarico già profondo e prezzo basso; non inseguo SELL, aspetto recupero BUY o retest alto")
+        elif preferred == "BUY" and score < counter_min:
+            reasons.append("Session Thesis preferisce BUY/reversal: SELL ammesso solo A+ o da zona alta")
+
+    # Asia/Europa hanno comprato e siamo alti: non inseguire BUY deboli.
+    if signal == "BUY" and status in ["FADE_SELL_WATCH", "POST_ASIA_BUY_BALANCE", "EUROPE_FADE_SELL", "NY_FADE_SELL"]:
+        if day_position >= ASIAN_THESIS_HIGH_POSITION_BLOCK_BUY and score < counter_min:
+            reasons.append("Session Thesis: prezzo alto dopo spinta BUY; non inseguo BUY, aspetto pullback o fade SELL")
+        elif preferred == "SELL" and score < counter_min:
+            reasons.append("Session Thesis preferisce SELL/fade: BUY ammesso solo A+ o da zona bassa")
+
+    # Se c'è già TP3+ nella direzione della tesi, il bot deve gestire e non moltiplicare entry.
+    if ctx.get("after_tp_lock") and preferred == signal and setup == "NORMAL":
+        reasons.append(f"Session Thesis: direzione {signal} già pagata TP{ctx.get('after_tp_lock_tp')}; nuovo NORMAL diventa tesi/gestione")
+
+    # In range il FAST lavora; il main NORMAL resta più selettivo.
+    if not is_fast and preferred == "RANGE" and setup == "NORMAL" and score < MAX_DISCIPLINE_REENTRY_MIN_SCORE:
+        reasons.append("Session Thesis: range attivo; NORMAL main resta tesi, meglio FAST puliti o aspettare breakout")
+
+    return {
+        "block": bool(reasons),
+        "reason": reasons[0] if reasons else "Session Thesis ok",
+        "ctx": ctx,
+        "reasons": reasons,
+    }
+
+
+def maybe_system_heartbeat(symbol, data=None):
+    global LAST_HEARTBEAT_TS
+    if not TELEGRAM_HEARTBEAT_ENABLED:
+        return False
+    now = now_ts()
+    last_msg = LAST_TELEGRAM_TS or 0
+    if LAST_HEARTBEAT_TS and now - LAST_HEARTBEAT_TS < TELEGRAM_HEARTBEAT_SECONDS:
+        return False
+    if last_msg and now - last_msg < TELEGRAM_HEARTBEAT_SECONDS:
+        return False
+    ctx = update_session_intelligence(data or {"symbol": symbol}) if data else get_daily_thesis_context(symbol)
+    text = f"""💓 BOT HEARTBEAT {VERSION}
+
+Symbol: {symbol}
+Stato: vivo, webhook ricevuti.
+Ultimo webhook: {local_datetime(LAST_WEBHOOK_TS).strftime('%Y-%m-%d %H:%M:%S') if LAST_WEBHOOK_TS else 'N/D'}
+Ultimo messaggio Telegram: {local_datetime(LAST_TELEGRAM_TS).strftime('%Y-%m-%d %H:%M:%S') if LAST_TELEGRAM_TS else 'N/D'}
+Sessione: {ctx.get('session')} | Tesi: {ctx.get('status')} -> {ctx.get('preferred')}
+
+Se non arrivano operazioni ufficiali, il bot sta filtrando o aspettando una zona migliore.
+Controlla /health se vuoi verificare webhook, Telegram e memoria sessione."""
+    LAST_HEARTBEAT_TS = now
+    return send_telegram(text)
 
 def _bearish_context_from_data(data):
     return (
@@ -12823,6 +13517,7 @@ def send_daily_stats_to_telegram():
 
 @app.route("/webhook_fast", methods=["POST"])
 def webhook_fast():
+    global LAST_WEBHOOK_TS, LAST_WEBHOOK_KIND
     """
     Motore parallelo TP piccoli.
     Usa lo stesso JSON del Pine v47/v29, ma non entra nella pipeline v29.
@@ -12832,6 +13527,8 @@ def webhook_fast():
     - webhook fast:       https://TUO-SERVIZIO.onrender.com/webhook_fast
     """
     data = request.get_json(silent=True) or {}
+    LAST_WEBHOOK_TS = now_ts()
+    LAST_WEBHOOK_KIND = str(data.get("type") or data.get("fast_signal") or data.get("signal") or "FAST_POST").upper()
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
         updates = handle_fast_price_update(data)
@@ -13017,7 +13714,11 @@ def maybe_send_fast_from_main_webhook(data, signal, main_trade=None, main_setup_
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    global LAST_WEBHOOK_TS, LAST_WEBHOOK_KIND
+
     data = request.get_json(silent=True) or {}
+    LAST_WEBHOOK_TS = now_ts()
+    LAST_WEBHOOK_KIND = str(data.get("type") or data.get("signal") or "POST").upper()
 
     if str(data.get("type", "")).upper() == "PRICE_UPDATE":
         # v24: ogni update alimenta il warmup prima di valutare trigger autonomi.
@@ -13042,7 +13743,7 @@ def webhook():
         bear_result = process_bear_continuation_state_machine(data)
 
         # v43: aggiorna e notifica la tesi giornaliera Asia/Londra/NY.
-        daily_thesis_ctx = update_daily_thesis(data)
+        daily_thesis_ctx = update_session_intelligence(data)
         daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
@@ -13074,6 +13775,9 @@ def webhook():
         big_move_alert = maybe_big_move_thesis_alert(data.get("symbol", "XAUUSD"), data, big_move_ctx)
         if big_move_alert:
             send_telegram(big_move_alert)
+
+        # v44: heartbeat se il bot è vivo ma Telegram tace troppo a lungo.
+        maybe_system_heartbeat(data.get("symbol", "XAUUSD"), data)
 
         # v24: snapshot periodico della memoria runtime.
         save_runtime_state(force=False)
