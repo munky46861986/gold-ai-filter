@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v44 Session Intelligence + Fast Clean 2 Points"
+VERSION = "v45 Session Freeze Memory + Session Intelligence Fast Clean"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -159,6 +159,14 @@ SESSION_FAST_FOLLOW_ACTIVE_THESIS = os.getenv("SESSION_FAST_FOLLOW_ACTIVE_THESIS
 SESSION_MAIN_BLOCK_ENABLED = os.getenv("SESSION_MAIN_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
 SESSION_BLOCK_COUNTER_FAST_ENABLED = os.getenv("SESSION_BLOCK_COUNTER_FAST_ENABLED", "TRUE").upper() == "TRUE"
 SESSION_OPEN_AFTER_RESTART_WARMUP_SECONDS = int(os.getenv("SESSION_OPEN_AFTER_RESTART_WARMUP_SECONDS", "600"))
+
+# v45: Session Freeze Memory.
+# Quando Asia/Europa/NY hanno dati validi, li congela nella memoria runtime
+# e non li sovrascrive mai con 0 se PRICE_HISTORY viene potato o Render riparte.
+SESSION_FREEZE_ENABLED = os.getenv("SESSION_FREEZE_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_FREEZE_PROTECT_NONZERO = os.getenv("SESSION_FREEZE_PROTECT_NONZERO", "TRUE").upper() == "TRUE"
+SESSION_FREEZE_SAVE_ON_EVERY_UPDATE = os.getenv("SESSION_FREEZE_SAVE_ON_EVERY_UPDATE", "TRUE").upper() == "TRUE"
+SESSION_FREEZE_WARN_MISSING_ASIA = os.getenv("SESSION_FREEZE_WARN_MISSING_ASIA", "TRUE").upper() == "TRUE"
 
 EUROPE_SESSION_START_HOUR = int(os.getenv("EUROPE_SESSION_START_HOUR", "8"))
 EUROPE_SESSION_START_MINUTE = int(os.getenv("EUROPE_SESSION_START_MINUTE", "0"))
@@ -611,7 +619,7 @@ PRICE_HISTORY = {}
 DAILY_THESIS_STATE = {}
 SESSION_THESIS_STATE = {}
 
-# v44 diagnostics / heartbeat
+# v45 diagnostics / heartbeat
 LAST_WEBHOOK_TS = 0
 LAST_WEBHOOK_KIND = "NONE"
 LAST_TELEGRAM_TS = 0
@@ -1141,7 +1149,7 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v13 Clean 2-Point + Session Intelligence"
+FAST_VERSION = "Fast Scalper v14 Clean 2-Point + Session Freeze"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -2227,6 +2235,10 @@ def diag():
         "seconds_since_telegram": round(now_ts() - LAST_TELEGRAM_TS, 1) if LAST_TELEGRAM_TS else None,
         "last_telegram_error": LAST_TELEGRAM_ERROR,
         "session_intelligence_enabled": SESSION_INTELLIGENCE_ENABLED,
+        "session_freeze_enabled": SESSION_FREEZE_ENABLED,
+        "asia_collected": bool(to_float(ctx.get("asian_open"), 0)),
+        "asia_frozen": bool(ctx.get("asian_frozen")),
+        "session_ranges": ctx.get("session_ranges", {}),
         "session_thesis": ctx,
         "fast_active": len(fast_active_trades(symbol)),
         "main_active": active_trades_count(),
@@ -6856,11 +6868,11 @@ def get_master_regime_context(symbol, data=None):
     if ASIAN_THESIS_MASTER_OVERRIDE_ENABLED:
         if mode == "SELL_CONTROL" and preferred_thesis == "BUY" and thesis_status in ["REVERSAL_BUY_WATCH", "RANGE_REBOUND_BUY", "ASIA_RANGE_BREAKOUT_BUY"]:
             mode = "POST_ASIA_REVERSAL_BUY"
-            reason = "Session Thesis v44: Asia ha scaricato ma Europa/Londra recupera; non resto SELL_CONTROL cieco"
+            reason = "Session Thesis v45: Asia ha scaricato ma Europa/Londra recupera; non resto SELL_CONTROL cieco"
             bullish_votes.append("Daily Thesis BUY/reversal")
         elif mode == "BUY_CONTROL" and preferred_thesis == "SELL" and thesis_status in ["FADE_SELL_WATCH", "RANGE_FADE_SELL", "ASIA_RANGE_BREAKOUT_SELL"]:
             mode = "POST_ASIA_FADE_SELL"
-            reason = "Session Thesis v44: Asia/Europa ha comprato ma zona alta/fade SELL confermata"
+            reason = "Session Thesis v45: Asia/Europa ha comprato ma zona alta/fade SELL confermata"
             bearish_votes.append("Daily Thesis SELL/fade")
 
     return {
@@ -8823,6 +8835,222 @@ def _current_session_name(ts=None):
     return "LATE_US"
 
 
+# v45 helpers: session snapshots/freeze.
+def _valid_session_snapshot(sess):
+    if not isinstance(sess, dict):
+        return False
+    return bool(
+        to_float(sess.get("open"), 0)
+        and to_float(sess.get("high"), 0)
+        and to_float(sess.get("low"), 0)
+        and to_float(sess.get("close"), 0)
+    )
+
+
+def _session_snapshot_from_points(name, points, price=None):
+    if not points:
+        return None
+    first = points[0]
+    last = points[-1]
+    open_ = to_float(first.get("open"), first.get("price", 0))
+    close = to_float(last.get("close"), last.get("price", 0))
+    high = max(to_float(p.get("high"), p.get("price", 0)) for p in points)
+    low = min(to_float(p.get("low"), p.get("price", 0)) for p in points)
+    if not open_ or not high or not low or not close:
+        return None
+    rng = max(0, high - low)
+    position = round((price - low) / rng, 3) if price and rng > 0 else None
+    return {
+        "name": name,
+        "open": round(open_, 3),
+        "high": round(high, 3),
+        "low": round(low, 3),
+        "close": round(close, 3),
+        "range": round(rng, 3),
+        "move": round(close - open_, 3),
+        "position": position,
+        "source": "price_history",
+        "updated": now_ts(),
+    }
+
+
+def _merge_session_snapshots(name, old, new, price=None):
+    """Mantiene l'open originale e unisce high/low/close quando lo storico breve viene potato."""
+    if not _valid_session_snapshot(old):
+        return dict(new) if _valid_session_snapshot(new) else None
+    if not _valid_session_snapshot(new):
+        return dict(old)
+    open_ = to_float(old.get("open"), new.get("open", 0))
+    high = max(to_float(old.get("high"), 0), to_float(new.get("high"), 0))
+    low = min(to_float(old.get("low"), 0), to_float(new.get("low"), 0))
+    close = to_float(new.get("close"), old.get("close", 0))
+    rng = max(0, high - low)
+    position = round((price - low) / rng, 3) if price and rng > 0 else new.get("position", old.get("position"))
+    merged = dict(old)
+    merged.update({
+        "name": str(name or old.get("name") or "SESSION").upper(),
+        "open": round(open_, 3),
+        "high": round(high, 3),
+        "low": round(low, 3),
+        "close": round(close, 3),
+        "range": round(rng, 3),
+        "move": round(close - open_, 3),
+        "position": position,
+        "source": "session_freeze_merge",
+        "updated": now_ts(),
+    })
+    if old.get("frozen"):
+        merged["frozen"] = True
+        merged["frozen_at"] = old.get("frozen_at")
+        merged["frozen_local"] = old.get("frozen_local")
+    return merged
+
+
+def _asia_snapshot_from_state(state):
+    if not isinstance(state, dict):
+        return None
+    snap = {
+        "name": "ASIA",
+        "open": state.get("asian_open"),
+        "high": state.get("asian_high"),
+        "low": state.get("asian_low"),
+        "close": state.get("asian_close"),
+        "range": state.get("asian_range"),
+        "move": state.get("asian_move"),
+        "position": state.get("range_position"),
+        "source": state.get("asian_source", "daily_thesis_state"),
+        "updated": state.get("updated", 0),
+        "frozen": state.get("asian_frozen", False),
+    }
+    return snap if _valid_session_snapshot(snap) else None
+
+
+def _ensure_freeze_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    key = _thesis_day_key()
+    state = SESSION_THESIS_STATE.get(symbol)
+    if not isinstance(state, dict) or state.get("day_key") != key:
+        state = {
+            "day_key": key,
+            "symbol": symbol,
+            "sessions": {},
+            "active_session": session_intelligence_name() if "session_intelligence_name" in globals() else _current_session_name(),
+            "preferred": "WAIT",
+            "status": "COLLECTING",
+            "reason": "raccolgo dati sessione",
+            "last_alert_signature": None,
+            "last_alert_ts": 0,
+            "updated": now_ts(),
+        }
+        SESSION_THESIS_STATE[symbol] = state
+    state.setdefault("sessions", {})
+    return state
+
+
+def _get_saved_session_snapshot(symbol, name):
+    state = SESSION_THESIS_STATE.get(str(symbol or "XAUUSD").upper())
+    if not isinstance(state, dict) or state.get("day_key") != _thesis_day_key():
+        return None
+    sess = (state.get("sessions") or {}).get(str(name or "").upper())
+    return sess if _valid_session_snapshot(sess) else None
+
+
+def _remember_session_snapshot(symbol, name, snapshot, frozen=False, source=None):
+    if not SESSION_FREEZE_ENABLED or not _valid_session_snapshot(snapshot):
+        return None
+    state = _ensure_freeze_state(symbol)
+    key = str(name or "").upper()
+    sessions = state.setdefault("sessions", {})
+    old = sessions.get(key)
+
+    # Protezione anti-zero/anti-degrado: se ho già una fotografia valida e la nuova è vuota,
+    # o peggiore, non sovrascrivo. Serve proprio a evitare Asia Open 0 / High 0 dopo le 09.
+    if SESSION_FREEZE_PROTECT_NONZERO and _valid_session_snapshot(old):
+        old_frozen = bool(old.get("frozen"))
+        if old_frozen and not frozen:
+            return old
+
+    snap = dict(snapshot)
+    snap["name"] = key
+    snap["updated"] = now_ts()
+    snap["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    snap["source"] = source or snap.get("source") or "session_freeze"
+    if frozen:
+        snap["frozen"] = True
+        snap["frozen_at"] = now_ts()
+        snap["frozen_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    elif old and old.get("frozen"):
+        snap["frozen"] = True
+        snap["frozen_at"] = old.get("frozen_at")
+        snap["frozen_local"] = old.get("frozen_local")
+
+    sessions[key] = snap
+    state["updated"] = now_ts()
+    return snap
+
+
+def _apply_asia_snapshot_to_ctx(ctx, snapshot, price=None):
+    if not isinstance(ctx, dict) or not _valid_session_snapshot(snapshot):
+        return ctx
+    high = to_float(snapshot.get("high"), 0)
+    low = to_float(snapshot.get("low"), 0)
+    rng = to_float(snapshot.get("range"), 0) or max(0, high - low)
+    move = to_float(snapshot.get("move"), 0)
+    direction = "RANGE"
+    if move >= ASIAN_THESIS_MIN_POINTS:
+        direction = "BUY"
+    elif move <= -ASIAN_THESIS_MIN_POINTS:
+        direction = "SELL"
+    ctx.update({
+        "asian_open": round(to_float(snapshot.get("open"), 0), 3),
+        "asian_high": round(high, 3),
+        "asian_low": round(low, 3),
+        "asian_close": round(to_float(snapshot.get("close"), 0), 3),
+        "asian_range": round(rng, 3),
+        "asian_move": round(move, 3),
+        "asian_direction": direction,
+        "range_position": _range_position(price, low, high) if price else snapshot.get("position"),
+        "recovery_from_low": round(price - low, 3) if price and low else ctx.get("recovery_from_low", 0),
+        "retrace_from_high": round(high - price, 3) if price and high else ctx.get("retrace_from_high", 0),
+        "asian_missing": False,
+        "asian_source": snapshot.get("source", "session_freeze"),
+        "asian_frozen": bool(snapshot.get("frozen")),
+    })
+    return ctx
+
+
+def _freeze_finished_sessions(sess_state, data):
+    if not SESSION_FREEZE_ENABLED or not isinstance(sess_state, dict):
+        return sess_state
+    symbol = str((sess_state.get("symbol") or data.get("symbol") or "XAUUSD")).upper()
+    minute = _minutes_of_day(_thesis_local_dt())
+    end_by_name = {
+        "ASIA": _asian_end_minute(),
+        "EUROPE": _europe_end_minutes() if "_europe_end_minutes" in globals() else 12 * 60 + 30,
+        "NEWYORK": _ny_end_minutes() if "_ny_end_minutes" in globals() else 17 * 60 + 30,
+        "LATE_US": _late_us_end_minutes() if "_late_us_end_minutes" in globals() else 22 * 60,
+    }
+    for name, end_min in end_by_name.items():
+        sess = (sess_state.get("sessions") or {}).get(name)
+        if _valid_session_snapshot(sess) and minute > end_min and not sess.get("frozen"):
+            _remember_session_snapshot(symbol, name, sess, frozen=True, source=sess.get("source") or "session_close_freeze")
+    return sess_state
+
+
+def _asia_line_text(ctx):
+    if not ctx or not to_float(ctx.get("asian_open"), 0):
+        if ctx and ctx.get("asian_missing"):
+            return f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: N/D — dati non raccolti o memoria non disponibile"
+        return f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: N/D"
+    frozen = " | Frozen: YES" if ctx.get("asian_frozen") else ""
+    source = f" | Source: {ctx.get('asian_source')}" if ctx.get("asian_source") else ""
+    return (
+        f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: "
+        f"Open {ctx.get('asian_open')} | High {ctx.get('asian_high')} | Low {ctx.get('asian_low')} | Close {ctx.get('asian_close')}"
+        f"{frozen}{source}"
+    )
+
+
 def update_daily_thesis(data, force=False):
     symbol = str(data.get("symbol", "XAUUSD")).upper()
     state = get_daily_thesis_state(symbol)
@@ -8831,23 +9059,66 @@ def update_daily_thesis(data, force=False):
         state.update({"status": "DISABLED", "preferred": "WAIT", "direction": "WAIT", "reason": "ASIAN_THESIS_ENABLED = FALSE"})
         return state
 
-    points = _asian_points_from_history(symbol)
     session = _current_session_name()
     state["session"] = session
     if price:
         state["last_price"] = price
 
+    points = _asian_points_from_history(symbol)
+    saved_asia = _get_saved_session_snapshot(symbol, "ASIA")
+    state_asia = _asia_snapshot_from_state(state)
+    current_minute = _minutes_of_day(_thesis_local_dt())
+    asia_should_be_frozen = current_minute > _asian_end_minute()
+
+    asia_snapshot = None
+    asia_source = "none"
     if points:
-        first = points[0]
-        last = points[-1]
-        asian_open = to_float(first.get("price"), 0)
-        asian_close = to_float(last.get("price"), 0)
-        asian_high = max(to_float(p.get("high"), to_float(p.get("price"), 0)) for p in points)
-        asian_low = min(to_float(p.get("low"), to_float(p.get("price"), 0)) for p in points)
-        asian_range = max(0, asian_high - asian_low)
-        asian_move = asian_close - asian_open
+        points_snapshot = _session_snapshot_from_points("ASIA", points, price=price)
+        previous_snapshot = saved_asia if _valid_session_snapshot(saved_asia) else state_asia
+        # v45: PRICE_HISTORY può contenere solo gli ultimi 90 minuti; quindi NON uso il primo
+        # punto disponibile come nuovo open se avevo già salvato l'open Asia vero.
+        asia_snapshot = _merge_session_snapshots("ASIA", previous_snapshot, points_snapshot, price=price) if previous_snapshot else points_snapshot
+        asia_source = "price_history+freeze" if previous_snapshot else "price_history"
+    elif _valid_session_snapshot(saved_asia):
+        asia_snapshot = dict(saved_asia)
+        asia_source = saved_asia.get("source") or "session_freeze"
+    elif _valid_session_snapshot(state_asia):
+        asia_snapshot = dict(state_asia)
+        asia_source = state_asia.get("source") or "daily_thesis_state"
+
+    if _valid_session_snapshot(asia_snapshot):
+        if asia_should_be_frozen:
+            asia_snapshot = _remember_session_snapshot(symbol, "ASIA", asia_snapshot, frozen=True, source=asia_source) or asia_snapshot
+        else:
+            _remember_session_snapshot(symbol, "ASIA", asia_snapshot, frozen=False, source=asia_source)
+        _apply_asia_snapshot_to_ctx(state, asia_snapshot, price=price)
+        state["asian_source"] = asia_snapshot.get("source", asia_source)
+        state["asian_frozen"] = bool(asia_snapshot.get("frozen")) or asia_should_be_frozen
+        state["asian_missing"] = False
     else:
-        asian_open = asian_close = asian_high = asian_low = asian_range = asian_move = 0
+        # v45: NON cancello mai una Asia valida con 0. Se non c'è nulla, dichiaro N/D.
+        state["asian_missing"] = True
+        state["asian_source"] = "missing"
+        if not SESSION_FREEZE_PROTECT_NONZERO:
+            state.update({
+                "asian_open": 0,
+                "asian_high": 0,
+                "asian_low": 0,
+                "asian_close": 0,
+                "asian_range": 0,
+                "asian_move": 0,
+                "asian_direction": "RANGE",
+                "range_position": None,
+                "recovery_from_low": 0,
+                "retrace_from_high": 0,
+            })
+
+    asian_open = to_float(state.get("asian_open"), 0)
+    asian_close = to_float(state.get("asian_close"), 0)
+    asian_high = to_float(state.get("asian_high"), 0)
+    asian_low = to_float(state.get("asian_low"), 0)
+    asian_range = max(0, to_float(state.get("asian_range"), 0) or (asian_high - asian_low if asian_high and asian_low else 0))
+    asian_move = to_float(state.get("asian_move"), 0) if state.get("asian_move") is not None else asian_close - asian_open
 
     direction = "RANGE"
     if asian_move >= ASIAN_THESIS_MIN_POINTS:
@@ -8859,9 +9130,9 @@ def update_daily_thesis(data, force=False):
     status = "COLLECTING_ASIA" if session == "ASIA" else "ASIA_READY"
     reason = "Asia ancora in formazione"
     day_position = to_float(data.get("day_position"), -1)
-    recovery_from_low = (price - asian_low) if price and asian_low else 0
-    retrace_from_high = (asian_high - price) if price and asian_high else 0
-    range_pos = ((price - asian_low) / asian_range) if price and asian_range > 0 else None
+    recovery_from_low = (price - asian_low) if price and asian_low else to_float(state.get("recovery_from_low"), 0)
+    retrace_from_high = (asian_high - price) if price and asian_high else to_float(state.get("retrace_from_high"), 0)
+    range_pos = ((price - asian_low) / asian_range) if price and asian_range > 0 else state.get("range_position")
     broke_asian_high = bool(price and asian_high and price >= asian_high + ASIAN_THESIS_BREAKOUT_BUFFER)
     broke_asian_low = bool(price and asian_low and price <= asian_low - ASIAN_THESIS_BREAKOUT_BUFFER)
     recovered_mid = bool(price and asian_low and asian_high and price >= asian_low + asian_range * ASIAN_THESIS_RECOVERY_RATIO)
@@ -8869,7 +9140,11 @@ def update_daily_thesis(data, force=False):
     rejected_high = bool(price and asian_high and retrace_from_high >= ASIAN_THESIS_RECOVERY_POINTS)
     rejected_low = bool(price and asian_low and recovery_from_low >= ASIAN_THESIS_RECOVERY_POINTS)
 
-    if session == "ASIA":
+    if not asian_open:
+        preferred = "WAIT" if session == "ASIA" else "RANGE"
+        status = "COLLECTING_ASIA" if session == "ASIA" else "ASIA_MISSING"
+        reason = "Asia non disponibile: non uso valori 0; uso la sessione attiva come mappa principale"
+    elif session == "ASIA":
         preferred = "WAIT"
         reason = "00:05-07:30: raccolgo high/low Asia, evito di innamorarmi del primo impulso"
     elif direction == "SELL":
@@ -8947,7 +9222,7 @@ def update_daily_thesis(data, force=False):
         "asian_low": round(asian_low, 3) if asian_low else 0,
         "asian_close": round(asian_close, 3) if asian_close else 0,
         "asian_range": round(asian_range, 3) if asian_range else 0,
-        "asian_move": round(asian_move, 3) if asian_move else 0,
+        "asian_move": round(asian_move, 3) if asian_open else 0,
         "asian_direction": direction,
         "range_position": round(range_pos, 3) if isinstance(range_pos, (int, float)) else None,
         "recovery_from_low": round(recovery_from_low, 3),
@@ -8960,8 +9235,10 @@ def update_daily_thesis(data, force=False):
         "updated": now_ts(),
         "updated_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
     })
-    return state
 
+    if SESSION_FREEZE_SAVE_ON_EVERY_UPDATE and SESSION_PERSIST_THESIS:
+        save_runtime_state(force=False)
+    return state
 
 def get_daily_thesis_context(symbol, data=None):
     symbol = str(symbol or "XAUUSD").upper()
@@ -9082,7 +9359,7 @@ def daily_thesis_block_context(signal, symbol, setup_type, score, data, is_fast=
 
 
 # =========================
-# v44 SESSION INTELLIGENCE
+# v45 SESSION INTELLIGENCE
 # =========================
 
 
@@ -9395,7 +9672,7 @@ def _session_decision(active_session, base_ctx, sess_state, data):
 
 
 def update_session_intelligence(data, force=False):
-    # Base v43: mantiene tutta la logica Asia già esistente.
+    # Base v45: Asia resta una fotografia congelata; Europa/NY possono ribaltare la tesi.
     base = update_daily_thesis(data, force=force)
     if not SESSION_INTELLIGENCE_ENABLED:
         return base
@@ -9407,11 +9684,20 @@ def update_session_intelligence(data, force=False):
     sess_state["active_session"] = active
     sess_state["updated"] = now_ts()
     sess_state["updated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    sessions = sess_state.setdefault("sessions", {})
 
-    # Copio Asia anche nello stato sessionale, così Europa/NY hanno un riferimento.
+    # v45: se update_daily_thesis non trova più Asia nello storico breve,
+    # recupero la fotografia già salvata nello stato sessionale invece di far comparire 0.
+    saved_asia = sessions.get("ASIA")
+    if not to_float(base.get("asian_open"), 0) and _valid_session_snapshot(saved_asia):
+        _apply_asia_snapshot_to_ctx(base, saved_asia, price=price)
+    elif not to_float(base.get("asian_open"), 0):
+        _backfill_asia_from_history(symbol, base)
+
+    # Copio/congelo Asia anche nello stato sessionale, così Europa/NY hanno un riferimento stabile.
     if to_float(base.get("asian_open"), 0):
-        asia_sess = sess_state.setdefault("sessions", {}).setdefault("ASIA", _session_range_template("ASIA"))
-        asia_sess.update({
+        asia_snapshot = {
+            "name": "ASIA",
             "open": base.get("asian_open"),
             "high": base.get("asian_high"),
             "low": base.get("asian_low"),
@@ -9419,25 +9705,24 @@ def update_session_intelligence(data, force=False):
             "range": base.get("asian_range"),
             "move": base.get("asian_move"),
             "position": base.get("range_position"),
-            "updated": now_ts(),
-        })
+            "source": base.get("asian_source") or "daily_thesis",
+        }
+        frozen = _minutes_of_day(_thesis_local_dt()) > _asian_end_minute()
+        stored_asia = _remember_session_snapshot(symbol, "ASIA", asia_snapshot, frozen=frozen, source=asia_snapshot.get("source"))
+        if stored_asia:
+            sessions["ASIA"] = stored_asia
+            _apply_asia_snapshot_to_ctx(base, stored_asia, price=price)
     else:
-        _backfill_asia_from_history(symbol, base)
-        if to_float(base.get("asian_open"), 0):
-            asia_sess = sess_state.setdefault("sessions", {}).setdefault("ASIA", _session_range_template("ASIA"))
-            asia_sess.update({
-                "open": base.get("asian_open"),
-                "high": base.get("asian_high"),
-                "low": base.get("asian_low"),
-                "close": base.get("asian_close"),
-                "range": base.get("asian_range"),
-                "move": base.get("asian_move"),
-                "position": base.get("range_position"),
-                "updated": now_ts(),
-            })
+        base["asian_missing"] = True
+        base["asian_source"] = "missing"
 
+    # Aggiorno solo la sessione corrente. Le sessioni concluse vengono congelate e non tornano a zero.
     if active in ["EUROPE", "NEWYORK", "LATE_US"]:
-        _update_session_range(sess_state.setdefault("sessions", {}), active, data)
+        current_session = _update_session_range(sessions, active, data)
+        if _valid_session_snapshot(current_session):
+            _remember_session_snapshot(symbol, active, current_session, frozen=False, source="live_session")
+
+    _freeze_finished_sessions(sess_state, data)
 
     session_pref, session_status, session_reason, info = _session_decision(active, base, sess_state, data)
 
@@ -9447,9 +9732,11 @@ def update_session_intelligence(data, force=False):
         "reason": session_reason,
         "price": round(price, 3) if price else 0,
         "decision_info": info,
+        "asia_collected": bool(to_float(base.get("asian_open"), 0)),
+        "asia_frozen": bool((sessions.get("ASIA") or {}).get("frozen")),
     })
 
-    # Espongo la decisione v44 dentro lo stesso ctx usato da tutto il bot.
+    # Espongo la decisione v45 dentro lo stesso ctx usato da tutto il bot.
     base["asia_status"] = base.get("status")
     base["asia_preferred"] = base.get("preferred")
     base["asia_reason"] = base.get("reason")
@@ -9458,7 +9745,7 @@ def update_session_intelligence(data, force=False):
     base["session_preferred"] = session_pref
     base["session_reason"] = session_reason
     base["session_info"] = info
-    base["session_ranges"] = sess_state.get("sessions", {})
+    base["session_ranges"] = sessions
     base["status"] = session_status
     base["preferred"] = session_pref
     base["direction"] = session_pref
@@ -9470,7 +9757,6 @@ def update_session_intelligence(data, force=False):
         save_runtime_state(force=False)
     return base
 
-
 # Override v43 helpers: da qui in poi "daily thesis" significa Asia + Europa + New York.
 
 def get_daily_thesis_context(symbol, data=None):
@@ -9480,7 +9766,8 @@ def get_daily_thesis_context(symbol, data=None):
     state = get_daily_thesis_state(symbol)
     sess_state = get_session_thesis_state(symbol)
     if SESSION_INTELLIGENCE_ENABLED and isinstance(sess_state, dict):
-        state["session_ranges"] = sess_state.get("sessions", {})
+        sessions = sess_state.get("sessions", {})
+        state["session_ranges"] = sessions
         state["session"] = sess_state.get("active_session", state.get("session"))
         state["session_status"] = sess_state.get("status")
         state["session_preferred"] = sess_state.get("preferred")
@@ -9488,6 +9775,14 @@ def get_daily_thesis_context(symbol, data=None):
         state["status"] = sess_state.get("status", state.get("status"))
         state["preferred"] = sess_state.get("preferred", state.get("preferred"))
         state["reason"] = sess_state.get("reason", state.get("reason"))
+
+        # v45: anche /diag e heartbeat devono mostrare Asia congelata, non 0.
+        saved_asia = sessions.get("ASIA") if isinstance(sessions, dict) else None
+        if not to_float(state.get("asian_open"), 0) and _valid_session_snapshot(saved_asia):
+            _apply_asia_snapshot_to_ctx(state, saved_asia, price=to_float(state.get("last_price"), 0))
+        elif not to_float(state.get("asian_open"), 0):
+            state["asian_missing"] = True
+            state["asian_source"] = "missing"
     return state
 
 
@@ -9526,8 +9821,7 @@ def daily_thesis_text(ctx):
     return (
         f"Status: {ctx.get('status')} | Preferred: {ctx.get('preferred')} | Sessione: {ctx.get('session')}\n"
         f"Reason: {ctx.get('reason')}\n"
-        f"Asia {ASIAN_THESIS_START_HOUR:02d}:{ASIAN_THESIS_START_MINUTE:02d}-{ASIAN_THESIS_END_HOUR:02d}:{ASIAN_THESIS_END_MINUTE:02d}: "
-        f"Open {ctx.get('asian_open')} | High {ctx.get('asian_high')} | Low {ctx.get('asian_low')} | Close {ctx.get('asian_close')}\n"
+        f"{_asia_line_text(ctx)}\n"
         f"Asia dir: {ctx.get('asian_direction')} | Move {ctx.get('asian_move')} | Range {ctx.get('asian_range')} | Range pos {ctx.get('range_position')}\n"
         f"Recovery low: {ctx.get('recovery_from_low')} | Retrace high: {ctx.get('retrace_from_high')}\n"
         f"Break high: {ctx.get('broke_asian_high')} | Break low: {ctx.get('broke_asian_low')} | Recovered mid/open: {ctx.get('recovered_mid')}/{ctx.get('recovered_open')}\n"
@@ -9550,7 +9844,7 @@ def maybe_daily_thesis_alert(symbol, data):
         return None
     ctx["last_alert_signature"] = sig
     ctx["last_alert_ts"] = now_ts()
-    return f"""🧭 SESSION THESIS v44 — NON È ENTRY
+    return f"""🧭 SESSION THESIS v45 — NON È ENTRY
 
 Symbol: {symbol}
 
@@ -13776,7 +14070,7 @@ def webhook():
         if big_move_alert:
             send_telegram(big_move_alert)
 
-        # v44: heartbeat se il bot è vivo ma Telegram tace troppo a lungo.
+        # v45: heartbeat se il bot è vivo ma Telegram tace troppo a lungo.
         maybe_system_heartbeat(data.get("symbol", "XAUUSD"), data)
 
         # v24: snapshot periodico della memoria runtime.
