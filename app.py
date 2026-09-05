@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v45 Session Freeze Memory + Session Intelligence Fast Clean"
+VERSION = "v46 Max Wait Mode + NFP Shock Guard + Session Freeze"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -167,6 +167,25 @@ SESSION_FREEZE_ENABLED = os.getenv("SESSION_FREEZE_ENABLED", "TRUE").upper() == 
 SESSION_FREEZE_PROTECT_NONZERO = os.getenv("SESSION_FREEZE_PROTECT_NONZERO", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_SAVE_ON_EVERY_UPDATE = os.getenv("SESSION_FREEZE_SAVE_ON_EVERY_UPDATE", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_WARN_MISSING_ASIA = os.getenv("SESSION_FREEZE_WARN_MISSING_ASIA", "TRUE").upper() == "TRUE"
+
+
+# v46: Max Wait Mode + NFP Shock Guard.
+# Quando Max dice "tra poco news/NFP, andiamo dopo", il bot passa in osservazione:
+# - continua a gestire trade già aperti con PRICE_UPDATE;
+# - blocca nuove operazioni MAIN e FAST;
+# - osserva high/low dello shock e rivaluta solo dopo la pausa.
+MAX_WAIT_MODE_ENABLED = os.getenv("MAX_WAIT_MODE_ENABLED", "TRUE").upper() == "TRUE"
+MAX_WAIT_DEFAULT_MINUTES = int(os.getenv("MAX_WAIT_DEFAULT_MINUTES", "60"))
+MAX_WAIT_NFP_MINUTES = int(os.getenv("MAX_WAIT_NFP_MINUTES", "120"))
+MAX_WAIT_FAST_BLOCK_ENABLED = os.getenv("MAX_WAIT_FAST_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
+MAX_WAIT_MAIN_BLOCK_ENABLED = os.getenv("MAX_WAIT_MAIN_BLOCK_ENABLED", "TRUE").upper() == "TRUE"
+MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY = os.getenv("MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY", "TRUE").upper() == "TRUE"
+MAX_WAIT_BLOCK_ALERT_SECONDS = int(os.getenv("MAX_WAIT_BLOCK_ALERT_SECONDS", "300"))
+MAX_WAIT_OBSERVE_ALERT_SECONDS = int(os.getenv("MAX_WAIT_OBSERVE_ALERT_SECONDS", "900"))
+MAX_WAIT_TELEGRAM_TEXT_ENABLED = os.getenv("MAX_WAIT_TELEGRAM_TEXT_ENABLED", "TRUE").upper() == "TRUE"
+TELEGRAM_CONTROL_CHAT_ID = os.getenv("TELEGRAM_CONTROL_CHAT_ID", CHAT_ID or "")
+CONTROL_SECRET = os.getenv("CONTROL_SECRET", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 
 EUROPE_SESSION_START_HOUR = int(os.getenv("EUROPE_SESSION_START_HOUR", "8"))
 EUROPE_SESSION_START_MINUTE = int(os.getenv("EUROPE_SESSION_START_MINUTE", "0"))
@@ -432,6 +451,10 @@ AUTO_EVENT_CACHE = {
     "max_pullback_after_high": 0,
     "pullback_time": 0
 }
+
+# v46: stato manuale/Telegram di osservazione news/NFP.
+# È per simbolo, così XAUUSD può andare in pausa senza toccare eventuali altri strumenti.
+MAX_WAIT_STATE = {}
 
 # v18: NFP Spike Reversal + Event Memory
 # La v17 capiva che c'era evento, ma non capiva bene lo spike.
@@ -1149,7 +1172,7 @@ POST_SL_REENTRY_CAUTION_SETUPS = {
 # Non modifica la strategia v29: è un secondo motore separato.
 # Usa lo stesso Pine/TradingView, ma webhook separato: /webhook_fast
 # TP piccolo: esempio BUY 4140 -> TP 4142.
-FAST_VERSION = "Fast Scalper v14 Clean 2-Point + Session Freeze"
+FAST_VERSION = "Fast Scalper v15 Clean 2-Point + Max Wait Guard"
 FAST_ENGINE_ENABLED = os.getenv("FAST_ENGINE_ENABLED", "TRUE").upper() == "TRUE"
 FAST_TRADES_FILE = os.getenv("FAST_TRADES_FILE", "fast_trades.json")
 FAST_TP_POINTS = float(os.getenv("FAST_TP_POINTS", "2.0"))
@@ -1582,6 +1605,366 @@ def send_telegram(text: str, parse_mode: str = None):
         return False
 
 
+
+
+# =========================
+# MAX WAIT MODE / NFP SHOCK GUARD v46
+# =========================
+
+def _control_request_allowed():
+    """Protezione opzionale per endpoint manuali: se CONTROL_SECRET è vuoto, lascia aperto."""
+    if not CONTROL_SECRET:
+        return True
+    supplied = request.args.get("key") or request.headers.get("X-Control-Secret") or ""
+    return str(supplied) == str(CONTROL_SECRET)
+
+
+def _max_wait_key(symbol=None):
+    return str(symbol or "XAUUSD").upper()
+
+
+def get_max_wait_state(symbol=None):
+    symbol = _max_wait_key(symbol)
+    state = MAX_WAIT_STATE.get(symbol)
+    if not isinstance(state, dict):
+        state = {
+            "active": False,
+            "symbol": symbol,
+            "type": "NONE",
+            "reason": "",
+            "source": "",
+            "started": 0,
+            "until": 0,
+            "last_alert_ts": 0,
+            "last_block_alert_ts": 0,
+            "trigger_text": ""
+        }
+        MAX_WAIT_STATE[symbol] = state
+    return state
+
+
+def max_wait_active(symbol=None):
+    if not MAX_WAIT_MODE_ENABLED:
+        return False, get_max_wait_state(symbol)
+    state = get_max_wait_state(symbol)
+    active = bool(state.get("active")) and now_ts() < to_float(state.get("until"), 0)
+    if bool(state.get("active")) and not active:
+        state["active"] = False
+        state["expired_at"] = now_ts()
+        state["expired_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        save_runtime_state(force=True)
+    return active, state
+
+
+def _max_wait_local_until(state):
+    until = to_float((state or {}).get("until"), 0)
+    return local_datetime(until).strftime("%Y-%m-%d %H:%M:%S") if until else "N/D"
+
+
+def max_wait_status_text(symbol=None):
+    active, state = max_wait_active(symbol)
+    remaining = max(0, int(to_float(state.get("until"), 0) - now_ts())) if active else 0
+    minutes = round(remaining / 60, 1) if remaining else 0
+    return (
+        f"MAX WAIT MODE attivo: {active}\n"
+        f"Symbol: {state.get('symbol', _max_wait_key(symbol))}\n"
+        f"Tipo: {state.get('type', 'NEWS')}\n"
+        f"Motivo: {state.get('reason', 'N/D')}\n"
+        f"Fonte: {state.get('source', 'N/D')}\n"
+        f"Fino a: {_max_wait_local_until(state)}\n"
+        f"Minuti rimasti: {minutes}\n"
+        f"Gestione soltanto: {MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY}\n"
+        f"Blocca MAIN: {MAX_WAIT_MAIN_BLOCK_ENABLED}\n"
+        f"Blocca FAST: {MAX_WAIT_FAST_BLOCK_ENABLED}"
+    )
+
+
+def activate_max_wait_mode(symbol="XAUUSD", minutes=None, reason="NEWS/NFP", source="manual", event_type="NEWS", trigger_text="", notify=True):
+    if not MAX_WAIT_MODE_ENABLED:
+        return {"active": False, "reason": "MAX_WAIT_MODE_ENABLED=FALSE"}
+
+    symbol = _max_wait_key(symbol)
+    event_type = str(event_type or "NEWS").upper()
+    if minutes is None:
+        minutes = MAX_WAIT_NFP_MINUTES if event_type == "NFP" else MAX_WAIT_DEFAULT_MINUTES
+    minutes = max(1, int(minutes))
+    now = now_ts()
+    until = now + minutes * 60
+    state = get_max_wait_state(symbol)
+    old_until = to_float(state.get("until"), 0)
+
+    state.update({
+        "active": True,
+        "symbol": symbol,
+        "type": event_type,
+        "reason": str(reason or event_type),
+        "source": str(source or "manual"),
+        "started": state.get("started") if state.get("active") and old_until > now else now,
+        "started_local": state.get("started_local") if state.get("active") and old_until > now else local_datetime(now).strftime("%Y-%m-%d %H:%M:%S"),
+        "until": max(old_until, until),
+        "updated": now,
+        "updated_local": local_datetime(now).strftime("%Y-%m-%d %H:%M:%S"),
+        "trigger_text": str(trigger_text or "")[:500]
+    })
+
+    # Attivo anche l'Auto Event Memory: il prossimo PRICE_UPDATE diventa ancora/anchor news.
+    activate_auto_event_mode([f"MAX WAIT MODE: {event_type} - {reason}"], None)
+    save_runtime_state(force=True)
+
+    if notify:
+        send_telegram(
+            f"🟡 MAX WAIT MODE ATTIVO {VERSION}\n\n"
+            f"Symbol: {symbol}\n"
+            f"Tipo: {event_type}\n"
+            f"Motivo: {reason}\n"
+            f"Fonte: {source}\n"
+            f"Durata: {minutes} minuti\n"
+            f"Fino a: {_max_wait_local_until(state)}\n\n"
+            f"Azione:\n"
+            f"- Nuove operazioni MAIN bloccate\n"
+            f"- FAST bloccati\n"
+            f"- PRICE_UPDATE continua a gestire TP/SL/BE dei trade già aperti\n"
+            f"- Il bot osserva high/low dello shock e rivaluta dopo, stile Max"
+        )
+    return state
+
+
+def clear_max_wait_mode(symbol="XAUUSD", reason="manual_resume", notify=True):
+    symbol = _max_wait_key(symbol)
+    state = get_max_wait_state(symbol)
+    state.update({
+        "active": False,
+        "until": 0,
+        "cleared": now_ts(),
+        "cleared_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "clear_reason": reason
+    })
+    save_runtime_state(force=True)
+    if notify:
+        send_telegram(
+            f"🟢 MAX WAIT MODE DISATTIVATO {VERSION}\n\n"
+            f"Symbol: {symbol}\n"
+            f"Motivo: {reason}\n\n"
+            f"Il bot può tornare a valutare nuove operazioni ufficiali."
+        )
+    return state
+
+
+def should_block_new_entry_by_max_wait(symbol, signal=None, data=None, is_fast=False):
+    active, state = max_wait_active(symbol)
+    if not active:
+        return False, state
+    if is_fast and not MAX_WAIT_FAST_BLOCK_ENABLED:
+        return False, state
+    if (not is_fast) and not MAX_WAIT_MAIN_BLOCK_ENABLED:
+        return False, state
+    return True, state
+
+
+def maybe_send_max_wait_block_message(symbol, signal, price=None, setup_type=None, score=None, is_fast=False):
+    active, state = max_wait_active(symbol)
+    if not active:
+        return False
+    now = now_ts()
+    last = to_float(state.get("last_block_alert_ts"), 0)
+    if last and now - last < MAX_WAIT_BLOCK_ALERT_SECONDS:
+        return False
+    state["last_block_alert_ts"] = now
+    save_runtime_state(force=True)
+    label = "FAST" if is_fast else "MAIN"
+    send_telegram(
+        f"🟡🚫 {label} BLOCCATO — MAX WAIT MODE {VERSION}\n\n"
+        f"Segnale: {signal or 'N/D'}\n"
+        f"Symbol: {_max_wait_key(symbol)}\n"
+        f"Prezzo: {price if price not in [None, ''] else 'N/D'}\n"
+        f"Setup: {setup_type or 'N/D'}\n"
+        f"Score: {score if score is not None else 'N/D'}\n\n"
+        f"{max_wait_status_text(symbol)}\n\n"
+        f"Azione:\n"
+        f"Non copiare: il bot sta osservando news/NFP come Max.\n"
+        f"Gestisce solo eventuali trade già aperti."
+    )
+    return True
+
+
+def maybe_send_max_wait_observe_alert(symbol, data=None):
+    active, state = max_wait_active(symbol)
+    if not active:
+        return False
+    now = now_ts()
+    last = to_float(state.get("last_alert_ts"), 0)
+    if last and now - last < MAX_WAIT_OBSERVE_ALERT_SECONDS:
+        return False
+    state["last_alert_ts"] = now
+    price = get_price_from_data(data or {}) if data else 0
+    save_runtime_state(force=True)
+    send_telegram(
+        f"👀 MAX WAIT MODE — OSSERVO {VERSION}\n\n"
+        f"Symbol: {_max_wait_key(symbol)}\n"
+        f"Prezzo: {price or 'N/D'}\n"
+        f"{max_wait_status_text(symbol)}\n\n"
+        f"Azione:\n"
+        f"Durante news/NFP niente nuove entry. Aspetto che il mercato mostri high/low dello shock."
+    )
+    return True
+
+
+def _max_wait_text_event_type(text):
+    t = normalize_text_for_event(text)
+    if any(k in t for k in ["nfp", "non farm", "payroll", "nonfarm", "disoccupazione", "occupazione"]):
+        return "NFP"
+    if "cpi" in t or "inflazione" in t or "inflation" in t:
+        return "CPI"
+    if "ppi" in t:
+        return "PPI"
+    if "fomc" in t or "powell" in t or "federal reserve" in t or "fed" in t or "tassi" in t or "interest rate" in t:
+        return "FED"
+    return "NEWS"
+
+
+def _max_wait_minutes_from_text(text, event_type):
+    t = normalize_text_for_event(text)
+    if "5 minuti" in t or "tra 5" in t or "fra 5" in t:
+        return max(30, min(MAX_WAIT_DEFAULT_MINUTES, 60))
+    if "10 minuti" in t or "tra 10" in t or "fra 10" in t:
+        return max(35, min(MAX_WAIT_DEFAULT_MINUTES, 75))
+    if "1 ora e mezza" in t or "un'ora e mezza" in t or "90 minuti" in t:
+        return MAX_WAIT_NFP_MINUTES if event_type == "NFP" else max(MAX_WAIT_DEFAULT_MINUTES, 90)
+    if event_type == "NFP":
+        return MAX_WAIT_NFP_MINUTES
+    return MAX_WAIT_DEFAULT_MINUTES
+
+
+def detect_max_wait_from_text(text):
+    if not MAX_WAIT_TELEGRAM_TEXT_ENABLED:
+        return None
+    raw = str(text or "")
+    t = normalize_text_for_event(raw)
+    if not t.strip():
+        return None
+
+    direct_wait_phrases = [
+        "non condivideremo un'idea sulle news",
+        "non condivideremo una idea sulle news",
+        "non condivideremo idee sulle news",
+        "non condividiamo idee sulle news",
+        "non condividiamo un'idea sulle news",
+        "andiamo dopo",
+        "aspettiamo dopo",
+        "tra 5 minuti escono le news",
+        "fra 5 minuti escono le news",
+        "escono le news",
+        "arrivano le news",
+        "arrivano le notizie",
+        "ci sono le news",
+        "news tra",
+        "notizie tra",
+        "nfp tra",
+        "nfp oggi",
+    ]
+    macro_keywords = [
+        "nfp", "non farm", "payroll", "cpi", "ppi", "fomc", "powell",
+        "federal reserve", "interest rate", "tassi", "inflation", "inflazione",
+        "ism", "pmi", "news", "notizie"
+    ]
+    pause_words = [
+        "non condivid", "andiamo dopo", "aspetti", "tra", "fra", "5 minuti",
+        "10 minuti", "1 ora", "mezza", "prima", "dopo", "escono", "arrivano"
+    ]
+
+    direct = any(p in t for p in direct_wait_phrases)
+    macro = any(k in t for k in macro_keywords)
+    pause = any(w in t for w in pause_words)
+
+    # Evito di bloccare solo perché un messaggio cita genericamente una news già passata.
+    if not (direct or (macro and pause)):
+        return None
+
+    event_type = _max_wait_text_event_type(raw)
+    minutes = _max_wait_minutes_from_text(raw, event_type)
+    return {
+        "event_type": event_type,
+        "minutes": minutes,
+        "reason": f"testo Max/Telegram rilevato: {event_type}",
+        "trigger_text": raw[:500]
+    }
+
+
+def _telegram_update_message(update):
+    update = update or {}
+    for key in ["message", "edited_message", "channel_post", "edited_channel_post"]:
+        msg = update.get(key)
+        if isinstance(msg, dict):
+            return msg
+    return {}
+
+
+def _telegram_update_text(update):
+    msg = _telegram_update_message(update)
+    return str(msg.get("text") or msg.get("caption") or "")
+
+
+def _telegram_chat_allowed(update):
+    if not TELEGRAM_CONTROL_CHAT_ID:
+        return True
+    msg = _telegram_update_message(update)
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id", ""))
+    return chat_id == str(TELEGRAM_CONTROL_CHAT_ID)
+
+
+def handle_telegram_control_text(text, source="telegram", symbol="XAUUSD"):
+    raw = str(text or "").strip()
+    lower = raw.lower()
+    symbol = _max_wait_key(symbol)
+
+    # Comandi manuali scritti/inoltrati al bot Telegram.
+    if lower.startswith("/max_resume") or lower.startswith("/resume"):
+        state = clear_max_wait_mode(symbol, reason="telegram_resume", notify=True)
+        return {"handled": True, "action": "resume", "state": state}
+
+    if lower.startswith("/max_status") or lower.startswith("/event_status"):
+        send_telegram("📊 STATO MAX WAIT\n\n" + max_wait_status_text(symbol))
+        return {"handled": True, "action": "status"}
+
+    if lower.startswith("/event_mode") or lower.startswith("/max_wait"):
+        parts = raw.split()
+        event_type = "NFP" if "nfp" in lower else "NEWS"
+        minutes = None
+        for part in parts[1:]:
+            try:
+                minutes = int(part)
+                break
+            except Exception:
+                pass
+        if minutes is None:
+            minutes = MAX_WAIT_NFP_MINUTES if event_type == "NFP" else MAX_WAIT_DEFAULT_MINUTES
+        state = activate_max_wait_mode(
+            symbol=symbol,
+            minutes=minutes,
+            reason=raw,
+            source=source,
+            event_type=event_type,
+            trigger_text=raw,
+            notify=True
+        )
+        return {"handled": True, "action": "activate_command", "state": state}
+
+    detection = detect_max_wait_from_text(raw)
+    if detection:
+        state = activate_max_wait_mode(
+            symbol=symbol,
+            minutes=detection.get("minutes"),
+            reason=detection.get("reason"),
+            source=source,
+            event_type=detection.get("event_type"),
+            trigger_text=detection.get("trigger_text"),
+            notify=True
+        )
+        return {"handled": True, "action": "activate_from_text", "detection": detection, "state": state}
+
+    return {"handled": False, "action": "ignored"}
+
 def get_price_from_data(data):
     price = to_float(data.get("price"), 0)
 
@@ -1637,6 +2020,7 @@ def runtime_state_payload():
         "warmup_tracker": WARMUP_TRACKER,
         "daily_thesis_state": DAILY_THESIS_STATE,
         "session_thesis_state": SESSION_THESIS_STATE,
+        "max_wait_state": MAX_WAIT_STATE,
         "last_webhook_ts": LAST_WEBHOOK_TS,
         "last_webhook_kind": LAST_WEBHOOK_KIND,
         "last_telegram_ts": LAST_TELEGRAM_TS,
@@ -2240,6 +2624,9 @@ def diag():
         "asia_frozen": bool(ctx.get("asian_frozen")),
         "session_ranges": ctx.get("session_ranges", {}),
         "session_thesis": ctx,
+        "max_wait_mode_enabled": MAX_WAIT_MODE_ENABLED,
+        "max_wait_active": max_wait_active(symbol)[0],
+        "max_wait_state": get_max_wait_state(symbol),
         "fast_active": len(fast_active_trades(symbol)),
         "main_active": active_trades_count(),
         "runtime_state_restored": RUNTIME_STATE_RESTORED,
@@ -2252,6 +2639,115 @@ def heartbeat():
     symbol = str(request.args.get("symbol", "XAUUSD")).upper()
     ok = maybe_system_heartbeat(symbol, {"symbol": symbol})
     return jsonify({"sent": ok, "version": VERSION, "symbol": symbol})
+
+
+
+@app.route("/event_mode", methods=["GET", "POST"])
+def event_mode_manual():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    event_type = str(request.args.get("type", request.args.get("event", "NEWS"))).upper()
+    minutes = request.args.get("minutes")
+    minutes = int(minutes) if str(minutes or "").isdigit() else None
+    reason = request.args.get("reason") or f"manual /event_mode {event_type}"
+    state = activate_max_wait_mode(symbol=symbol, minutes=minutes, reason=reason, source="/event_mode", event_type=event_type, notify=True)
+    return jsonify({"status": "max_wait_active", "version": VERSION, "state": state})
+
+
+@app.route("/max_wait", methods=["GET", "POST"])
+def max_wait_manual():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    event_type = str(request.args.get("type", "NEWS")).upper()
+    minutes = int(request.args.get("minutes", str(MAX_WAIT_NFP_MINUTES if event_type == "NFP" else MAX_WAIT_DEFAULT_MINUTES)))
+    reason = request.args.get("reason") or f"manual max_wait {event_type}"
+    state = activate_max_wait_mode(symbol=symbol, minutes=minutes, reason=reason, source="/max_wait", event_type=event_type, notify=True)
+    return jsonify({"status": "max_wait_active", "version": VERSION, "state": state})
+
+
+@app.route("/max_resume", methods=["GET", "POST"])
+def max_resume_manual():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    state = clear_max_wait_mode(symbol=symbol, reason=request.args.get("reason", "manual_resume"), notify=True)
+    return jsonify({"status": "max_wait_cleared", "version": VERSION, "state": state})
+
+
+@app.route("/max_status")
+def max_status_manual():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    return jsonify({
+        "status": "ok",
+        "version": VERSION,
+        "active": max_wait_active(symbol)[0],
+        "state": get_max_wait_state(symbol),
+        "text": max_wait_status_text(symbol)
+    })
+
+
+@app.route("/telegram_webhook", methods=["POST"])
+def telegram_webhook_control():
+    update = request.get_json(silent=True) or {}
+    if not _telegram_chat_allowed(update):
+        return jsonify({"status": "ignored", "reason": "chat_not_allowed"})
+    text = _telegram_update_text(update)
+    result = handle_telegram_control_text(text, source="telegram_forward", symbol="XAUUSD")
+    return jsonify({"status": "ok", "version": VERSION, "result": result})
+
+
+@app.route("/telegram_set_webhook")
+def telegram_set_webhook():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    if not TELEGRAM_TOKEN:
+        return jsonify({"status": "error", "reason": "TELEGRAM_TOKEN mancante"}), 400
+    target = request.args.get("url")
+    if not target:
+        base = PUBLIC_BASE_URL.strip().rstrip("/") or request.host_url.rstrip("/")
+        target = base + "/telegram_webhook"
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook", json={"url": target}, timeout=10)
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"raw": r.text}
+    return jsonify({"status": "ok" if r.ok else "error", "version": VERSION, "target": target, "telegram": payload})
+
+
+@app.route("/telegram_delete_webhook")
+def telegram_delete_webhook():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    if not TELEGRAM_TOKEN:
+        return jsonify({"status": "error", "reason": "TELEGRAM_TOKEN mancante"}), 400
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=10)
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"raw": r.text}
+    return jsonify({"status": "ok" if r.ok else "error", "version": VERSION, "telegram": payload})
+
+
+@app.route("/telegram_poll")
+def telegram_poll_control():
+    if not _control_request_allowed():
+        return jsonify({"status": "forbidden", "reason": "CONTROL_SECRET richiesto"}), 403
+    if not TELEGRAM_TOKEN:
+        return jsonify({"status": "error", "reason": "TELEGRAM_TOKEN mancante"}), 400
+    limit = int(request.args.get("limit", "10"))
+    r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", params={"limit": limit}, timeout=10)
+    payload = r.json() if r.ok else {"raw": r.text}
+    handled = []
+    for upd in payload.get("result", []) if isinstance(payload, dict) else []:
+        if not _telegram_chat_allowed(upd):
+            continue
+        text = _telegram_update_text(upd)
+        res = handle_telegram_control_text(text, source="telegram_poll", symbol="XAUUSD")
+        if res.get("handled"):
+            handled.append(res)
+    return jsonify({"status": "ok" if r.ok else "error", "version": VERSION, "handled": handled, "telegram": payload})
 
 @app.route("/test")
 def test():
@@ -13840,6 +14336,17 @@ def webhook_fast():
             "reason": "missing BUY/SELL signal"
         }), 400
 
+    max_wait_block, max_wait_ctx = should_block_new_entry_by_max_wait(data.get("symbol", "XAUUSD"), signal, data, is_fast=True)
+    if max_wait_block:
+        maybe_send_max_wait_block_message(data.get("symbol", "XAUUSD"), signal, price=data.get("price"), setup_type="FAST", score=None, is_fast=True)
+        return jsonify({
+            "status": "blocked_fast_max_wait_mode",
+            "signal": signal,
+            "reason": max_wait_ctx.get("reason"),
+            "until": max_wait_ctx.get("until"),
+            "version": VERSION
+        })
+
     try:
         trade, blocked, block_reasons, reasons = build_fast_trade(data, signal)
     except Exception as e:
@@ -14030,6 +14537,33 @@ def webhook():
         # Non modifica la logica decisionale v29.
         fast_updates = handle_fast_price_update(data)
 
+        # v46: MAX WAIT MODE / NFP SHOCK GUARD.
+        # Durante news/NFP il bot continua a gestire trade esistenti, ma non genera nuove entry autonome.
+        wait_active, wait_ctx = max_wait_active(data.get("symbol", "XAUUSD"))
+        if wait_active and MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY:
+            daily_thesis_ctx = update_session_intelligence(data)
+            daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
+            if daily_thesis_alert:
+                send_telegram(daily_thesis_alert)
+            maybe_send_max_wait_observe_alert(data.get("symbol", "XAUUSD"), data)
+            maybe_system_heartbeat(data.get("symbol", "XAUUSD"), data)
+            save_runtime_state(force=False)
+            warmup_ctx = warmup_status(data.get("symbol", "XAUUSD"))
+            return jsonify({
+                "status": "price_checked_max_wait_management_only",
+                "updates": len(updates),
+                "fast_updates": len(fast_updates),
+                "max_wait_active": True,
+                "max_wait_until": wait_ctx.get("until"),
+                "max_wait_reason": wait_ctx.get("reason"),
+                "daily_thesis_status": daily_thesis_ctx.get("status"),
+                "daily_thesis_preferred": daily_thesis_ctx.get("preferred"),
+                "state_warm": warmup_ctx.get("warm"),
+                "warmup_update_count": warmup_ctx.get("update_count"),
+                "active_trades": active_trades_count(),
+                "total_trades": len(OPEN_TRADES)
+            })
+
         # v20 state machine: event spike -> failed retest.
         synthetic_result = process_event_state_machine(data)
 
@@ -14133,6 +14667,16 @@ def webhook():
 
     if signal not in ["BUY", "SELL"]:
         return jsonify({"error": "invalid signal", "received": data}), 400
+
+    max_wait_block, max_wait_ctx = should_block_new_entry_by_max_wait(symbol, signal, data, is_fast=False)
+    if max_wait_block:
+        maybe_send_max_wait_block_message(symbol, signal, price=price, setup_type="PRE_SCORE", score=None, is_fast=False)
+        return jsonify({
+            "status": "blocked_max_wait_mode",
+            "reason": max_wait_ctx.get("reason"),
+            "until": max_wait_ctx.get("until"),
+            "version": VERSION
+        })
 
     score, reasons, active_news_bias, news_reasons, setup_type = score_signal(data, signal)
 
