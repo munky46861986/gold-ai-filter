@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v46 Max Wait Mode + NFP Shock Guard + Session Freeze"
+VERSION = "v47 Session Recovery BUY + Mature NY Fade Guard"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -75,6 +75,7 @@ MAX_DISCIPLINE_A_PLUS_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "BEAR_CAMPAIGN_SELL",
     "BEAR_CONTINUATION_SELL",
@@ -127,6 +128,7 @@ ASIAN_THESIS_BUY_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
 }
 ASIAN_THESIS_SELL_SETUPS = {
@@ -263,6 +265,7 @@ OPPOSITE_TRADE_LOCK_MIN_TP = int(os.getenv("OPPOSITE_TRADE_LOCK_MIN_TP", "1"))
 RECOVERY_LOCK_BUY_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
@@ -285,6 +288,7 @@ BUY_FATIGUE_ALLOW_SETUPS = {
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY"
 }
 
@@ -309,6 +313,7 @@ SETUP_WEIGHTS = {
     "MAX_VIEW_SELL": 8,
     "MAX_RECOVERY_BUY": 5,
     "MAX_FLIP_BUY": 6,
+    "SESSION_RECOVERY_BUY": 7,
     "DEEP_REBOUND_BUY": 5,
     "MAX_DIP_BUY": 4,
     "REVERSAL_BUY": 4,
@@ -363,6 +368,7 @@ CHAOS_BUY_SETUPS = {
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "REVERSAL_BUY"
 }
 
@@ -809,6 +815,7 @@ RECOVERY_DOMINANCE_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY"
@@ -919,6 +926,7 @@ BIG_MOVE_SPECIAL_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
@@ -1039,6 +1047,41 @@ MAX_FLIP_BUY_AFTER_SELL_BE_SETUPS_TO_FLIP = {
     "NORMAL"
 }
 
+# v47: Session Recovery BUY autonomo.
+# Nasce da PRICE_UPDATE quando Europa/NY stanno recuperando davvero dopo un SELL profondo già pagato.
+# È volutamente più anticipato del MAX_FLIP_BUY: non richiede il recupero sopra l'intera vecchia zona SELL,
+# ma richiede sessione BUY + posizione bassa della giornata + conferme bullish + SELL TP5+ recente.
+SESSION_RECOVERY_BUY_ENABLED = os.getenv("SESSION_RECOVERY_BUY_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_RECOVERY_BUY_MIN_SELL_TP = int(os.getenv("SESSION_RECOVERY_BUY_MIN_SELL_TP", "5"))
+SESSION_RECOVERY_BUY_SELL_LOOKBACK_SECONDS = int(os.getenv("SESSION_RECOVERY_BUY_SELL_LOOKBACK_SECONDS", "7200"))
+SESSION_RECOVERY_BUY_COOLDOWN_SECONDS = int(os.getenv("SESSION_RECOVERY_BUY_COOLDOWN_SECONDS", "5400"))
+SESSION_RECOVERY_BUY_MIN_SESSION_MOVE = float(os.getenv("SESSION_RECOVERY_BUY_MIN_SESSION_MOVE", "4.5"))
+SESSION_RECOVERY_BUY_MIN_RECOVERY_FROM_SESSION_LOW = float(os.getenv("SESSION_RECOVERY_BUY_MIN_RECOVERY_FROM_SESSION_LOW", "5.0"))
+SESSION_RECOVERY_BUY_MIN_SESSION_POSITION = float(os.getenv("SESSION_RECOVERY_BUY_MIN_SESSION_POSITION", "0.82"))
+SESSION_RECOVERY_BUY_MAX_DAY_POSITION = float(os.getenv("SESSION_RECOVERY_BUY_MAX_DAY_POSITION", "0.55"))
+SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION = float(os.getenv("SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION", "0.55"))
+SESSION_RECOVERY_BUY_MIN_CONFIRMATIONS = int(os.getenv("SESSION_RECOVERY_BUY_MIN_CONFIRMATIONS", "3"))
+SESSION_RECOVERY_BUY_MIN_SCORE = int(os.getenv("SESSION_RECOVERY_BUY_MIN_SCORE", "14"))
+SESSION_RECOVERY_BUY_ENTRY_HALF_ZONE = float(os.getenv("SESSION_RECOVERY_BUY_ENTRY_HALF_ZONE", "3.0"))
+SESSION_RECOVERY_BUY_SL_POINTS = float(os.getenv("SESSION_RECOVERY_BUY_SL_POINTS", "12.0"))
+SESSION_RECOVERY_BUY_TP_DISTANCES = [6, 8, 11, 14, 17, 19, 22, 26]
+SESSION_RECOVERY_BUY_ALLOWED_STATUSES = {
+    "EUROPE_REVERSAL_BUY",
+    "EUROPE_BREAKOUT_BUY",
+    "NY_REBOUND_BUY",
+    "NY_CONTINUATION_BUY",
+}
+
+# v47: Mature NY Fade Guard.
+# Se New York ha già costruito un vero recovery BUY, MAX_FADE_SELL non può più combatterlo
+# solo con una candela/rejection. Deve esserci micro-BOS bearish oppure una vera zona estrema A+.
+MATURE_NY_FADE_GUARD_ENABLED = os.getenv("MATURE_NY_FADE_GUARD_ENABLED", "TRUE").upper() == "TRUE"
+MATURE_NY_FADE_MIN_SESSION_MOVE = float(os.getenv("MATURE_NY_FADE_MIN_SESSION_MOVE", "6.0"))
+MATURE_NY_FADE_MIN_RECOVERY_FROM_LOW = float(os.getenv("MATURE_NY_FADE_MIN_RECOVERY_FROM_LOW", "8.0"))
+MATURE_NY_FADE_MIN_SESSION_POSITION = float(os.getenv("MATURE_NY_FADE_MIN_SESSION_POSITION", "0.62"))
+MATURE_NY_FADE_EXCEPTION_SCORE = int(os.getenv("MATURE_NY_FADE_EXCEPTION_SCORE", "28"))
+MATURE_NY_FADE_EXCEPTION_MIN_RETRACE = float(os.getenv("MATURE_NY_FADE_EXCEPTION_MIN_RETRACE", "4.0"))
+
 # v33: Runner virtuale.
 # Se un trade TP2/TP3+ si chiude a BE, la tesi resta viva per permettere flip/re-entry.
 VIRTUAL_RUNNER_ENABLED = os.getenv("VIRTUAL_RUNNER_ENABLED", "TRUE").upper() == "TRUE"
@@ -1097,6 +1140,7 @@ MASTER_REGIME_SELL_SPECIAL_SETUPS = {
 
 MASTER_REGIME_REBOUND_BUY_SETUPS = {
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_RECOVERY_BUY"
@@ -1150,6 +1194,7 @@ POST_SL_OPPOSITE_ALLOW_SETUPS = {
     "SYNTHETIC_BEAR_CONTINUATION_SELL",
     "SYNTHETIC_FAILED_RETEST_SELL",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_RECOVERY_BUY"
@@ -1243,6 +1288,7 @@ FAST_BLOCK_OPPOSITE_MAIN_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_DIP_BUY",
     "REVERSAL_BUY",
@@ -1256,6 +1302,7 @@ FAST_MAIN_ALLOWED_SETUPS = {
     "REVERSAL_BUY",
     "MAX_DIP_BUY",
     "MAX_RECOVERY_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "MAX_FADE_SELL",
     "MAX_VIEW_SELL",
@@ -1292,6 +1339,7 @@ CAMPAIGN_PROFIT_LOCK_BUY_AFTER_SELL_ALLOW_SETUPS = {
     "MAX_RECOVERY_BUY",
     "MAX_PULLBACK_REARM_BUY",
     "MAX_FLIP_BUY",
+    "SESSION_RECOVERY_BUY",
     "DEEP_REBOUND_BUY",
     "REVERSAL_BUY",
     "MAX_DIP_BUY"
@@ -10340,7 +10388,7 @@ def maybe_daily_thesis_alert(symbol, data):
         return None
     ctx["last_alert_signature"] = sig
     ctx["last_alert_ts"] = now_ts()
-    return f"""🧭 SESSION THESIS v45 — NON È ENTRY
+    return f"""🧭 SESSION THESIS v47 — NON È ENTRY
 
 Symbol: {symbol}
 
@@ -12856,6 +12904,372 @@ def process_max_flip_buy_after_sell_be(data):
     return result
 
 
+def _session_current_snapshot(thesis_ctx):
+    thesis_ctx = thesis_ctx or {}
+    session = str(thesis_ctx.get("session", "")).upper()
+    ranges = thesis_ctx.get("session_ranges", {}) if isinstance(thesis_ctx.get("session_ranges"), dict) else {}
+    current = ranges.get(session) or {}
+    info = thesis_ctx.get("session_info", {}) if isinstance(thesis_ctx.get("session_info"), dict) else {}
+    return session, current, info
+
+
+def _has_active_buy_trade(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("signal", "")).upper() != "BUY":
+            continue
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            return True, trade
+    return False, None
+
+
+def recent_session_recovery_buy(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    cutoff = now_ts() - SESSION_RECOVERY_BUY_COOLDOWN_SECONDS
+    candidates = []
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if str(trade.get("setup_type", "")).upper() != "SESSION_RECOVERY_BUY":
+            continue
+        if to_float(trade.get("created"), 0) >= cutoff:
+            candidates.append(trade)
+    candidates.sort(key=lambda t: to_float(t.get("created"), 0), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def session_recovery_buy_context(data, thesis_ctx=None):
+    data = data or {}
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+    ctx = {
+        "allow": False,
+        "reason": "",
+        "symbol": symbol,
+        "price": price,
+        "score": 0,
+        "confirmations": 0,
+        "reasons": [],
+        "recent_sell": None,
+    }
+
+    if not SESSION_RECOVERY_BUY_ENABLED:
+        ctx["reason"] = "SESSION_RECOVERY_BUY_ENABLED = FALSE"
+        return ctx
+    if not price:
+        ctx["reason"] = "Prezzo non disponibile"
+        return ctx
+
+    warm = warmup_status(symbol)
+    if STATE_WARMUP_BLOCK_AUTONOMOUS and not warm.get("warm"):
+        ctx["reason"] = "Cold start: recovery BUY autonomo in attesa warmup"
+        return ctx
+
+    previous = recent_session_recovery_buy(symbol)
+    if previous:
+        ctx["reason"] = f"SESSION_RECOVERY_BUY recente già presente #{previous.get('id')}"
+        return ctx
+
+    active_buy, old_buy = _has_active_buy_trade(symbol)
+    if active_buy:
+        ctx["reason"] = f"BUY già attivo #{old_buy.get('id')}"
+        return ctx
+
+    chaos_ctx = get_chaos_context(symbol, data)
+    if chaos_ctx.get("active"):
+        ctx["reason"] = f"Recovery BUY autonomo disattivato in Chaos/Kill: {chaos_ctx.get('reason')}"
+        return ctx
+
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session, current, info = _session_current_snapshot(thesis)
+    preferred = str(thesis.get("preferred", "WAIT")).upper()
+    status = str(thesis.get("status", "")).upper()
+
+    current_move = to_float(info.get("current_move"), to_float(current.get("move"), 0))
+    recovery_from_session_low = to_float(info.get("recovery_session_low"), 0)
+    session_position = to_float(current.get("position"), -1)
+    day_position = to_float(data.get("day_position"), -1)
+    asia_position = to_float(thesis.get("range_position"), -1)
+
+    # NY_BALANCE BUY è ammesso solo quando il recupero è già chiaramente visibile.
+    balance_buy_ok = bool(
+        session == "NEWYORK"
+        and status == "NY_BALANCE"
+        and preferred == "BUY"
+        and current_move >= SESSION_RECOVERY_BUY_MIN_SESSION_MOVE
+        and recovery_from_session_low >= SESSION_RECOVERY_BUY_MIN_RECOVERY_FROM_SESSION_LOW
+        and session_position >= SESSION_RECOVERY_BUY_MIN_SESSION_POSITION
+    )
+    status_ok = status in SESSION_RECOVERY_BUY_ALLOWED_STATUSES or balance_buy_ok
+    if session not in ["EUROPE", "NEWYORK"]:
+        ctx["reason"] = f"Sessione {session}: recovery BUY autonomo solo Europa/NY"
+        return ctx
+    if preferred != "BUY" or not status_ok:
+        ctx["reason"] = f"Session Thesis non pronta BUY: {session} {status} -> {preferred}"
+        return ctx
+
+    if current_move < SESSION_RECOVERY_BUY_MIN_SESSION_MOVE:
+        ctx["reason"] = f"Move sessione insufficiente {round(current_move, 2)}/{SESSION_RECOVERY_BUY_MIN_SESSION_MOVE}"
+        return ctx
+    if recovery_from_session_low < SESSION_RECOVERY_BUY_MIN_RECOVERY_FROM_SESSION_LOW:
+        ctx["reason"] = f"Recovery dal low sessione insufficiente {round(recovery_from_session_low, 2)}/{SESSION_RECOVERY_BUY_MIN_RECOVERY_FROM_SESSION_LOW}"
+        return ctx
+    if session_position >= 0 and session_position < SESSION_RECOVERY_BUY_MIN_SESSION_POSITION:
+        ctx["reason"] = f"Posizione sessione non abbastanza forte {round(session_position, 2)}/{SESSION_RECOVERY_BUY_MIN_SESSION_POSITION}"
+        return ctx
+    if day_position >= 0 and day_position > SESSION_RECOVERY_BUY_MAX_DAY_POSITION:
+        ctx["reason"] = f"Day position troppo alta per comprare recovery {round(day_position, 2)}/{SESSION_RECOVERY_BUY_MAX_DAY_POSITION}"
+        return ctx
+    if asia_position >= 0 and asia_position > SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION:
+        ctx["reason"] = f"Prezzo già troppo alto nel range Asia {round(asia_position, 2)}/{SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION}"
+        return ctx
+
+    recent_sells = get_recent_tp_trades(
+        "SELL",
+        symbol,
+        min_tp=SESSION_RECOVERY_BUY_MIN_SELL_TP,
+        lookback_seconds=SESSION_RECOVERY_BUY_SELL_LOOKBACK_SECONDS,
+    )
+    if not recent_sells:
+        ctx["reason"] = f"Nessun SELL recente pagato TP{SESSION_RECOVERY_BUY_MIN_SELL_TP}+ da trasformare in recovery"
+        return ctx
+    recent_sell = recent_sells[0]
+    ctx["recent_sell"] = recent_sell
+
+    candle_dir = str(data.get("candle_dir", "")).upper()
+    h1 = str(data.get("h1_bias", "")).upper()
+    h4 = str(data.get("h4_bias", "")).upper()
+    daily = str(data.get("day_bias", data.get("daily_bias", ""))).upper()
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    ema50 = str(data.get("ema50_slope", "")).upper()
+    rsi = to_float(data.get("rsi"), 50)
+    lower_wick = to_bool(data.get("lower_wick_strong")) or str(data.get("rejection", "")).upper() == "LOWER_WICK"
+    micro_bull = to_bool(data.get("micro_bos_bull")) or to_bool(data.get("breakout_up"))
+    active_news_bias, _ = get_auto_news_bias()
+
+    reasons = []
+    if candle_dir == "BULL": reasons.append("candela bullish")
+    if h1 == "BUY": reasons.append("H1 BUY")
+    if h4 == "BUY": reasons.append("H4 BUY")
+    if daily == "BUY": reasons.append("Daily BUY")
+    if ema20 == "UP" or to_bool(data.get("close_above_ema20")): reasons.append("EMA20/recovery UP")
+    if ema50 == "UP" or to_bool(data.get("close_above_ema50")): reasons.append("EMA50/recovery UP")
+    if rsi > 48: reasons.append("RSI sopra 48")
+    if lower_wick: reasons.append("low/rejection difeso")
+    if micro_bull: reasons.append("micro breakout bullish")
+    if active_news_bias == "BULLISH_GOLD": reasons.append("news bias bullish gold")
+
+    confirmations = len(reasons)
+    score = 10 + confirmations
+    if int(recent_sell.get("highest_tp", 0) or 0) >= 8:
+        score += 2
+    if status in ["NY_REBOUND_BUY", "NY_CONTINUATION_BUY", "EUROPE_REVERSAL_BUY", "EUROPE_BREAKOUT_BUY"]:
+        score += 1
+
+    ctx.update({
+        "session": session,
+        "status": status,
+        "preferred": preferred,
+        "current_move": current_move,
+        "recovery_from_session_low": recovery_from_session_low,
+        "session_position": session_position,
+        "day_position": day_position,
+        "asia_position": asia_position,
+        "confirmations": confirmations,
+        "score": score,
+        "reasons": reasons,
+        "news_bias": active_news_bias,
+    })
+
+    if confirmations < SESSION_RECOVERY_BUY_MIN_CONFIRMATIONS:
+        ctx["reason"] = f"Conferme bullish {confirmations}/{SESSION_RECOVERY_BUY_MIN_CONFIRMATIONS}"
+        return ctx
+    if score < SESSION_RECOVERY_BUY_MIN_SCORE:
+        ctx["reason"] = f"Score recovery {score}/{SESSION_RECOVERY_BUY_MIN_SCORE}"
+        return ctx
+
+    ctx["allow"] = True
+    ctx["reason"] = f"{session} recovery BUY maturo dopo SELL TP{recent_sell.get('highest_tp', 0)}"
+    return ctx
+
+
+def build_session_recovery_buy_data(data, ctx):
+    price = get_price_from_data(data)
+    if not price:
+        return None, "Prezzo non disponibile"
+    entry_high = round(price, 3)
+    entry_low = round(price - SESSION_RECOVERY_BUY_ENTRY_HALF_ZONE, 3)
+    sl = round(entry_low - SESSION_RECOVERY_BUY_SL_POINTS, 3)
+    out = {
+        "signal": "BUY",
+        "symbol": data.get("symbol", "XAUUSD"),
+        "price": price,
+        "tf": data.get("tf", "1"),
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "sl": sl,
+        "day_position": data.get("day_position"),
+        "synthetic_source": "SESSION_RECOVERY_BUY",
+    }
+    for i, dist in enumerate(SESSION_RECOVERY_BUY_TP_DISTANCES, start=1):
+        out[f"tp{i}"] = round(entry_low + float(dist), 3)
+    return out, None
+
+
+def save_session_recovery_buy_trade(data, ctx):
+    synthetic_data, error = build_session_recovery_buy_data(data, ctx)
+    if error:
+        return None, error
+    trade = save_trade(synthetic_data, "BUY", int(ctx.get("score", SESSION_RECOVERY_BUY_MIN_SCORE)), "SESSION_RECOVERY_BUY")
+    trade["status"] = "OPEN"
+    trade["entered"] = True
+    trade["activated"] = now_ts()
+    trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    trade["synthetic"] = True
+    trade["synthetic_source"] = "SESSION_RECOVERY_BUY"
+    recent_sell = ctx.get("recent_sell") or {}
+    trade["recovery_from_sell_id"] = recent_sell.get("id")
+    trade["recovery_from_sell_tp"] = recent_sell.get("highest_tp")
+    trade["session_recovery_reason"] = ctx.get("reason")
+    save_trades()
+    return trade, None
+
+
+def session_recovery_buy_message(trade, ctx):
+    recent_sell = ctx.get("recent_sell") or {}
+    reason_text = "\n".join([f"- {r}" for r in ctx.get("reasons", [])]) or "- recovery bullish confermato"
+    return f"""🟢 GOLD BUY AUTONOMO {VERSION}
+
+🆔 Trade ID: {trade.get('id')}
+📌 Setup: SESSION_RECOVERY_BUY
+🧠 Origine: Session Intelligence Europa/NY + SELL profondo già pagato
+📍 Entry Zone: {trade.get('entry_low')} - {trade.get('entry_high')}
+🛑 SL: {trade.get('sl')}
+🎯 TP1: {trade.get('tp1')}
+🎯 TP2: {trade.get('tp2')}
+🎯 TP3: {trade.get('tp3')}
+🎯 TP4: {trade.get('tp4')}
+🎯 TP5: {trade.get('tp5')}
+🎯 TP6: {trade.get('tp6')}
+🎯 TP7: {trade.get('tp7')}
+🎯 TP8: {trade.get('tp8')}
+
+📋 COPIA RAPIDA MT4
+Symbol: {trade.get('symbol')}
+Type: BUY
+Entry: {trade.get('entry_low')} - {trade.get('entry_high')}
+SL: {trade.get('sl')}
+TP: {trade.get('tp1')}
+
+🧠 Score recovery: {ctx.get('score')}
+Sessione: {ctx.get('session')} | Thesis: {ctx.get('status')} -> {ctx.get('preferred')}
+Move sessione: {round(to_float(ctx.get('current_move')), 2)}
+Recovery dal low sessione: {round(to_float(ctx.get('recovery_from_session_low')), 2)}
+Pos sessione: {round(to_float(ctx.get('session_position')), 3)}
+
+SELL già pagato:
+- ID: {recent_sell.get('id', 'N/D')}
+- Setup: {recent_sell.get('setup_type', 'N/D')}
+- Highest TP: {recent_sell.get('highest_tp', 0)}
+
+Conferme:
+{reason_text}
+
+Azione:
+Il bot non compra il minimo alla cieca: compra il recovery quando Europa/NY hanno realmente girato BUY.
+"""
+
+
+def process_session_recovery_buy(data, thesis_ctx=None):
+    result = {"triggered": False, "trade_id": None, "reason": "", "ctx": {}}
+    ctx = session_recovery_buy_context(data, thesis_ctx=thesis_ctx)
+    result["ctx"] = ctx
+    result["reason"] = ctx.get("reason")
+    if not ctx.get("allow"):
+        return result
+    trade, error = save_session_recovery_buy_trade(data, ctx)
+    if error:
+        result["reason"] = error
+        return result
+    send_telegram(session_recovery_buy_message(trade, ctx))
+    result["triggered"] = True
+    result["trade_id"] = trade.get("id")
+    return result
+
+
+def mature_ny_fade_guard_context(signal, symbol, setup_type, score, data):
+    result = {"block": False, "reason": "Mature NY Fade Guard: non applicabile", "ctx": {}}
+    if not MATURE_NY_FADE_GUARD_ENABLED:
+        return result
+    if normalize_signal(signal) != "SELL" or str(setup_type or "").upper() != "MAX_FADE_SELL":
+        return result
+
+    thesis = update_session_intelligence(data)
+    session, current, info = _session_current_snapshot(thesis)
+    preferred = str(thesis.get("preferred", "WAIT")).upper()
+    status = str(thesis.get("status", "")).upper()
+    current_move = to_float(info.get("current_move"), to_float(current.get("move"), 0))
+    recovery_from_low = to_float(info.get("recovery_session_low"), 0)
+    retrace_from_high = to_float(info.get("retrace_session_high"), 0)
+    session_position = to_float(current.get("position"), -1)
+
+    mature_buy = bool(
+        session == "NEWYORK"
+        and preferred == "BUY"
+        and status in ["NY_REBOUND_BUY", "NY_CONTINUATION_BUY"]
+        and current_move >= MATURE_NY_FADE_MIN_SESSION_MOVE
+        and recovery_from_low >= MATURE_NY_FADE_MIN_RECOVERY_FROM_LOW
+        and (session_position < 0 or session_position >= MATURE_NY_FADE_MIN_SESSION_POSITION)
+    )
+    if not mature_buy:
+        result["reason"] = "NY recovery BUY non ancora maturo"
+        result["ctx"] = thesis
+        return result
+
+    micro_bos_bear = to_bool(data.get("micro_bos_bear")) or to_bool(data.get("breakout_down"))
+    upper_rejection = str(data.get("rejection", "")).upper() == "UPPER_WICK" or to_bool(data.get("upper_wick_strong"))
+    high_zone = (
+        to_bool(data.get("near_m15_high"))
+        or to_bool(data.get("near_day_high"))
+        or to_float(data.get("day_position"), -1) >= 0.82
+    )
+    exceptional = bool(
+        int(score or 0) >= MATURE_NY_FADE_EXCEPTION_SCORE
+        and high_zone
+        and upper_rejection
+        and retrace_from_high >= MATURE_NY_FADE_EXCEPTION_MIN_RETRACE
+    )
+    allow_fade = bool(micro_bos_bear or exceptional)
+
+    result["ctx"] = {
+        "session": session,
+        "status": status,
+        "preferred": preferred,
+        "current_move": current_move,
+        "recovery_from_low": recovery_from_low,
+        "retrace_from_high": retrace_from_high,
+        "session_position": session_position,
+        "micro_bos_bear": micro_bos_bear,
+        "high_zone": high_zone,
+        "upper_rejection": upper_rejection,
+        "exceptional": exceptional,
+        "score": int(score or 0),
+    }
+    if allow_fade:
+        result["reason"] = "MAX_FADE_SELL ammesso: vero cambio bearish/micro-BOS o eccezione A+"
+        return result
+
+    result["block"] = True
+    result["reason"] = (
+        f"NY_REBOUND_BUY maturo: move {round(current_move, 2)}, recovery {round(recovery_from_low, 2)}, "
+        f"pos {round(session_position, 2)}; MAX_FADE_SELL richiede micro-BOS bearish o score "
+        f"{MATURE_NY_FADE_EXCEPTION_SCORE}+ da vera zona alta"
+    )
+    return result
+
+
 def fast_pause_status(symbol=None):
     symbol = str(symbol or "XAUUSD").upper()
     consecutive = fast_consecutive_sl_count(symbol)
@@ -14576,6 +14990,11 @@ def webhook():
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
 
+        # v47: Session Recovery BUY autonomo.
+        # Può anticipare il vecchio MAX_FLIP_BUY quando Europa/NY hanno già girato BUY
+        # dopo un SELL TP5+ ma il prezzo non ha ancora invalidato tutta la vecchia zona SELL.
+        session_recovery_buy_result = process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
+
         # v23: failed recovery prima del bear impulse completo.
         pre_bear_result = process_pre_bear_thesis(data)
         deep_extension_ctx = get_deep_extension_context(
@@ -14627,6 +15046,9 @@ def webhook():
             "daily_thesis_status": daily_thesis_ctx.get("status"),
             "daily_thesis_preferred": daily_thesis_ctx.get("preferred"),
             "daily_thesis_reason": daily_thesis_ctx.get("reason"),
+            "session_recovery_buy_triggered": session_recovery_buy_result.get("triggered"),
+            "session_recovery_buy_trade_id": session_recovery_buy_result.get("trade_id"),
+            "session_recovery_buy_reason": session_recovery_buy_result.get("reason"),
             "max_flip_buy_triggered": max_flip_buy_result.get("triggered"),
             "max_flip_buy_trade_id": max_flip_buy_result.get("trade_id"),
             "max_flip_buy_reason": max_flip_buy_result.get("reason"),
@@ -14699,6 +15121,46 @@ def webhook():
         data,
         campaign_decision
     )
+
+    # v47: se NY è già in recovery BUY maturo, MAX_FADE_SELL non passa più
+    # solo con una rejection locale. Serve micro-BOS bearish o eccezione A+ da zona alta.
+    mature_fade_guard = mature_ny_fade_guard_context(signal, symbol, setup_type, score, data)
+    if mature_fade_guard.get("block"):
+        guard_ctx = mature_fade_guard.get("ctx", {})
+        text = f"""🟢🛡 SELL BLOCCATO {VERSION}
+
+Motivo: Mature NY Rebound BUY Guard
+
+Segnale: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score finale: {score}
+
+Sessione: {guard_ctx.get('session')}
+Thesis: {guard_ctx.get('status')} -> {guard_ctx.get('preferred')}
+Move NY: {round(to_float(guard_ctx.get('current_move')), 2)}
+Recovery dal low NY: {round(to_float(guard_ctx.get('recovery_from_low')), 2)}
+Retrace dal massimo NY: {round(to_float(guard_ctx.get('retrace_from_high')), 2)}
+Posizione NY: {round(to_float(guard_ctx.get('session_position')), 3)}
+Micro BOS bearish: {guard_ctx.get('micro_bos_bear')}
+Zona alta vera: {guard_ctx.get('high_zone')}
+
+Dettaglio:
+{mature_fade_guard.get('reason')}
+
+Azione:
+Il bot non combatte più un NY_REBOUND_BUY maturo con un semplice fade locale.
+Aspetta vera rottura bearish oppure zona Max A+.
+"""
+        send_telegram(text)
+        return jsonify({
+            "status": "blocked_mature_ny_rebound_fade",
+            "score": score,
+            "setup_type": setup_type,
+            "reason": mature_fade_guard.get("reason"),
+            "guard": guard_ctx,
+        })
 
     # v25: decisione Smart Kill PRE_BEAR calcolata una sola volta.
     _, precomputed_extreme_info = extreme_zone_info(signal, data)
