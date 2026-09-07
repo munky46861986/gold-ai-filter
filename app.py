@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47 Session Recovery BUY + Mature NY Fade Guard"
+VERSION = "v47.1 Session Recovery BUY + Mature NY Fade Guard Hotfix"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -12977,15 +12977,27 @@ def session_recovery_buy_context(data, thesis_ctx=None):
         ctx["reason"] = f"BUY già attivo #{old_buy.get('id')}"
         return ctx
 
-    chaos_ctx = get_chaos_context(symbol, data)
-    if chaos_ctx.get("active"):
-        ctx["reason"] = f"Recovery BUY autonomo disattivato in Chaos/Kill: {chaos_ctx.get('reason')}"
-        return ctx
-
+    # Hotfix v47.1: prima verifico la sessione.
+    # Così i PRICE_UPDATE di Late US/Off Hours non entrano nei controlli autonomi BUY.
     thesis = thesis_ctx or update_session_intelligence(data)
     session, current, info = _session_current_snapshot(thesis)
     preferred = str(thesis.get("preferred", "WAIT")).upper()
     status = str(thesis.get("status", "")).upper()
+
+    if session not in ["EUROPE", "NEWYORK"]:
+        ctx["reason"] = f"Sessione {session}: recovery BUY autonomo solo Europa/NY"
+        return ctx
+
+    try:
+        chaos_ctx = get_chaos_context(symbol, data)
+    except Exception as e:
+        # Un controllo secondario non deve mai far fallire il webhook PRICE_UPDATE.
+        print(f"[v47.1] chaos check recovery BUY skipped: {e}", flush=True)
+        chaos_ctx = {"active": False, "reason": f"chaos check skipped: {e}"}
+
+    if chaos_ctx.get("active"):
+        ctx["reason"] = f"Recovery BUY autonomo disattivato in Chaos/Kill: {chaos_ctx.get('reason')}"
+        return ctx
 
     current_move = to_float(info.get("current_move"), to_float(current.get("move"), 0))
     recovery_from_session_low = to_float(info.get("recovery_session_low"), 0)
@@ -13003,9 +13015,6 @@ def session_recovery_buy_context(data, thesis_ctx=None):
         and session_position >= SESSION_RECOVERY_BUY_MIN_SESSION_POSITION
     )
     status_ok = status in SESSION_RECOVERY_BUY_ALLOWED_STATUSES or balance_buy_ok
-    if session not in ["EUROPE", "NEWYORK"]:
-        ctx["reason"] = f"Sessione {session}: recovery BUY autonomo solo Europa/NY"
-        return ctx
     if preferred != "BUY" or not status_ok:
         ctx["reason"] = f"Session Thesis non pronta BUY: {session} {status} -> {preferred}"
         return ctx
@@ -14993,7 +15002,16 @@ def webhook():
         # v47: Session Recovery BUY autonomo.
         # Può anticipare il vecchio MAX_FLIP_BUY quando Europa/NY hanno già girato BUY
         # dopo un SELL TP5+ ma il prezzo non ha ancora invalidato tutta la vecchia zona SELL.
-        session_recovery_buy_result = process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
+        try:
+            session_recovery_buy_result = process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
+        except Exception as e:
+            # Fail-safe: la nuova intelligenza BUY non deve MAI interrompere PRICE_UPDATE.
+            print(f"[v47.1] SESSION_RECOVERY_BUY error: {type(e).__name__}: {e}", flush=True)
+            session_recovery_buy_result = {
+                "triggered": False,
+                "trade_id": None,
+                "reason": f"hotfix fail-safe: {type(e).__name__}: {e}"
+            }
 
         # v23: failed recovery prima del bear impulse completo.
         pre_bear_result = process_pre_bear_thesis(data)
@@ -15124,7 +15142,13 @@ def webhook():
 
     # v47: se NY è già in recovery BUY maturo, MAX_FADE_SELL non passa più
     # solo con una rejection locale. Serve micro-BOS bearish o eccezione A+ da zona alta.
-    mature_fade_guard = mature_ny_fade_guard_context(signal, symbol, setup_type, score, data)
+    try:
+        mature_fade_guard = mature_ny_fade_guard_context(signal, symbol, setup_type, score, data)
+    except Exception as e:
+        # Fail-safe: se il nuovo guard ha un dato inatteso, torna alla pipeline v46 invece di dare HTTP 500.
+        print(f"[v47.1] MATURE_NY_FADE_GUARD error: {type(e).__name__}: {e}", flush=True)
+        mature_fade_guard = {"block": False, "reason": f"hotfix fail-safe: {type(e).__name__}: {e}", "ctx": {}}
+
     if mature_fade_guard.get("block"):
         guard_ctx = mature_fade_guard.get("ctx", {})
         text = f"""🟢🛡 SELL BLOCCATO {VERSION}
