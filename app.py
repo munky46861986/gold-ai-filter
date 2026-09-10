@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.1 Session Recovery BUY + Mature NY Fade Guard Hotfix"
+VERSION = "v47.2 Session Recovery BUY + Mature NY Fade Guard + Thesis Fast 3P"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -1081,6 +1081,31 @@ MATURE_NY_FADE_MIN_RECOVERY_FROM_LOW = float(os.getenv("MATURE_NY_FADE_MIN_RECOV
 MATURE_NY_FADE_MIN_SESSION_POSITION = float(os.getenv("MATURE_NY_FADE_MIN_SESSION_POSITION", "0.62"))
 MATURE_NY_FADE_EXCEPTION_SCORE = int(os.getenv("MATURE_NY_FADE_EXCEPTION_SCORE", "28"))
 MATURE_NY_FADE_EXCEPTION_MIN_RETRACE = float(os.getenv("MATURE_NY_FADE_EXCEPTION_MIN_RETRACE", "4.0"))
+
+# v47.2: THESIS FAST v1 — scalp 3 punti guidato dalla Session Thesis.
+# Motore TERZO e separato: non modifica MAIN, FAST 2P, Session Recovery BUY o Pine v47.
+# Usa soltanto i PRICE_UPDATE già inviati a chiusura candela dal Pine.
+# Default prudente: solo NEWYORK, un trade per gamba BUY/SELL della tesi, cooldown 10 minuti.
+THESIS_FAST_VERSION = "Thesis Fast v1 - 3 Point Session Trigger"
+THESIS_FAST_ENABLED = os.getenv("THESIS_FAST_ENABLED", "TRUE").upper() == "TRUE"
+THESIS_FAST_TRADES_FILE = os.getenv("THESIS_FAST_TRADES_FILE", "thesis_fast_trades.json")
+THESIS_FAST_TP_POINTS = float(os.getenv("THESIS_FAST_TP_POINTS", "3.0"))
+THESIS_FAST_SL_POINTS = max(float(os.getenv("THESIS_FAST_SL_POINTS", "6.0")), 4.5)
+THESIS_FAST_COOLDOWN_SECONDS = int(os.getenv("THESIS_FAST_COOLDOWN_SECONDS", "600"))
+THESIS_FAST_MAX_ACTIVE_TRADES = int(os.getenv("THESIS_FAST_MAX_ACTIVE_TRADES", "1"))
+THESIS_FAST_MAX_TRADES_PER_DAY = int(os.getenv("THESIS_FAST_MAX_TRADES_PER_DAY", "8"))
+THESIS_FAST_NEWYORK_ONLY = os.getenv("THESIS_FAST_NEWYORK_ONLY", "TRUE").upper() == "TRUE"
+THESIS_FAST_REQUIRE_CANDLE_CONFIRM = os.getenv("THESIS_FAST_REQUIRE_CANDLE_CONFIRM", "TRUE").upper() == "TRUE"
+THESIS_FAST_OPEN_CONFIRM_BUFFER = float(os.getenv("THESIS_FAST_OPEN_CONFIRM_BUFFER", "0.4"))
+THESIS_FAST_MIN_OPEN_EXCURSION = float(os.getenv("THESIS_FAST_MIN_OPEN_EXCURSION", "2.0"))
+THESIS_FAST_MIN_HIGH_REJECTION = float(os.getenv("THESIS_FAST_MIN_HIGH_REJECTION", "3.0"))
+THESIS_FAST_MAX_HIGH_REJECTION = float(os.getenv("THESIS_FAST_MAX_HIGH_REJECTION", "12.0"))
+THESIS_FAST_MIN_LOW_REBOUND = float(os.getenv("THESIS_FAST_MIN_LOW_REBOUND", "8.0"))
+THESIS_FAST_MAX_LOW_REBOUND = float(os.getenv("THESIS_FAST_MAX_LOW_REBOUND", "14.0"))
+THESIS_FAST_BUY_STATUSES = {"NY_REBOUND_BUY", "NY_CONTINUATION_BUY"}
+THESIS_FAST_SELL_STATUSES = {"NY_FADE_SELL", "NY_CONTINUATION_SELL"}
+THESIS_FAST_TRADES = []
+THESIS_FAST_STATE = {}
 
 # v33: Runner virtuale.
 # Se un trade TP2/TP3+ si chiude a BE, la tesi resta viva per permettere flip/re-entry.
@@ -2366,6 +2391,12 @@ def health():
         "official_trade_label_enabled": OFFICIAL_TRADE_LABEL_ENABLED,
         "fast_version": FAST_VERSION,
         "fast_engine_enabled": FAST_ENGINE_ENABLED,
+        "thesis_fast_version": THESIS_FAST_VERSION,
+        "thesis_fast_enabled": THESIS_FAST_ENABLED,
+        "thesis_fast_total_trades": len(THESIS_FAST_TRADES),
+        "thesis_fast_active_trades": len(thesis_fast_active_trades()),
+        "thesis_fast_tp_points": THESIS_FAST_TP_POINTS,
+        "thesis_fast_sl_points": THESIS_FAST_SL_POINTS,
         "max_discipline_enabled": MAX_DISCIPLINE_ENABLED,
         "max_discipline_window_seconds": MAX_DISCIPLINE_WINDOW_SECONDS,
         "max_discipline_max_official_per_direction": MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION,
@@ -2676,6 +2707,9 @@ def diag():
         "max_wait_active": max_wait_active(symbol)[0],
         "max_wait_state": get_max_wait_state(symbol),
         "fast_active": len(fast_active_trades(symbol)),
+        "thesis_fast_active": len(thesis_fast_active_trades(symbol)),
+        "thesis_fast_today": len(thesis_fast_today_trades(symbol)),
+        "thesis_fast_state": THESIS_FAST_STATE.get(symbol, {}),
         "main_active": active_trades_count(),
         "runtime_state_restored": RUNTIME_STATE_RESTORED,
         "runtime_state_file": RUNTIME_STATE_FILE,
@@ -13279,6 +13313,510 @@ def mature_ny_fade_guard_context(signal, symbol, setup_type, score, data):
     return result
 
 
+# =========================
+# v47.2 THESIS FAST 3P — MOTORE SEPARATO
+# =========================
+
+def load_thesis_fast_trades():
+    global THESIS_FAST_TRADES
+    if not os.path.exists(THESIS_FAST_TRADES_FILE):
+        THESIS_FAST_TRADES = []
+        return
+    try:
+        with open(THESIS_FAST_TRADES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        THESIS_FAST_TRADES = data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[v47.2] thesis fast load skipped: {e}", flush=True)
+        THESIS_FAST_TRADES = []
+
+
+def save_thesis_fast_trades():
+    try:
+        with open(THESIS_FAST_TRADES_FILE, "w", encoding="utf-8") as f:
+            json.dump(THESIS_FAST_TRADES, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[v47.2] thesis fast save skipped: {e}", flush=True)
+        return False
+
+
+def thesis_fast_today_trades(symbol=None):
+    symbol = str(symbol or "").upper()
+    day = today_key()
+    out = []
+    for trade in THESIS_FAST_TRADES:
+        if symbol and str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        created_local = str(trade.get("created_local", ""))
+        if created_local.startswith(day):
+            out.append(trade)
+    return out
+
+
+def thesis_fast_active_trades(symbol=None):
+    symbol = str(symbol or "").upper()
+    out = []
+    for trade in THESIS_FAST_TRADES:
+        if symbol and str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            out.append(trade)
+    return out
+
+
+def _thesis_fast_state(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    day = today_key()
+    state = THESIS_FAST_STATE.get(symbol)
+    if not isinstance(state, dict) or state.get("day_key") != day:
+        state = {
+            "day_key": day,
+            "leg_id": 0,
+            "last_preferred": None,
+            "last_price": None,
+            "last_status": None,
+            "traded_leg_id": None,
+            "last_trigger": None,
+            "updated": now_ts(),
+        }
+        THESIS_FAST_STATE[symbol] = state
+    return state
+
+
+def _thesis_fast_note_preferred(state, preferred, status):
+    preferred = str(preferred or "WAIT").upper()
+    status = str(status or "").upper()
+    previous = str(state.get("last_preferred") or "").upper()
+    if preferred in ["BUY", "SELL"] and preferred != previous:
+        state["leg_id"] = int(state.get("leg_id", 0)) + 1
+        state["traded_leg_id"] = None
+    if preferred in ["BUY", "SELL"]:
+        state["last_preferred"] = preferred
+    state["last_status"] = status
+    state["updated"] = now_ts()
+    return int(state.get("leg_id", 0))
+
+
+def _thesis_fast_recent_trade(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    cutoff = now_ts() - THESIS_FAST_COOLDOWN_SECONDS
+    candidates = [
+        t for t in THESIS_FAST_TRADES
+        if str(t.get("symbol", "")).upper() == symbol
+        and to_float(t.get("created"), 0) >= cutoff
+    ]
+    candidates.sort(key=lambda t: to_float(t.get("created"), 0), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _thesis_fast_has_main_same_direction(symbol, signal):
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+    for trade in OPEN_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if normalize_signal(trade.get("signal")) != signal:
+            continue
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            return True, trade
+    return False, None
+
+
+def _thesis_fast_has_fast_same_direction(symbol, signal):
+    symbol = str(symbol or "XAUUSD").upper()
+    signal = normalize_signal(signal)
+    for trade in FAST_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if normalize_signal(trade.get("signal")) != signal:
+            continue
+        if trade.get("status") in ["PENDING", "OPEN"]:
+            return True, trade
+    return False, None
+
+
+def thesis_fast_context(data, thesis_ctx=None):
+    data = data or {}
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+    ctx = {
+        "allow": False,
+        "reason": "",
+        "symbol": symbol,
+        "price": price,
+        "signal": None,
+        "trigger": None,
+        "leg_id": None,
+    }
+
+    state = _thesis_fast_state(symbol)
+    previous_price = to_float(state.get("last_price"), 0)
+
+    if not THESIS_FAST_ENABLED:
+        ctx["reason"] = "THESIS_FAST_ENABLED = FALSE"
+        return ctx
+    if not price:
+        ctx["reason"] = "Prezzo non disponibile"
+        return ctx
+
+    warm = warmup_status(symbol)
+    if STATE_WARMUP_BLOCK_AUTONOMOUS and not warm.get("warm"):
+        ctx["reason"] = "Cold start: Thesis Fast in attesa warmup"
+        return ctx
+
+    wait_active, _ = max_wait_active(symbol)
+    if wait_active:
+        ctx["reason"] = "Max Wait / Shock Guard attivo: nessuna nuova Thesis Fast"
+        return ctx
+
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session, current, info = _session_current_snapshot(thesis)
+    preferred = str(thesis.get("preferred", "WAIT")).upper()
+    status = str(thesis.get("status", "")).upper()
+    leg_id = _thesis_fast_note_preferred(state, preferred, status)
+    ctx["leg_id"] = leg_id
+
+    if THESIS_FAST_NEWYORK_ONLY and session != "NEWYORK":
+        ctx["reason"] = f"Sessione {session}: Thesis Fast default solo New York"
+        return ctx
+    if session not in ["EUROPE", "NEWYORK"]:
+        ctx["reason"] = f"Sessione {session}: Thesis Fast non attivo"
+        return ctx
+
+    if preferred == "BUY" and status in THESIS_FAST_BUY_STATUSES:
+        signal = "BUY"
+    elif preferred == "SELL" and status in THESIS_FAST_SELL_STATUSES:
+        signal = "SELL"
+    else:
+        ctx["reason"] = f"Thesis non operativa per 3P: {status} -> {preferred}"
+        return ctx
+    ctx["signal"] = signal
+
+    if state.get("traded_leg_id") == leg_id:
+        ctx["reason"] = f"Gamba thesis {leg_id} già utilizzata"
+        return ctx
+
+    if len(thesis_fast_active_trades(symbol)) >= THESIS_FAST_MAX_ACTIVE_TRADES:
+        ctx["reason"] = "Thesis Fast già attiva"
+        return ctx
+    if len(thesis_fast_today_trades(symbol)) >= THESIS_FAST_MAX_TRADES_PER_DAY:
+        ctx["reason"] = f"Limite Thesis Fast giornaliero {THESIS_FAST_MAX_TRADES_PER_DAY} raggiunto"
+        return ctx
+
+    recent = _thesis_fast_recent_trade(symbol)
+    if recent:
+        age = int(max(0, now_ts() - to_float(recent.get("created"), 0)))
+        ctx["reason"] = f"Cooldown Thesis Fast: ultimo trade {age}s fa / {THESIS_FAST_COOLDOWN_SECONDS}s"
+        return ctx
+
+    # Non duplica un MAIN o FAST 2P già attivo nella stessa direzione.
+    main_same, main_trade = _thesis_fast_has_main_same_direction(symbol, signal)
+    if main_same:
+        ctx["reason"] = f"MAIN {signal} già attivo #{main_trade.get('id')}: evito layering"
+        return ctx
+    fast_same, fast_trade = _thesis_fast_has_fast_same_direction(symbol, signal)
+    if fast_same:
+        ctx["reason"] = f"FAST 2P {signal} già attivo #{fast_trade.get('id')}: evito duplicato"
+        return ctx
+
+    cur_open = to_float(current.get("open"), 0)
+    cur_high = to_float(current.get("high"), 0)
+    cur_low = to_float(current.get("low"), 0)
+    cur_position = to_float(current.get("position"), -1)
+    current_move = to_float(info.get("current_move"), to_float(current.get("move"), 0))
+    retrace_high = to_float(info.get("retrace_session_high"), (cur_high - price) if cur_high else 0)
+    recovery_low = to_float(info.get("recovery_session_low"), (price - cur_low) if cur_low else 0)
+
+    candle_dir = str(data.get("candle_dir", "")).upper()
+    rejection = str(data.get("rejection", "")).upper()
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    lower_wick = to_bool(data.get("lower_wick_strong")) or rejection == "LOWER_WICK"
+    upper_wick = to_bool(data.get("upper_wick_strong")) or rejection == "UPPER_WICK"
+    bull_confirm = bool(candle_dir == "BULL" or lower_wick or ema20 == "UP")
+    bear_confirm = bool(candle_dir == "BEAR" or upper_wick or ema20 == "DOWN")
+
+    trigger = None
+    detail = None
+
+    if signal == "BUY":
+        low_rebound = bool(
+            cur_low
+            and recovery_low >= THESIS_FAST_MIN_LOW_REBOUND
+            and recovery_low <= THESIS_FAST_MAX_LOW_REBOUND
+            and bull_confirm
+        )
+        open_reclaim = bool(
+            cur_open
+            and cur_low <= cur_open - THESIS_FAST_MIN_OPEN_EXCURSION
+            and price >= cur_open + THESIS_FAST_OPEN_CONFIRM_BUFFER
+            and (previous_price <= 0 or previous_price < cur_open + THESIS_FAST_OPEN_CONFIRM_BUFFER)
+            and bull_confirm
+        )
+        if low_rebound:
+            trigger = "NY_LOW_REBOUND_BUY"
+            detail = f"recovery dal low {round(recovery_low, 2)} punti"
+        elif open_reclaim:
+            trigger = "NY_OPEN_RECLAIM_BUY"
+            detail = f"NY open {round(cur_open, 3)} recuperato"
+
+    if signal == "SELL":
+        high_rejection = bool(
+            cur_high
+            and retrace_high >= THESIS_FAST_MIN_HIGH_REJECTION
+            and retrace_high <= THESIS_FAST_MAX_HIGH_REJECTION
+            and bear_confirm
+        )
+        open_loss = bool(
+            cur_open
+            and cur_high >= cur_open + THESIS_FAST_MIN_OPEN_EXCURSION
+            and price <= cur_open - THESIS_FAST_OPEN_CONFIRM_BUFFER
+            and (previous_price <= 0 or previous_price > cur_open - THESIS_FAST_OPEN_CONFIRM_BUFFER)
+            and bear_confirm
+        )
+        if high_rejection:
+            trigger = "NY_HIGH_REJECTION_SELL"
+            detail = f"retrace dal massimo {round(retrace_high, 2)} punti"
+        elif open_loss:
+            trigger = "NY_OPEN_LOSS_SELL"
+            detail = f"NY open {round(cur_open, 3)} perso"
+
+    if THESIS_FAST_REQUIRE_CANDLE_CONFIRM:
+        if signal == "BUY" and not bull_confirm:
+            trigger = None
+            detail = None
+        if signal == "SELL" and not bear_confirm:
+            trigger = None
+            detail = None
+
+    ctx.update({
+        "session": session,
+        "preferred": preferred,
+        "status": status,
+        "session_open": cur_open,
+        "session_high": cur_high,
+        "session_low": cur_low,
+        "session_position": cur_position,
+        "current_move": current_move,
+        "retrace_high": retrace_high,
+        "recovery_low": recovery_low,
+        "previous_price": previous_price,
+        "bull_confirm": bull_confirm,
+        "bear_confirm": bear_confirm,
+        "trigger": trigger,
+        "trigger_detail": detail,
+    })
+
+    if not trigger:
+        ctx["reason"] = f"{status} coerente ma manca trigger livello confermato"
+        return ctx
+
+    ctx["allow"] = True
+    ctx["reason"] = f"{status} -> {signal}: {detail}"
+    return ctx
+
+
+def build_thesis_fast_trade(data, ctx):
+    price = get_price_from_data(data)
+    if not price:
+        return None, "Prezzo non disponibile"
+    signal = normalize_signal(ctx.get("signal"))
+    if signal not in ["BUY", "SELL"]:
+        return None, "Direzione Thesis Fast non valida"
+    entry = round(price, 2)
+    if signal == "BUY":
+        tp = round(entry + THESIS_FAST_TP_POINTS, 2)
+        sl = round(entry - THESIS_FAST_SL_POINTS, 2)
+    else:
+        tp = round(entry - THESIS_FAST_TP_POINTS, 2)
+        sl = round(entry + THESIS_FAST_SL_POINTS, 2)
+    trade = {
+        "id": str(int(time.time() * 1000)),
+        "symbol": str(data.get("symbol", "XAUUSD")).upper(),
+        "signal": signal,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "tp_points": THESIS_FAST_TP_POINTS,
+        "sl_points": THESIS_FAST_SL_POINTS,
+        "status": "OPEN",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "activated": now_ts(),
+        "activated_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "closed": None,
+        "closed_local": None,
+        "thesis_fast_version": THESIS_FAST_VERSION,
+        "source_version": VERSION,
+        "thesis_status": ctx.get("status"),
+        "thesis_preferred": ctx.get("preferred"),
+        "trigger": ctx.get("trigger"),
+        "trigger_detail": ctx.get("trigger_detail"),
+        "leg_id": ctx.get("leg_id"),
+        "session_open": ctx.get("session_open"),
+        "session_high": ctx.get("session_high"),
+        "session_low": ctx.get("session_low"),
+    }
+    return trade, None
+
+
+def thesis_fast_message(trade, ctx):
+    return f"""⚡🧭 {THESIS_FAST_VERSION}
+
+THESIS FAST 3 PUNTI — OPERAZIONE UFFICIALE 🚀
+{trade.get('symbol')} {trade.get('signal')}
+
+Entry: {fmt_price(trade.get('entry'))}
+SL: {fmt_price(trade.get('sl'))}
+TP1: {fmt_price(trade.get('tp'))}
+
+📋 COPIA RAPIDA MT4
+Symbol: {trade.get('symbol')}
+Type: {trade.get('signal')}
+Entry: {fmt_price(trade.get('entry'))}
+SL: {fmt_price(trade.get('sl'))}
+TP: {fmt_price(trade.get('tp'))}
+
+🧭 Thesis: {ctx.get('status')} -> {ctx.get('preferred')}
+🎯 Trigger: {ctx.get('trigger')}
+Dettaglio: {ctx.get('trigger_detail')}
+NY Open: {round(to_float(ctx.get('session_open')), 3)}
+NY High: {round(to_float(ctx.get('session_high')), 3)}
+NY Low: {round(to_float(ctx.get('session_low')), 3)}
+
+Regola:
+- 1 trade massimo per gamba della tesi
+- target rapido {THESIS_FAST_TP_POINTS} punti
+- MAIN e FAST 2P restano indipendenti
+"""
+
+
+def process_thesis_fast(data, thesis_ctx=None):
+    result = {"triggered": False, "trade_id": None, "reason": "", "ctx": {}}
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    state = _thesis_fast_state(symbol)
+    try:
+        ctx = thesis_fast_context(data, thesis_ctx=thesis_ctx)
+        result["ctx"] = ctx
+        result["reason"] = ctx.get("reason")
+        if not ctx.get("allow"):
+            return result
+        trade, error = build_thesis_fast_trade(data, ctx)
+        if error:
+            result["reason"] = error
+            return result
+        THESIS_FAST_TRADES.append(trade)
+        state["traded_leg_id"] = ctx.get("leg_id")
+        state["last_trigger"] = ctx.get("trigger")
+        save_thesis_fast_trades()
+        send_telegram(thesis_fast_message(trade, ctx))
+        result["triggered"] = True
+        result["trade_id"] = trade.get("id")
+        return result
+    finally:
+        price = get_price_from_data(data or {})
+        if price:
+            state["last_price"] = price
+            state["updated"] = now_ts()
+
+
+def close_thesis_fast_trade(trade, status):
+    trade["status"] = status
+    trade["closed"] = now_ts()
+    trade["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def handle_thesis_fast_price_update(data):
+    high = to_float((data or {}).get("high"), 0)
+    low = to_float((data or {}).get("low"), 0)
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    if not high or not low:
+        price = get_price_from_data(data or {})
+        high = high or price
+        low = low or price
+
+    updates = []
+    changed = False
+    for trade in THESIS_FAST_TRADES:
+        if str(trade.get("symbol", "")).upper() != symbol:
+            continue
+        if trade.get("status") not in ["PENDING", "OPEN"]:
+            continue
+        signal = normalize_signal(trade.get("signal"))
+        entry = to_float(trade.get("entry"), 0)
+        tp = to_float(trade.get("tp"), 0)
+        sl = to_float(trade.get("sl"), 0)
+        tid = trade.get("id")
+
+        # Conservativo: se nella stessa candela tocca SL e TP, considero prima lo SL.
+        if signal == "BUY":
+            if low <= sl:
+                close_thesis_fast_trade(trade, "LOSS")
+                changed = True
+                updates.append(f"❌ THESIS FAST #{tid} BUY SL\nSL: {fmt_price(sl)}")
+                continue
+            if high >= tp:
+                close_thesis_fast_trade(trade, "WIN")
+                changed = True
+                updates.append(
+                    f"✅ THESIS FAST #{tid} BUY TP PRESO\n"
+                    f"Entry: {fmt_price(entry)}\nTP: {fmt_price(tp)}\n+{fmt_price(THESIS_FAST_TP_POINTS)} punti"
+                )
+                continue
+        elif signal == "SELL":
+            if high >= sl:
+                close_thesis_fast_trade(trade, "LOSS")
+                changed = True
+                updates.append(f"❌ THESIS FAST #{tid} SELL SL\nSL: {fmt_price(sl)}")
+                continue
+            if low <= tp:
+                close_thesis_fast_trade(trade, "WIN")
+                changed = True
+                updates.append(
+                    f"✅ THESIS FAST #{tid} SELL TP PRESO\n"
+                    f"Entry: {fmt_price(entry)}\nTP: {fmt_price(tp)}\n+{fmt_price(THESIS_FAST_TP_POINTS)} punti"
+                )
+                continue
+
+    if changed:
+        save_thesis_fast_trades()
+    for msg in updates:
+        send_telegram(msg)
+    return updates
+
+
+@app.route("/thesis_fast_status")
+def thesis_fast_status_route():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    wins = sum(1 for t in thesis_fast_today_trades(symbol) if t.get("status") == "WIN")
+    losses = sum(1 for t in thesis_fast_today_trades(symbol) if t.get("status") == "LOSS")
+    return jsonify({
+        "version": VERSION,
+        "thesis_fast_version": THESIS_FAST_VERSION,
+        "enabled": THESIS_FAST_ENABLED,
+        "symbol": symbol,
+        "tp_points": THESIS_FAST_TP_POINTS,
+        "sl_points": THESIS_FAST_SL_POINTS,
+        "cooldown_seconds": THESIS_FAST_COOLDOWN_SECONDS,
+        "active": len(thesis_fast_active_trades(symbol)),
+        "today": len(thesis_fast_today_trades(symbol)),
+        "wins_today": wins,
+        "losses_today": losses,
+        "state": THESIS_FAST_STATE.get(symbol, {}),
+    })
+
+
+@app.route("/thesis_fast_trades")
+def thesis_fast_trades_route():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    return jsonify({
+        "version": THESIS_FAST_VERSION,
+        "symbol": symbol,
+        "count": len([t for t in THESIS_FAST_TRADES if str(t.get('symbol', '')).upper() == symbol]),
+        "trades": [t for t in THESIS_FAST_TRADES if str(t.get('symbol', '')).upper() == symbol][-100:],
+    })
+
+
 def fast_pause_status(symbol=None):
     symbol = str(symbol or "XAUUSD").upper()
     consecutive = fast_consecutive_sl_count(symbol)
@@ -14960,6 +15498,14 @@ def webhook():
         # Non modifica la logica decisionale v29.
         fast_updates = handle_fast_price_update(data)
 
+        # v47.2: gestisce eventuali THESIS FAST 3P già aperti.
+        # Fail-safe: il terzo motore non deve mai rompere il webhook principale.
+        try:
+            thesis_fast_updates = handle_thesis_fast_price_update(data)
+        except Exception as e:
+            print(f"[v47.2] THESIS_FAST management error: {type(e).__name__}: {e}", flush=True)
+            thesis_fast_updates = []
+
         # v46: MAX WAIT MODE / NFP SHOCK GUARD.
         # Durante news/NFP il bot continua a gestire trade esistenti, ma non genera nuove entry autonome.
         wait_active, wait_ctx = max_wait_active(data.get("symbol", "XAUUSD"))
@@ -14976,6 +15522,7 @@ def webhook():
                 "status": "price_checked_max_wait_management_only",
                 "updates": len(updates),
                 "fast_updates": len(fast_updates),
+                "thesis_fast_updates": len(thesis_fast_updates),
                 "max_wait_active": True,
                 "max_wait_until": wait_ctx.get("until"),
                 "max_wait_reason": wait_ctx.get("reason"),
@@ -14998,6 +15545,19 @@ def webhook():
         daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
+
+        # v47.2: THESIS FAST 3P separato.
+        # Trasforma solo una tesi NY già esplicita in micro-scalp da 3 punti,
+        # senza modificare MAIN, FAST 2P o le regole della tesi.
+        try:
+            thesis_fast_result = process_thesis_fast(data, thesis_ctx=daily_thesis_ctx)
+        except Exception as e:
+            print(f"[v47.2] THESIS_FAST trigger error: {type(e).__name__}: {e}", flush=True)
+            thesis_fast_result = {
+                "triggered": False,
+                "trade_id": None,
+                "reason": f"fail-safe: {type(e).__name__}: {e}"
+            }
 
         # v47: Session Recovery BUY autonomo.
         # Può anticipare il vecchio MAX_FLIP_BUY quando Europa/NY hanno già girato BUY
@@ -15053,6 +15613,11 @@ def webhook():
             "updates": len(updates),
             "fast_updates": len(fast_updates),
             "fast_active_trades": len(fast_active_trades(data.get("symbol", "XAUUSD"))),
+            "thesis_fast_updates": len(thesis_fast_updates),
+            "thesis_fast_active_trades": len(thesis_fast_active_trades(data.get("symbol", "XAUUSD"))),
+            "thesis_fast_triggered": thesis_fast_result.get("triggered"),
+            "thesis_fast_trade_id": thesis_fast_result.get("trade_id"),
+            "thesis_fast_reason": thesis_fast_result.get("reason"),
             "synthetic_triggered": synthetic_result.get("triggered"),
             "synthetic_trade_id": synthetic_result.get("trade_id"),
             "event_state": synthetic_result.get("state"),
@@ -16236,6 +16801,7 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
 load_runtime_state()
 load_trades()
 load_fast_trades()
+load_thesis_fast_trades()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
