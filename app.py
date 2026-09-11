@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.2 Session Recovery BUY + Mature NY Fade Guard + Thesis Fast 3P"
+VERSION = "v47.3 Session Recovery BUY + Stable Thesis Fast + Mature NY Locks"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -1072,6 +1072,17 @@ SESSION_RECOVERY_BUY_ALLOWED_STATUSES = {
     "NY_CONTINUATION_BUY",
 }
 
+# v47.3: eccezione controllata per il vero reversal NY dopo una campagna SELL già TP8.
+# Evita che i vecchi limiti day/Asia position blocchino il BUY proprio quando NY ha
+# già recuperato violentemente dal minimo. Non tocca il MAIN: vale solo per
+# SESSION_RECOVERY_BUY autonomo e richiede SELL TP8+ recente + recovery NY maturo.
+SESSION_RECOVERY_BUY_STRONG_NY_OVERRIDE_ENABLED = os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_OVERRIDE_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_RECOVERY_BUY_STRONG_NY_MIN_SELL_TP = int(os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_MIN_SELL_TP", "8"))
+SESSION_RECOVERY_BUY_STRONG_NY_MIN_MOVE = float(os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_MIN_MOVE", "8.0"))
+SESSION_RECOVERY_BUY_STRONG_NY_MIN_RECOVERY = float(os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_MIN_RECOVERY", "20.0"))
+SESSION_RECOVERY_BUY_STRONG_NY_MIN_POSITION = float(os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_MIN_POSITION", "0.80"))
+SESSION_RECOVERY_BUY_STRONG_NY_MAX_DAY_POSITION = float(os.getenv("SESSION_RECOVERY_BUY_STRONG_NY_MAX_DAY_POSITION", "0.90"))
+
 # v47: Mature NY Fade Guard.
 # Se New York ha già costruito un vero recovery BUY, MAX_FADE_SELL non può più combatterlo
 # solo con una candela/rejection. Deve esserci micro-BOS bearish oppure una vera zona estrema A+.
@@ -1082,11 +1093,15 @@ MATURE_NY_FADE_MIN_SESSION_POSITION = float(os.getenv("MATURE_NY_FADE_MIN_SESSIO
 MATURE_NY_FADE_EXCEPTION_SCORE = int(os.getenv("MATURE_NY_FADE_EXCEPTION_SCORE", "28"))
 MATURE_NY_FADE_EXCEPTION_MIN_RETRACE = float(os.getenv("MATURE_NY_FADE_EXCEPTION_MIN_RETRACE", "4.0"))
 
-# v47.2: THESIS FAST v1 — scalp 3 punti guidato dalla Session Thesis.
-# Motore TERZO e separato: non modifica MAIN, FAST 2P, Session Recovery BUY o Pine v47.
-# Usa soltanto i PRICE_UPDATE già inviati a chiusura candela dal Pine.
-# Default prudente: solo NEWYORK, un trade per gamba BUY/SELL della tesi, cooldown 10 minuti.
-THESIS_FAST_VERSION = "Thesis Fast v1 - 3 Point Session Trigger"
+# v47.3: THESIS FAST v2 — scalp 3 punti guidato dalla Session Thesis STABILIZZATA.
+# Motore TERZO e separato: MAIN e FAST 2P restano invariati.
+# Correzioni nate dal confronto 11/09 con Max:
+# - niente trade sul primo flip BUY<->SELL della tesi;
+# - durante shock/evento servono più conferme;
+# - un NY_REBOUND_BUY maturo non viene venduto per una sola rejection;
+# - regola speculare per un NY sell maturo;
+# - il ramo BUY può usare anche il retest/pullback di un recovery già maturo.
+THESIS_FAST_VERSION = "Thesis Fast v2 - Stable Session Trigger"
 THESIS_FAST_ENABLED = os.getenv("THESIS_FAST_ENABLED", "TRUE").upper() == "TRUE"
 THESIS_FAST_TRADES_FILE = os.getenv("THESIS_FAST_TRADES_FILE", "thesis_fast_trades.json")
 THESIS_FAST_TP_POINTS = float(os.getenv("THESIS_FAST_TP_POINTS", "3.0"))
@@ -1104,6 +1119,26 @@ THESIS_FAST_MIN_LOW_REBOUND = float(os.getenv("THESIS_FAST_MIN_LOW_REBOUND", "8.
 THESIS_FAST_MAX_LOW_REBOUND = float(os.getenv("THESIS_FAST_MAX_LOW_REBOUND", "14.0"))
 THESIS_FAST_BUY_STATUSES = {"NY_REBOUND_BUY", "NY_CONTINUATION_BUY"}
 THESIS_FAST_SELL_STATUSES = {"NY_FADE_SELL", "NY_CONTINUATION_SELL"}
+
+# Hysteresis/persistenza: il flip deve esistere per almeno 2 PRICE_UPDATE consecutivi.
+THESIS_FAST_THESIS_CONFIRM_BARS = max(1, int(os.getenv("THESIS_FAST_THESIS_CONFIRM_BARS", "2")))
+THESIS_FAST_EVENT_CONFIRM_BARS = max(THESIS_FAST_THESIS_CONFIRM_BARS, int(os.getenv("THESIS_FAST_EVENT_CONFIRM_BARS", "3")))
+THESIS_FAST_SHOCK_SESSION_RANGE_POINTS = float(os.getenv("THESIS_FAST_SHOCK_SESSION_RANGE_POINTS", "25.0"))
+THESIS_FAST_SHOCK_RANGE_ATR = float(os.getenv("THESIS_FAST_SHOCK_RANGE_ATR", "2.2"))
+THESIS_FAST_SHOCK_M15_RANGE_ATR = float(os.getenv("THESIS_FAST_SHOCK_M15_RANGE_ATR", "3.0"))
+
+# Mature direction lock: evita il caso 14:45, dove il recovery NY era già forte
+# ma un singolo retrace dal massimo trasformava la tesi in SELL per un minuto.
+THESIS_FAST_MATURE_LOCK_ENABLED = os.getenv("THESIS_FAST_MATURE_LOCK_ENABLED", "TRUE").upper() == "TRUE"
+THESIS_FAST_MATURE_BUY_MIN_MOVE = float(os.getenv("THESIS_FAST_MATURE_BUY_MIN_MOVE", "8.0"))
+THESIS_FAST_MATURE_BUY_MIN_RECOVERY = float(os.getenv("THESIS_FAST_MATURE_BUY_MIN_RECOVERY", "20.0"))
+THESIS_FAST_MATURE_BUY_MIN_POSITION = float(os.getenv("THESIS_FAST_MATURE_BUY_MIN_POSITION", "0.78"))
+THESIS_FAST_MATURE_SELL_MIN_MOVE = float(os.getenv("THESIS_FAST_MATURE_SELL_MIN_MOVE", "8.0"))
+THESIS_FAST_MATURE_SELL_MAX_POSITION = float(os.getenv("THESIS_FAST_MATURE_SELL_MAX_POSITION", "0.22"))
+THESIS_FAST_MATURE_PULLBACK_MIN = float(os.getenv("THESIS_FAST_MATURE_PULLBACK_MIN", "2.5"))
+THESIS_FAST_MATURE_PULLBACK_MAX = float(os.getenv("THESIS_FAST_MATURE_PULLBACK_MAX", "12.0"))
+THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS = max(2, int(os.getenv("THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS", "2")))
+
 THESIS_FAST_TRADES = []
 THESIS_FAST_STATE = {}
 
@@ -13062,13 +13097,9 @@ def session_recovery_buy_context(data, thesis_ctx=None):
     if session_position >= 0 and session_position < SESSION_RECOVERY_BUY_MIN_SESSION_POSITION:
         ctx["reason"] = f"Posizione sessione non abbastanza forte {round(session_position, 2)}/{SESSION_RECOVERY_BUY_MIN_SESSION_POSITION}"
         return ctx
-    if day_position >= 0 and day_position > SESSION_RECOVERY_BUY_MAX_DAY_POSITION:
-        ctx["reason"] = f"Day position troppo alta per comprare recovery {round(day_position, 2)}/{SESSION_RECOVERY_BUY_MAX_DAY_POSITION}"
-        return ctx
-    if asia_position >= 0 and asia_position > SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION:
-        ctx["reason"] = f"Prezzo già troppo alto nel range Asia {round(asia_position, 2)}/{SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION}"
-        return ctx
 
+    # Prima recupero la campagna SELL precedente: il nuovo override NY può esistere
+    # soltanto se quella campagna ha già pagato davvero (default TP8+).
     recent_sells = get_recent_tp_trades(
         "SELL",
         symbol,
@@ -13080,6 +13111,31 @@ def session_recovery_buy_context(data, thesis_ctx=None):
         return ctx
     recent_sell = recent_sells[0]
     ctx["recent_sell"] = recent_sell
+
+    recent_sell_tp = int(recent_sell.get("highest_tp", 0) or 0)
+    recovered_session_open = bool(to_float(current.get("open"), 0) and price >= to_float(current.get("open"), 0))
+    strong_ny_recovery_override = bool(
+        SESSION_RECOVERY_BUY_STRONG_NY_OVERRIDE_ENABLED
+        and session == "NEWYORK"
+        and status in ["NY_REBOUND_BUY", "NY_CONTINUATION_BUY"]
+        and preferred == "BUY"
+        and recent_sell_tp >= SESSION_RECOVERY_BUY_STRONG_NY_MIN_SELL_TP
+        and current_move >= SESSION_RECOVERY_BUY_STRONG_NY_MIN_MOVE
+        and recovery_from_session_low >= SESSION_RECOVERY_BUY_STRONG_NY_MIN_RECOVERY
+        and (session_position < 0 or session_position >= SESSION_RECOVERY_BUY_STRONG_NY_MIN_POSITION)
+        and recovered_session_open
+        and (day_position < 0 or day_position <= SESSION_RECOVERY_BUY_STRONG_NY_MAX_DAY_POSITION)
+    )
+
+    if day_position >= 0 and day_position > SESSION_RECOVERY_BUY_MAX_DAY_POSITION and not strong_ny_recovery_override:
+        ctx["reason"] = f"Day position troppo alta per comprare recovery {round(day_position, 2)}/{SESSION_RECOVERY_BUY_MAX_DAY_POSITION}"
+        return ctx
+    if asia_position >= 0 and asia_position > SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION and not strong_ny_recovery_override:
+        ctx["reason"] = f"Prezzo già troppo alto nel range Asia {round(asia_position, 2)}/{SESSION_RECOVERY_BUY_MAX_ASIA_RANGE_POSITION}"
+        return ctx
+
+    ctx["strong_ny_recovery_override"] = strong_ny_recovery_override
+    ctx["recovered_session_open"] = recovered_session_open
 
     candle_dir = str(data.get("candle_dir", "")).upper()
     h1 = str(data.get("h1_bias", "")).upper()
@@ -13110,6 +13166,9 @@ def session_recovery_buy_context(data, thesis_ctx=None):
         score += 2
     if status in ["NY_REBOUND_BUY", "NY_CONTINUATION_BUY", "EUROPE_REVERSAL_BUY", "EUROPE_BREAKOUT_BUY"]:
         score += 1
+    if ctx.get("strong_ny_recovery_override"):
+        score += 2
+        reasons.append("Strong NY Recovery Override: SELL TP8+ già pagato e open NY recuperato")
 
     ctx.update({
         "session": session,
@@ -13314,7 +13373,7 @@ def mature_ny_fade_guard_context(signal, symbol, setup_type, score, data):
 
 
 # =========================
-# v47.2 THESIS FAST 3P — MOTORE SEPARATO
+# v47.3 THESIS FAST v2 3P — STABLE SESSION TRIGGER
 # =========================
 
 def load_thesis_fast_trades():
@@ -13327,7 +13386,7 @@ def load_thesis_fast_trades():
             data = json.load(f)
         THESIS_FAST_TRADES = data if isinstance(data, list) else []
     except Exception as e:
-        print(f"[v47.2] thesis fast load skipped: {e}", flush=True)
+        print(f"[v47.3] thesis fast load skipped: {e}", flush=True)
         THESIS_FAST_TRADES = []
 
 
@@ -13337,7 +13396,7 @@ def save_thesis_fast_trades():
             json.dump(THESIS_FAST_TRADES, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
-        print(f"[v47.2] thesis fast save skipped: {e}", flush=True)
+        print(f"[v47.3] thesis fast save skipped: {e}", flush=True)
         return False
 
 
@@ -13376,6 +13435,14 @@ def _thesis_fast_state(symbol):
             "last_preferred": None,
             "last_price": None,
             "last_status": None,
+            "candidate_preferred": None,
+            "candidate_status": None,
+            "candidate_count": 0,
+            "stable_preferred": None,
+            "stable_status": None,
+            "stable_since": 0,
+            "bull_streak": 0,
+            "bear_streak": 0,
             "traded_leg_id": None,
             "last_trigger": None,
             "updated": now_ts(),
@@ -13384,18 +13451,65 @@ def _thesis_fast_state(symbol):
     return state
 
 
-def _thesis_fast_note_preferred(state, preferred, status):
+def _thesis_fast_event_shock(data, current=None):
+    data = data or {}
+    current = current or {}
+    auto_active, auto_reasons = auto_event_cache_active()
+    session_range = to_float(current.get("range"), 0)
+    if not session_range:
+        hi = to_float(current.get("high"), 0)
+        lo = to_float(current.get("low"), 0)
+        session_range = max(0, hi - lo) if hi and lo else 0
+    range_atr = to_float(data.get("range_atr"), 0)
+    m15_range_atr = to_float(data.get("m15_range_atr"), 0)
+    explicit_event = to_bool(data.get("event_mode")) or to_bool(data.get("auto_event_pine"))
+    shock = bool(
+        explicit_event
+        or (auto_active and session_range >= THESIS_FAST_SHOCK_SESSION_RANGE_POINTS)
+        or range_atr >= THESIS_FAST_SHOCK_RANGE_ATR
+        or m15_range_atr >= THESIS_FAST_SHOCK_M15_RANGE_ATR
+    )
+    return shock, auto_reasons
+
+
+def _thesis_fast_note_preferred(state, preferred, status, required_confirmations):
     preferred = str(preferred or "WAIT").upper()
     status = str(status or "").upper()
-    previous = str(state.get("last_preferred") or "").upper()
-    if preferred in ["BUY", "SELL"] and preferred != previous:
-        state["leg_id"] = int(state.get("leg_id", 0)) + 1
-        state["traded_leg_id"] = None
-    if preferred in ["BUY", "SELL"]:
+    required_confirmations = max(1, int(required_confirmations or 1))
+
+    if preferred not in ["BUY", "SELL"]:
+        state["candidate_preferred"] = None
+        state["candidate_status"] = status
+        state["candidate_count"] = 0
         state["last_preferred"] = preferred
+        state["last_status"] = status
+        state["updated"] = now_ts()
+        return int(state.get("leg_id", 0)), False, 0
+
+    candidate = str(state.get("candidate_preferred") or "").upper()
+    if candidate == preferred:
+        state["candidate_count"] = int(state.get("candidate_count", 0)) + 1
+    else:
+        state["candidate_preferred"] = preferred
+        state["candidate_count"] = 1
+    state["candidate_status"] = status
+
+    confirmed = int(state.get("candidate_count", 0)) >= required_confirmations
+    if confirmed:
+        stable = str(state.get("stable_preferred") or "").upper()
+        if stable != preferred:
+            state["stable_preferred"] = preferred
+            state["stable_status"] = status
+            state["stable_since"] = now_ts()
+            state["leg_id"] = int(state.get("leg_id", 0)) + 1
+            state["traded_leg_id"] = None
+        else:
+            state["stable_status"] = status
+
+    state["last_preferred"] = preferred
     state["last_status"] = status
     state["updated"] = now_ts()
-    return int(state.get("leg_id", 0))
+    return int(state.get("leg_id", 0)), confirmed, int(state.get("candidate_count", 0))
 
 
 def _thesis_fast_recent_trade(symbol):
@@ -13436,6 +13550,74 @@ def _thesis_fast_has_fast_same_direction(symbol, signal):
     return False, None
 
 
+def _thesis_fast_mature_direction_context(data, thesis, current, info, state):
+    data = data or {}
+    price = get_price_from_data(data)
+    cur_open = to_float(current.get("open"), 0)
+    cur_high = to_float(current.get("high"), 0)
+    cur_low = to_float(current.get("low"), 0)
+    cur_position = to_float(current.get("position"), -1)
+    current_move = to_float(info.get("current_move"), to_float(current.get("move"), 0))
+    recovery_low = to_float(info.get("recovery_session_low"), (price - cur_low) if price and cur_low else 0)
+    retrace_high = to_float(info.get("retrace_session_high"), (cur_high - price) if price and cur_high else 0)
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    ema50 = str(data.get("ema50_slope", "")).upper()
+    candle_dir = str(data.get("candle_dir", "")).upper()
+
+    if candle_dir == "BULL":
+        state["bull_streak"] = int(state.get("bull_streak", 0)) + 1
+        state["bear_streak"] = 0
+    elif candle_dir == "BEAR":
+        state["bear_streak"] = int(state.get("bear_streak", 0)) + 1
+        state["bull_streak"] = 0
+    else:
+        state["bull_streak"] = 0
+        state["bear_streak"] = 0
+
+    recovered_open = bool(cur_open and price and price >= cur_open)
+    lost_open = bool(cur_open and price and price <= cur_open)
+
+    mature_buy = bool(
+        THESIS_FAST_MATURE_LOCK_ENABLED
+        and current_move >= THESIS_FAST_MATURE_BUY_MIN_MOVE
+        and recovery_low >= THESIS_FAST_MATURE_BUY_MIN_RECOVERY
+        and (cur_position < 0 or cur_position >= THESIS_FAST_MATURE_BUY_MIN_POSITION)
+        and recovered_open
+        and ema20 == "UP"
+        and ema50 == "UP"
+    )
+    mature_sell = bool(
+        THESIS_FAST_MATURE_LOCK_ENABLED
+        and current_move <= -THESIS_FAST_MATURE_SELL_MIN_MOVE
+        and (cur_position < 0 or cur_position <= THESIS_FAST_MATURE_SELL_MAX_POSITION)
+        and lost_open
+        and ema20 == "DOWN"
+        and ema50 == "DOWN"
+    )
+
+    micro_bear = to_bool(data.get("micro_bos_bear")) or to_bool(data.get("breakout_down"))
+    micro_bull = to_bool(data.get("micro_bos_bull")) or to_bool(data.get("breakout_up"))
+    strong_bear_reversal = bool(micro_bear or int(state.get("bear_streak", 0)) >= THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS)
+    strong_bull_reversal = bool(micro_bull or int(state.get("bull_streak", 0)) >= THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS)
+
+    return {
+        "mature_buy": mature_buy,
+        "mature_sell": mature_sell,
+        "strong_bear_reversal": strong_bear_reversal,
+        "strong_bull_reversal": strong_bull_reversal,
+        "bull_streak": int(state.get("bull_streak", 0)),
+        "bear_streak": int(state.get("bear_streak", 0)),
+        "recovered_open": recovered_open,
+        "lost_open": lost_open,
+        "current_move": current_move,
+        "recovery_low": recovery_low,
+        "retrace_high": retrace_high,
+        "session_position": cur_position,
+        "ema20": ema20,
+        "ema50": ema50,
+    }
+
+
 def thesis_fast_context(data, thesis_ctx=None):
     data = data or {}
     symbol = str(data.get("symbol", "XAUUSD")).upper()
@@ -13474,14 +13656,34 @@ def thesis_fast_context(data, thesis_ctx=None):
     session, current, info = _session_current_snapshot(thesis)
     preferred = str(thesis.get("preferred", "WAIT")).upper()
     status = str(thesis.get("status", "")).upper()
-    leg_id = _thesis_fast_note_preferred(state, preferred, status)
+
+    shock_event, shock_reasons = _thesis_fast_event_shock(data, current=current)
+    required_confirms = THESIS_FAST_EVENT_CONFIRM_BARS if shock_event else THESIS_FAST_THESIS_CONFIRM_BARS
+    leg_id, thesis_confirmed, candidate_count = _thesis_fast_note_preferred(
+        state, preferred, status, required_confirms
+    )
     ctx["leg_id"] = leg_id
+    ctx["thesis_confirmed"] = thesis_confirmed
+    ctx["thesis_candidate_count"] = candidate_count
+    ctx["thesis_required_confirms"] = required_confirms
+    ctx["event_shock"] = shock_event
+    ctx["event_reasons"] = shock_reasons
 
     if THESIS_FAST_NEWYORK_ONLY and session != "NEWYORK":
         ctx["reason"] = f"Sessione {session}: Thesis Fast default solo New York"
         return ctx
     if session not in ["EUROPE", "NEWYORK"]:
         ctx["reason"] = f"Sessione {session}: Thesis Fast non attivo"
+        return ctx
+
+    # v47.3: non opero sul primo flip della tesi.
+    # Se alle 14:45 passa BUY->SELL per un solo minuto e alle 14:46 torna BUY,
+    # il SELL non nasce. Durante shock/evento il default sale a 3 conferme.
+    if not thesis_confirmed or str(state.get("stable_preferred") or "").upper() != preferred:
+        ctx["reason"] = (
+            f"Thesis in stabilizzazione {candidate_count}/{required_confirms}: "
+            f"{status} -> {preferred}"
+        )
         return ctx
 
     if preferred == "BUY" and status in THESIS_FAST_BUY_STATUSES:
@@ -13536,6 +13738,35 @@ def thesis_fast_context(data, thesis_ctx=None):
     bull_confirm = bool(candle_dir == "BULL" or lower_wick or ema20 == "UP")
     bear_confirm = bool(candle_dir == "BEAR" or upper_wick or ema20 == "DOWN")
 
+    mature_ctx = _thesis_fast_mature_direction_context(data, thesis, current, info, state)
+    mature_buy = bool(mature_ctx.get("mature_buy"))
+    mature_sell = bool(mature_ctx.get("mature_sell"))
+
+    # Mature lock simmetrico: non combatto una gamba NY già dominante per una sola candela.
+    if signal == "SELL" and mature_buy and not mature_ctx.get("strong_bear_reversal"):
+        ctx.update({
+            "session": session, "preferred": preferred, "status": status,
+            "mature_lock": "BUY", "mature_ctx": mature_ctx,
+        })
+        ctx["reason"] = (
+            f"MATURE REBOUND LOCK BUY: move {round(mature_ctx.get('current_move', 0), 2)}, "
+            f"recovery {round(mature_ctx.get('recovery_low', 0), 2)}, "
+            f"pos {round(mature_ctx.get('session_position', -1), 2)}; "
+            f"SELL richiede micro-BOS bearish o {THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS} conferme bearish"
+        )
+        return ctx
+    if signal == "BUY" and mature_sell and not mature_ctx.get("strong_bull_reversal"):
+        ctx.update({
+            "session": session, "preferred": preferred, "status": status,
+            "mature_lock": "SELL", "mature_ctx": mature_ctx,
+        })
+        ctx["reason"] = (
+            f"MATURE SELL LOCK: move {round(mature_ctx.get('current_move', 0), 2)}, "
+            f"pos {round(mature_ctx.get('session_position', -1), 2)}; "
+            f"BUY richiede micro-BOS bullish o {THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS} conferme bullish"
+        )
+        return ctx
+
     trigger = None
     detail = None
 
@@ -13553,12 +13784,26 @@ def thesis_fast_context(data, thesis_ctx=None):
             and (previous_price <= 0 or previous_price < cur_open + THESIS_FAST_OPEN_CONFIRM_BUFFER)
             and bull_confirm
         )
+        mature_rebound_pullback = bool(
+            mature_buy
+            and cur_open
+            and price >= cur_open
+            and retrace_high >= THESIS_FAST_MATURE_PULLBACK_MIN
+            and retrace_high <= THESIS_FAST_MATURE_PULLBACK_MAX
+            and bull_confirm
+        )
         if low_rebound:
             trigger = "NY_LOW_REBOUND_BUY"
             detail = f"recovery dal low {round(recovery_low, 2)} punti"
         elif open_reclaim:
             trigger = "NY_OPEN_RECLAIM_BUY"
             detail = f"NY open {round(cur_open, 3)} recuperato"
+        elif mature_rebound_pullback:
+            trigger = "NY_MATURE_REBOUND_PULLBACK_BUY"
+            detail = (
+                f"recovery NY maturo, pullback {round(retrace_high, 2)} dal massimo "
+                f"con open {round(cur_open, 3)} ancora recuperato"
+            )
 
     if signal == "SELL":
         high_rejection = bool(
@@ -13574,12 +13819,26 @@ def thesis_fast_context(data, thesis_ctx=None):
             and (previous_price <= 0 or previous_price > cur_open - THESIS_FAST_OPEN_CONFIRM_BUFFER)
             and bear_confirm
         )
+        mature_sell_relief = bool(
+            mature_sell
+            and cur_open
+            and price <= cur_open
+            and recovery_low >= THESIS_FAST_MATURE_PULLBACK_MIN
+            and recovery_low <= THESIS_FAST_MATURE_PULLBACK_MAX
+            and bear_confirm
+        )
         if high_rejection:
             trigger = "NY_HIGH_REJECTION_SELL"
             detail = f"retrace dal massimo {round(retrace_high, 2)} punti"
         elif open_loss:
             trigger = "NY_OPEN_LOSS_SELL"
             detail = f"NY open {round(cur_open, 3)} perso"
+        elif mature_sell_relief:
+            trigger = "NY_MATURE_SELL_RELIEF_SELL"
+            detail = (
+                f"SELL NY maturo, relief {round(recovery_low, 2)} dal minimo "
+                f"con open {round(cur_open, 3)} ancora perso"
+            )
 
     if THESIS_FAST_REQUIRE_CANDLE_CONFIRM:
         if signal == "BUY" and not bull_confirm:
@@ -13603,6 +13862,12 @@ def thesis_fast_context(data, thesis_ctx=None):
         "previous_price": previous_price,
         "bull_confirm": bull_confirm,
         "bear_confirm": bear_confirm,
+        "mature_buy": mature_buy,
+        "mature_sell": mature_sell,
+        "mature_ctx": mature_ctx,
+        "event_shock": shock_event,
+        "thesis_candidate_count": candidate_count,
+        "thesis_required_confirms": required_confirms,
         "trigger": trigger,
         "trigger_detail": detail,
     })
@@ -13678,6 +13943,8 @@ SL: {fmt_price(trade.get('sl'))}
 TP: {fmt_price(trade.get('tp'))}
 
 🧭 Thesis: {ctx.get('status')} -> {ctx.get('preferred')}
+🔒 Stabilità tesi: {ctx.get('thesis_candidate_count')}/{ctx.get('thesis_required_confirms')}
+⚠️ Event shock: {ctx.get('event_shock')}
 🎯 Trigger: {ctx.get('trigger')}
 Dettaglio: {ctx.get('trigger_detail')}
 NY Open: {round(to_float(ctx.get('session_open')), 3)}
@@ -15498,12 +15765,12 @@ def webhook():
         # Non modifica la logica decisionale v29.
         fast_updates = handle_fast_price_update(data)
 
-        # v47.2: gestisce eventuali THESIS FAST 3P già aperti.
+        # v47.3: gestisce eventuali THESIS FAST v2 3P già aperti.
         # Fail-safe: il terzo motore non deve mai rompere il webhook principale.
         try:
             thesis_fast_updates = handle_thesis_fast_price_update(data)
         except Exception as e:
-            print(f"[v47.2] THESIS_FAST management error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.3] THESIS_FAST management error: {type(e).__name__}: {e}", flush=True)
             thesis_fast_updates = []
 
         # v46: MAX WAIT MODE / NFP SHOCK GUARD.
@@ -15546,13 +15813,13 @@ def webhook():
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
 
-        # v47.2: THESIS FAST 3P separato.
+        # v47.3: THESIS FAST v2 3P separato e stabilizzato.
         # Trasforma solo una tesi NY già esplicita in micro-scalp da 3 punti,
         # senza modificare MAIN, FAST 2P o le regole della tesi.
         try:
             thesis_fast_result = process_thesis_fast(data, thesis_ctx=daily_thesis_ctx)
         except Exception as e:
-            print(f"[v47.2] THESIS_FAST trigger error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.3] THESIS_FAST trigger error: {type(e).__name__}: {e}", flush=True)
             thesis_fast_result = {
                 "triggered": False,
                 "trade_id": None,
