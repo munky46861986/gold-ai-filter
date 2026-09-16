@@ -14,7 +14,12 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.3 Session Recovery BUY + Stable Thesis Fast + Mature NY Locks"
+VERSION = "v47.8 Thesis Fast Europe+NY 2-Confirm + Shadow Execution + MT4 Demo Bridge MAIN ONLY"
+# v47.8: Thesis Fast 3P opera in EUROPE + NEWYORK; ASIA/PRE_NY/LATE_US esclusi.
+# Entrata rapida: 1a conferma = ARMED, 2a conferma consecutiva + trigger locale = OPERAZIONE.
+# Anche durante event/shock NON si aspetta piu' una 3a conferma.
+# MT4 bridge resta MAIN ONLY per default: le Thesis Fast sono ufficiali su Telegram/shadow,
+# ma non vengono auto-eseguite dal bridge finche' MT4_MAIN_ONLY resta TRUE.
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -1101,7 +1106,7 @@ MATURE_NY_FADE_EXCEPTION_MIN_RETRACE = float(os.getenv("MATURE_NY_FADE_EXCEPTION
 # - un NY_REBOUND_BUY maturo non viene venduto per una sola rejection;
 # - regola speculare per un NY sell maturo;
 # - il ramo BUY può usare anche il retest/pullback di un recovery già maturo.
-THESIS_FAST_VERSION = "Thesis Fast v2 - Stable Session Trigger"
+THESIS_FAST_VERSION = "Thesis Fast v4 - Europe + New York 2-Confirm Trigger"
 THESIS_FAST_ENABLED = os.getenv("THESIS_FAST_ENABLED", "TRUE").upper() == "TRUE"
 THESIS_FAST_TRADES_FILE = os.getenv("THESIS_FAST_TRADES_FILE", "thesis_fast_trades.json")
 THESIS_FAST_TP_POINTS = float(os.getenv("THESIS_FAST_TP_POINTS", "3.0"))
@@ -1109,7 +1114,16 @@ THESIS_FAST_SL_POINTS = max(float(os.getenv("THESIS_FAST_SL_POINTS", "6.0")), 4.
 THESIS_FAST_COOLDOWN_SECONDS = int(os.getenv("THESIS_FAST_COOLDOWN_SECONDS", "600"))
 THESIS_FAST_MAX_ACTIVE_TRADES = int(os.getenv("THESIS_FAST_MAX_ACTIVE_TRADES", "1"))
 THESIS_FAST_MAX_TRADES_PER_DAY = int(os.getenv("THESIS_FAST_MAX_TRADES_PER_DAY", "8"))
-THESIS_FAST_NEWYORK_ONLY = os.getenv("THESIS_FAST_NEWYORK_ONLY", "TRUE").upper() == "TRUE"
+# v47.7: il vecchio THESIS_FAST_NEWYORK_ONLY viene mantenuto solo per compatibilita'
+# con eventuali env gia' presenti su Render, ma NON governa piu' il motore.
+# Le sessioni operative sono esplicitamente Europa + New York.
+THESIS_FAST_NEWYORK_ONLY = os.getenv("THESIS_FAST_NEWYORK_ONLY", "FALSE").upper() == "TRUE"
+THESIS_FAST_ALLOWED_SESSIONS_RAW = os.getenv("THESIS_FAST_ALLOWED_SESSIONS", "EUROPE,NEWYORK")
+THESIS_FAST_ALLOWED_SESSIONS = {
+    x.strip().upper() for x in THESIS_FAST_ALLOWED_SESSIONS_RAW.split(",") if x.strip()
+}
+# Safety: Asia / PRE_NY / LATE_US restano fuori anche se una vecchia env fosse sporca.
+THESIS_FAST_ALLOWED_SESSIONS = THESIS_FAST_ALLOWED_SESSIONS.intersection({"EUROPE", "NEWYORK"}) or {"EUROPE", "NEWYORK"}
 THESIS_FAST_REQUIRE_CANDLE_CONFIRM = os.getenv("THESIS_FAST_REQUIRE_CANDLE_CONFIRM", "TRUE").upper() == "TRUE"
 THESIS_FAST_OPEN_CONFIRM_BUFFER = float(os.getenv("THESIS_FAST_OPEN_CONFIRM_BUFFER", "0.4"))
 THESIS_FAST_MIN_OPEN_EXCURSION = float(os.getenv("THESIS_FAST_MIN_OPEN_EXCURSION", "2.0"))
@@ -1117,12 +1131,33 @@ THESIS_FAST_MIN_HIGH_REJECTION = float(os.getenv("THESIS_FAST_MIN_HIGH_REJECTION
 THESIS_FAST_MAX_HIGH_REJECTION = float(os.getenv("THESIS_FAST_MAX_HIGH_REJECTION", "12.0"))
 THESIS_FAST_MIN_LOW_REBOUND = float(os.getenv("THESIS_FAST_MIN_LOW_REBOUND", "8.0"))
 THESIS_FAST_MAX_LOW_REBOUND = float(os.getenv("THESIS_FAST_MAX_LOW_REBOUND", "14.0"))
-THESIS_FAST_BUY_STATUSES = {"NY_REBOUND_BUY", "NY_CONTINUATION_BUY"}
-THESIS_FAST_SELL_STATUSES = {"NY_FADE_SELL", "NY_CONTINUATION_SELL"}
+THESIS_FAST_BUY_STATUSES = {
+    "EUROPE_REVERSAL_BUY", "EUROPE_BREAKOUT_BUY",
+    "NY_REBOUND_BUY", "NY_CONTINUATION_BUY",
+}
+THESIS_FAST_SELL_STATUSES = {
+    "EUROPE_FADE_SELL", "EUROPE_BREAKOUT_SELL",
+    "NY_FADE_SELL", "NY_CONTINUATION_SELL",
+}
 
-# Hysteresis/persistenza: il flip deve esistere per almeno 2 PRICE_UPDATE consecutivi.
-THESIS_FAST_THESIS_CONFIRM_BARS = max(1, int(os.getenv("THESIS_FAST_THESIS_CONFIRM_BARS", "2")))
-THESIS_FAST_EVENT_CONFIRM_BARS = max(THESIS_FAST_THESIS_CONFIRM_BARS, int(os.getenv("THESIS_FAST_EVENT_CONFIRM_BARS", "3")))
+# v47.7 Europe 3P: la Session Thesis ha gia' deciso il lato; qui chiediamo
+# solo un trigger locale pulito per evitare di entrare su ogni messaggio di tesi.
+THESIS_FAST_EUROPE_REVERSAL_MIN_RECOVERY = float(os.getenv("THESIS_FAST_EUROPE_REVERSAL_MIN_RECOVERY", "4.0"))
+THESIS_FAST_EUROPE_FADE_MIN_RETRACE = float(os.getenv("THESIS_FAST_EUROPE_FADE_MIN_RETRACE", "4.0"))
+THESIS_FAST_EUROPE_BREAKOUT_MIN_MOVE = float(os.getenv("THESIS_FAST_EUROPE_BREAKOUT_MIN_MOVE", "6.0"))
+THESIS_FAST_EUROPE_BREAKOUT_BUY_MIN_POSITION = float(os.getenv("THESIS_FAST_EUROPE_BREAKOUT_BUY_MIN_POSITION", "0.70"))
+THESIS_FAST_EUROPE_BREAKOUT_SELL_MAX_POSITION = float(os.getenv("THESIS_FAST_EUROPE_BREAKOUT_SELL_MAX_POSITION", "0.30"))
+THESIS_FAST_EUROPE_OPEN_TOLERANCE = float(os.getenv("THESIS_FAST_EUROPE_OPEN_TOLERANCE", "0.25"))
+
+# v47.8 — conferma rapida 2-step:
+# 1a lettura coerente = ARMED; 2a lettura consecutiva + trigger locale = OPERAZIONE.
+# La soglia resta fissata a 2 anche durante event/shock per non inseguire un TP da soli 3 punti.
+# Le vecchie env THESIS_FAST_THESIS_CONFIRM_BARS / THESIS_FAST_EVENT_CONFIRM_BARS
+# vengono lette solo per compatibilita' diagnostica, ma non possono alzare la soglia oltre 2.
+_THESIS_FAST_ENV_CONFIRM_BARS = max(1, int(os.getenv("THESIS_FAST_THESIS_CONFIRM_BARS", "2")))
+_THESIS_FAST_ENV_EVENT_CONFIRM_BARS = max(1, int(os.getenv("THESIS_FAST_EVENT_CONFIRM_BARS", "2")))
+THESIS_FAST_THESIS_CONFIRM_BARS = 2
+THESIS_FAST_EVENT_CONFIRM_BARS = 2
 THESIS_FAST_SHOCK_SESSION_RANGE_POINTS = float(os.getenv("THESIS_FAST_SHOCK_SESSION_RANGE_POINTS", "25.0"))
 THESIS_FAST_SHOCK_RANGE_ATR = float(os.getenv("THESIS_FAST_SHOCK_RANGE_ATR", "2.2"))
 THESIS_FAST_SHOCK_M15_RANGE_ATR = float(os.getenv("THESIS_FAST_SHOCK_M15_RANGE_ATR", "3.0"))
@@ -2432,6 +2467,9 @@ def health():
         "thesis_fast_active_trades": len(thesis_fast_active_trades()),
         "thesis_fast_tp_points": THESIS_FAST_TP_POINTS,
         "thesis_fast_sl_points": THESIS_FAST_SL_POINTS,
+        "thesis_fast_allowed_sessions": sorted(THESIS_FAST_ALLOWED_SESSIONS),
+        "shadow_execution": shadow_status_payload(),
+        "mt4_bridge": mt4_status_payload(),
         "max_discipline_enabled": MAX_DISCIPLINE_ENABLED,
         "max_discipline_window_seconds": MAX_DISCIPLINE_WINDOW_SECONDS,
         "max_discipline_max_official_per_direction": MAX_DISCIPLINE_MAX_OFFICIAL_PER_DIRECTION,
@@ -13437,10 +13475,13 @@ def _thesis_fast_state(symbol):
             "last_status": None,
             "candidate_preferred": None,
             "candidate_status": None,
+            "candidate_session": None,
             "candidate_count": 0,
             "stable_preferred": None,
             "stable_status": None,
+            "stable_session": None,
             "stable_since": 0,
+            "operating_session": None,
             "bull_streak": 0,
             "bear_streak": 0,
             "traded_leg_id": None,
@@ -13472,14 +13513,37 @@ def _thesis_fast_event_shock(data, current=None):
     return shock, auto_reasons
 
 
-def _thesis_fast_note_preferred(state, preferred, status, required_confirmations):
+def _thesis_fast_note_preferred(state, preferred, status, required_confirmations, session=None):
     preferred = str(preferred or "WAIT").upper()
     status = str(status or "").upper()
+    session = str(session or "").upper()
     required_confirmations = max(1, int(required_confirmations or 1))
 
+    # v47.7: Europa e New York sono due finestre operative distinte.
+    # Se Europa ha gia' usato una gamba BUY, New York puo' comunque costruire
+    # una nuova gamba BUY, ma deve ristabilizzarla da zero.
+    previous_session = str(state.get("operating_session") or "").upper()
+    if session in THESIS_FAST_ALLOWED_SESSIONS and previous_session != session:
+        state["operating_session"] = session
+        state["candidate_preferred"] = None
+        state["candidate_status"] = None
+        state["candidate_session"] = None
+        state["candidate_count"] = 0
+        state["stable_preferred"] = None
+        state["stable_status"] = None
+        state["stable_session"] = None
+        state["stable_since"] = 0
+        state["traded_leg_id"] = None
+        state["bull_streak"] = 0
+        state["bear_streak"] = 0
+
     if preferred not in ["BUY", "SELL"]:
+        # RANGE/WAIT spezza la conferma consecutiva, ma NON crea da solo
+        # una nuova gamba. BUY -> RANGE -> BUY resta la stessa direzione
+        # finche' non viene confermato un SELL o cambia sessione.
         state["candidate_preferred"] = None
         state["candidate_status"] = status
+        state["candidate_session"] = session
         state["candidate_count"] = 0
         state["last_preferred"] = preferred
         state["last_status"] = status
@@ -13487,19 +13551,23 @@ def _thesis_fast_note_preferred(state, preferred, status, required_confirmations
         return int(state.get("leg_id", 0)), False, 0
 
     candidate = str(state.get("candidate_preferred") or "").upper()
-    if candidate == preferred:
+    candidate_session = str(state.get("candidate_session") or "").upper()
+    if candidate == preferred and candidate_session == session:
         state["candidate_count"] = int(state.get("candidate_count", 0)) + 1
     else:
         state["candidate_preferred"] = preferred
+        state["candidate_session"] = session
         state["candidate_count"] = 1
     state["candidate_status"] = status
 
     confirmed = int(state.get("candidate_count", 0)) >= required_confirmations
     if confirmed:
         stable = str(state.get("stable_preferred") or "").upper()
-        if stable != preferred:
+        stable_session = str(state.get("stable_session") or "").upper()
+        if stable != preferred or stable_session != session:
             state["stable_preferred"] = preferred
             state["stable_status"] = status
+            state["stable_session"] = session
             state["stable_since"] = now_ts()
             state["leg_id"] = int(state.get("leg_id", 0)) + 1
             state["traded_leg_id"] = None
@@ -13657,10 +13725,17 @@ def thesis_fast_context(data, thesis_ctx=None):
     preferred = str(thesis.get("preferred", "WAIT")).upper()
     status = str(thesis.get("status", "")).upper()
 
+    # v47.7: operativo SOLO in Europa e New York. Asia, PRE_NY e Late US esclusi.
+    # La vecchia env THESIS_FAST_NEWYORK_ONLY e' ignorata intenzionalmente,
+    # cosi' una configurazione Render precedente non puo' bloccare Europa.
+    if session not in THESIS_FAST_ALLOWED_SESSIONS:
+        ctx["reason"] = f"Sessione {session}: Thesis Fast attivo solo EUROPE + NEWYORK"
+        return ctx
+
     shock_event, shock_reasons = _thesis_fast_event_shock(data, current=current)
     required_confirms = THESIS_FAST_EVENT_CONFIRM_BARS if shock_event else THESIS_FAST_THESIS_CONFIRM_BARS
     leg_id, thesis_confirmed, candidate_count = _thesis_fast_note_preferred(
-        state, preferred, status, required_confirms
+        state, preferred, status, required_confirms, session=session
     )
     ctx["leg_id"] = leg_id
     ctx["thesis_confirmed"] = thesis_confirmed
@@ -13669,19 +13744,16 @@ def thesis_fast_context(data, thesis_ctx=None):
     ctx["event_shock"] = shock_event
     ctx["event_reasons"] = shock_reasons
 
-    if THESIS_FAST_NEWYORK_ONLY and session != "NEWYORK":
-        ctx["reason"] = f"Sessione {session}: Thesis Fast default solo New York"
-        return ctx
-    if session not in ["EUROPE", "NEWYORK"]:
-        ctx["reason"] = f"Sessione {session}: Thesis Fast non attivo"
-        return ctx
-
-    # v47.3: non opero sul primo flip della tesi.
-    # Se alle 14:45 passa BUY->SELL per un solo minuto e alle 14:46 torna BUY,
-    # il SELL non nasce. Durante shock/evento il default sale a 3 conferme.
-    if not thesis_confirmed or str(state.get("stable_preferred") or "").upper() != preferred:
+    # v47.8: non opero sul primo flip della tesi.
+    # 1a lettura = ARMED; 2a lettura consecutiva = tesi stabile.
+    # Anche durante shock/evento restiamo a 2 conferme, poi serve comunque il trigger locale.
+    if (
+        not thesis_confirmed
+        or str(state.get("stable_preferred") or "").upper() != preferred
+        or str(state.get("stable_session") or "").upper() != session
+    ):
         ctx["reason"] = (
-            f"Thesis in stabilizzazione {candidate_count}/{required_confirms}: "
+            f"Thesis {session} in stabilizzazione {candidate_count}/{required_confirms}: "
             f"{status} -> {preferred}"
         )
         return ctx
@@ -13742,8 +13814,9 @@ def thesis_fast_context(data, thesis_ctx=None):
     mature_buy = bool(mature_ctx.get("mature_buy"))
     mature_sell = bool(mature_ctx.get("mature_sell"))
 
-    # Mature lock simmetrico: non combatto una gamba NY già dominante per una sola candela.
-    if signal == "SELL" and mature_buy and not mature_ctx.get("strong_bear_reversal"):
+    # Mature lock v47.3 resta identico per NEW YORK. In Europa non lo applichiamo:
+    # la Session Thesis europea e' gia' il filtro dominante per il 3P.
+    if session == "NEWYORK" and signal == "SELL" and mature_buy and not mature_ctx.get("strong_bear_reversal"):
         ctx.update({
             "session": session, "preferred": preferred, "status": status,
             "mature_lock": "BUY", "mature_ctx": mature_ctx,
@@ -13755,7 +13828,7 @@ def thesis_fast_context(data, thesis_ctx=None):
             f"SELL richiede micro-BOS bearish o {THESIS_FAST_MATURE_REVERSAL_CONFIRM_BARS} conferme bearish"
         )
         return ctx
-    if signal == "BUY" and mature_sell and not mature_ctx.get("strong_bull_reversal"):
+    if session == "NEWYORK" and signal == "BUY" and mature_sell and not mature_ctx.get("strong_bull_reversal"):
         ctx.update({
             "session": session, "preferred": preferred, "status": status,
             "mature_lock": "SELL", "mature_ctx": mature_ctx,
@@ -13770,7 +13843,68 @@ def thesis_fast_context(data, thesis_ctx=None):
     trigger = None
     detail = None
 
-    if signal == "BUY":
+    # =========================
+    # EUROPE — Thesis Fast 3P
+    # =========================
+    # La tesi ha gia' deciso REVERSAL/FADE/BREAKOUT. Qui non rifacciamo il MAIN:
+    # chiediamo solo stabilita' + conferma locale, una volta per gamba/sessione.
+    if session == "EUROPE":
+        if signal == "BUY" and status == "EUROPE_REVERSAL_BUY":
+            europe_reversal_buy = bool(
+                recovery_low >= THESIS_FAST_EUROPE_REVERSAL_MIN_RECOVERY
+                and (not cur_open or price >= cur_open - THESIS_FAST_EUROPE_OPEN_TOLERANCE)
+                and bull_confirm
+            )
+            if europe_reversal_buy:
+                trigger = "EUROPE_REVERSAL_CONFIRM_BUY"
+                detail = (
+                    f"recovery Europa {round(recovery_low, 2)} dal low, "
+                    f"prezzo {round(price, 3)} vs open {round(cur_open, 3)}"
+                )
+
+        elif signal == "BUY" and status == "EUROPE_BREAKOUT_BUY":
+            europe_breakout_buy = bool(
+                (current_move >= THESIS_FAST_EUROPE_BREAKOUT_MIN_MOVE
+                 or (cur_position >= 0 and cur_position >= THESIS_FAST_EUROPE_BREAKOUT_BUY_MIN_POSITION))
+                and bull_confirm
+            )
+            if europe_breakout_buy:
+                trigger = "EUROPE_BREAKOUT_CONFIRM_BUY"
+                detail = (
+                    f"breakout Europa: move {round(current_move, 2)}, "
+                    f"pos {round(cur_position, 2)}"
+                )
+
+        elif signal == "SELL" and status == "EUROPE_FADE_SELL":
+            europe_fade_sell = bool(
+                retrace_high >= THESIS_FAST_EUROPE_FADE_MIN_RETRACE
+                and (not cur_open or price <= cur_open + THESIS_FAST_EUROPE_OPEN_TOLERANCE)
+                and bear_confirm
+            )
+            if europe_fade_sell:
+                trigger = "EUROPE_FADE_CONFIRM_SELL"
+                detail = (
+                    f"fade Europa {round(retrace_high, 2)} dal massimo, "
+                    f"prezzo {round(price, 3)} vs open {round(cur_open, 3)}"
+                )
+
+        elif signal == "SELL" and status == "EUROPE_BREAKOUT_SELL":
+            europe_breakout_sell = bool(
+                (current_move <= -THESIS_FAST_EUROPE_BREAKOUT_MIN_MOVE
+                 or (cur_position >= 0 and cur_position <= THESIS_FAST_EUROPE_BREAKOUT_SELL_MAX_POSITION))
+                and bear_confirm
+            )
+            if europe_breakout_sell:
+                trigger = "EUROPE_BREAKOUT_CONFIRM_SELL"
+                detail = (
+                    f"breakout Europa: move {round(current_move, 2)}, "
+                    f"pos {round(cur_position, 2)}"
+                )
+
+    # =========================
+    # NEW YORK — v47.3 invariata
+    # =========================
+    elif session == "NEWYORK" and signal == "BUY":
         low_rebound = bool(
             cur_low
             and recovery_low >= THESIS_FAST_MIN_LOW_REBOUND
@@ -13793,19 +13927,19 @@ def thesis_fast_context(data, thesis_ctx=None):
             and bull_confirm
         )
         if low_rebound:
-            trigger = "NY_LOW_REBOUND_BUY"
+            trigger = "NEWYORK_LOW_REBOUND_BUY"
             detail = f"recovery dal low {round(recovery_low, 2)} punti"
         elif open_reclaim:
-            trigger = "NY_OPEN_RECLAIM_BUY"
-            detail = f"NY open {round(cur_open, 3)} recuperato"
+            trigger = "NEWYORK_OPEN_RECLAIM_BUY"
+            detail = f"NEWYORK open {round(cur_open, 3)} recuperato"
         elif mature_rebound_pullback:
-            trigger = "NY_MATURE_REBOUND_PULLBACK_BUY"
+            trigger = "NEWYORK_MATURE_REBOUND_PULLBACK_BUY"
             detail = (
-                f"recovery NY maturo, pullback {round(retrace_high, 2)} dal massimo "
+                f"recovery NEWYORK maturo, pullback {round(retrace_high, 2)} dal massimo "
                 f"con open {round(cur_open, 3)} ancora recuperato"
             )
 
-    if signal == "SELL":
+    elif session == "NEWYORK" and signal == "SELL":
         high_rejection = bool(
             cur_high
             and retrace_high >= THESIS_FAST_MIN_HIGH_REJECTION
@@ -13828,15 +13962,15 @@ def thesis_fast_context(data, thesis_ctx=None):
             and bear_confirm
         )
         if high_rejection:
-            trigger = "NY_HIGH_REJECTION_SELL"
+            trigger = "NEWYORK_HIGH_REJECTION_SELL"
             detail = f"retrace dal massimo {round(retrace_high, 2)} punti"
         elif open_loss:
-            trigger = "NY_OPEN_LOSS_SELL"
-            detail = f"NY open {round(cur_open, 3)} perso"
+            trigger = "NEWYORK_OPEN_LOSS_SELL"
+            detail = f"NEWYORK open {round(cur_open, 3)} perso"
         elif mature_sell_relief:
-            trigger = "NY_MATURE_SELL_RELIEF_SELL"
+            trigger = "NEWYORK_MATURE_SELL_RELIEF_SELL"
             detail = (
-                f"SELL NY maturo, relief {round(recovery_low, 2)} dal minimo "
+                f"SELL NEWYORK maturo, relief {round(recovery_low, 2)} dal minimo "
                 f"con open {round(cur_open, 3)} ancora perso"
             )
 
@@ -13918,6 +14052,7 @@ def build_thesis_fast_trade(data, ctx):
         "trigger": ctx.get("trigger"),
         "trigger_detail": ctx.get("trigger_detail"),
         "leg_id": ctx.get("leg_id"),
+        "session": ctx.get("session"),
         "session_open": ctx.get("session_open"),
         "session_high": ctx.get("session_high"),
         "session_low": ctx.get("session_low"),
@@ -13942,17 +14077,20 @@ Entry: {fmt_price(trade.get('entry'))}
 SL: {fmt_price(trade.get('sl'))}
 TP: {fmt_price(trade.get('tp'))}
 
+🧭 Sessione: {ctx.get('session')}
 🧭 Thesis: {ctx.get('status')} -> {ctx.get('preferred')}
 🔒 Stabilità tesi: {ctx.get('thesis_candidate_count')}/{ctx.get('thesis_required_confirms')}
 ⚠️ Event shock: {ctx.get('event_shock')}
 🎯 Trigger: {ctx.get('trigger')}
 Dettaglio: {ctx.get('trigger_detail')}
-NY Open: {round(to_float(ctx.get('session_open')), 3)}
-NY High: {round(to_float(ctx.get('session_high')), 3)}
-NY Low: {round(to_float(ctx.get('session_low')), 3)}
+Session Open: {round(to_float(ctx.get('session_open')), 3)}
+Session High: {round(to_float(ctx.get('session_high')), 3)}
+Session Low: {round(to_float(ctx.get('session_low')), 3)}
 
 Regola:
-- 1 trade massimo per gamba della tesi
+- operativo SOLO EUROPE + NEWYORK
+- 1a conferma = ARMED, 2a conferma + trigger = OPERAZIONE
+- 1 trade massimo per gamba della tesi per sessione
 - target rapido {THESIS_FAST_TP_POINTS} punti
 - MAIN e FAST 2P restano indipendenti
 """
@@ -13973,6 +14111,11 @@ def process_thesis_fast(data, thesis_ctx=None):
             result["reason"] = error
             return result
         THESIS_FAST_TRADES.append(trade)
+        # v47.4: mirror SHADOW del Thesis Fast; nessun impatto sul motore originale.
+        try:
+            shadow_register_thesis_trade(trade)
+        except Exception as e:
+            print(f"[v47.4] shadow THESIS register error: {type(e).__name__}: {e}", flush=True)
         state["traded_leg_id"] = ctx.get("leg_id")
         state["last_trigger"] = ctx.get("trigger")
         save_thesis_fast_trades()
@@ -14064,6 +14207,7 @@ def thesis_fast_status_route():
         "symbol": symbol,
         "tp_points": THESIS_FAST_TP_POINTS,
         "sl_points": THESIS_FAST_SL_POINTS,
+        "allowed_sessions": sorted(THESIS_FAST_ALLOWED_SESSIONS),
         "cooldown_seconds": THESIS_FAST_COOLDOWN_SECONDS,
         "active": len(thesis_fast_active_trades(symbol)),
         "today": len(thesis_fast_today_trades(symbol)),
@@ -14769,6 +14913,11 @@ Il motore veloce cerca più segnali da 2 punti, ma questo è stato filtrato perc
 def save_fast_trade(trade):
     FAST_TRADES.append(trade)
     save_fast_trades()
+    # v47.4: mirror SHADOW del FAST; non altera il motore FAST.
+    try:
+        shadow_register_fast_trade(trade)
+    except Exception as e:
+        print(f"[v47.4] shadow FAST register error: {type(e).__name__}: {e}", flush=True)
     return trade
 
 
@@ -15140,6 +15289,1133 @@ def has_main_context_for_fast(symbol, signal):
             return True, trade
     return False, None
 
+
+# ============================================================
+# v47.4 — SHADOW EXECUTION MANAGER / MONEY MANAGEMENT LAB
+# ============================================================
+# SCOPO:
+# - NON cambia la logica MAIN / FAST 2P / THESIS FAST.
+# - NON invia ordini reali al broker.
+# - Simula esattamente come verrebbe gestito un conto di riferimento (default 300 EUR)
+#   con due gambe da 0.01 lot e gestione progressiva dei TP.
+# - Durante il primo mese i Daily Target/Loss vengono REGISTRATI ma, di default,
+#   NON bloccano il bot: serve a confrontare RAW vs "cosa sarebbe successo con lock".
+#
+# Gestione MAIN:
+#   TP1 -> SL entrambe a BE
+#   TP2 -> SL entrambe a TP1
+#   TP3 -> chiude LEG A; LEG B SL a TP2
+#   TP4 -> runner SL a TP3
+#   TP5 -> runner SL a TP4
+#   ...
+#   TP8 -> chiude runner
+#
+# FAST / THESIS FAST:
+#   2 gambe uguali; entrambe chiudono sul loro unico TP o SL.
+#
+# PnL default calibrato sull'ipotesi dell'utente:
+#   1.00 punto XAUUSD * 0.01 lot ~= 1 EUR
+# quindi EUR_PER_POINT_PER_LOT = 100.
+# Va poi verificato col broker demo reale prima di passare alla fase live/demo bridge.
+
+SHADOW_EXECUTION_ENABLED = os.getenv("SHADOW_EXECUTION_ENABLED", "TRUE").upper() == "TRUE"
+SHADOW_EXECUTION_FILE = os.getenv("SHADOW_EXECUTION_FILE", "shadow_execution.json")
+SHADOW_START_BALANCE_EUR = float(os.getenv("SHADOW_START_BALANCE_EUR", "300.0"))
+SHADOW_LEG_LOT = float(os.getenv("SHADOW_LEG_LOT", "0.01"))
+SHADOW_LEGS = max(1, int(os.getenv("SHADOW_LEGS", "2")))
+SHADOW_EUR_PER_POINT_PER_LOT = float(os.getenv("SHADOW_EUR_PER_POINT_PER_LOT", "100.0"))
+SHADOW_COST_EUR_PER_LEG = max(0.0, float(os.getenv("SHADOW_COST_EUR_PER_LEG", "0.0")))
+SHADOW_DAILY_TARGET_EUR = float(os.getenv("SHADOW_DAILY_TARGET_EUR", "50.0"))
+SHADOW_DAILY_MAX_LOSS_EUR = float(os.getenv("SHADOW_DAILY_MAX_LOSS_EUR", "30.0"))
+SHADOW_ENFORCE_DAILY_LOCK = os.getenv("SHADOW_ENFORCE_DAILY_LOCK", "FALSE").upper() == "TRUE"
+SHADOW_MAX_TRADES_PER_DAY = int(os.getenv("SHADOW_MAX_TRADES_PER_DAY", "0"))  # 0 = solo misura, nessun limite
+SHADOW_MAX_CONSECUTIVE_LOSSES = int(os.getenv("SHADOW_MAX_CONSECUTIVE_LOSSES", "0"))  # 0 = solo misura
+SHADOW_TELEGRAM_ENABLED = os.getenv("SHADOW_TELEGRAM_ENABLED", "TRUE").upper() == "TRUE"
+SHADOW_TELEGRAM_OPEN_ENABLED = os.getenv("SHADOW_TELEGRAM_OPEN_ENABLED", "FALSE").upper() == "TRUE"
+SHADOW_MAIN_ENTRY_POLICY = os.getenv("SHADOW_MAIN_ENTRY_POLICY", "WORST_ZONE").upper()
+SHADOW_RESET_HOUR = int(os.getenv("SHADOW_RESET_HOUR", "0"))
+SHADOW_RESET_MINUTE = int(os.getenv("SHADOW_RESET_MINUTE", "5"))
+SHADOW_ADMIN_TOKEN = os.getenv("SHADOW_ADMIN_TOKEN", "")
+
+SHADOW_STATE = {
+    "version": "v47.4-shadow-1",
+    "balance_start": SHADOW_START_BALANCE_EUR,
+    "balance_eur": SHADOW_START_BALANCE_EUR,
+    "total_realized_eur": 0.0,
+    "trades": [],
+    "daily": {},
+    "last_save": 0,
+}
+
+
+def shadow_trading_day_key(ts=None):
+    """Trading day rolls at 00:05 Europe/Rome (configurable)."""
+    dt = local_datetime(ts)
+    minutes = dt.hour * 60 + dt.minute
+    reset_minutes = SHADOW_RESET_HOUR * 60 + SHADOW_RESET_MINUTE
+    if minutes < reset_minutes:
+        from datetime import timedelta
+        dt = dt - timedelta(days=1)
+    return dt.strftime("%Y-%m-%d")
+
+
+def _shadow_daily(day_key=None):
+    day_key = day_key or shadow_trading_day_key()
+    daily = SHADOW_STATE.setdefault("daily", {}).setdefault(day_key, {
+        "day": day_key,
+        "start_balance_eur": round(to_float(SHADOW_STATE.get("balance_eur"), SHADOW_START_BALANCE_EUR), 2),
+        "realized_eur": 0.0,
+        "trade_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "be_or_flat": 0,
+        "consecutive_losses": 0,
+        "max_consecutive_losses": 0,
+        "peak_realized_eur": 0.0,
+        "trough_realized_eur": 0.0,
+        "shadow_target_hit": False,
+        "shadow_target_hit_at": None,
+        "shadow_loss_limit_hit": False,
+        "shadow_loss_limit_hit_at": None,
+        "would_lock": False,
+        "would_lock_reason": None,
+        "would_lock_at": None,
+        "would_lock_pnl_eur": None,
+        "actual_lock": False,
+        "actual_lock_reason": None,
+    })
+    return daily
+
+
+def save_shadow_execution_state(force=False):
+    if not SHADOW_EXECUTION_ENABLED:
+        return
+    try:
+        now = now_ts()
+        if not force and now - to_float(SHADOW_STATE.get("last_save"), 0) < 2:
+            return
+        SHADOW_STATE["last_save"] = now
+        tmp = SHADOW_EXECUTION_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(SHADOW_STATE, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, SHADOW_EXECUTION_FILE)
+    except Exception as e:
+        print(f"[v47.4] Shadow save error: {type(e).__name__}: {e}", flush=True)
+
+
+def load_shadow_execution_state():
+    global SHADOW_STATE
+    if not SHADOW_EXECUTION_ENABLED:
+        return
+    if not os.path.exists(SHADOW_EXECUTION_FILE):
+        _shadow_daily()
+        return
+    try:
+        with open(SHADOW_EXECUTION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            SHADOW_STATE.update(data)
+            SHADOW_STATE.setdefault("trades", [])
+            SHADOW_STATE.setdefault("daily", {})
+            SHADOW_STATE.setdefault("balance_eur", SHADOW_START_BALANCE_EUR)
+            SHADOW_STATE.setdefault("total_realized_eur", 0.0)
+        _shadow_daily()
+    except Exception as e:
+        print(f"[v47.4] Shadow load error: {type(e).__name__}: {e}", flush=True)
+        _shadow_daily()
+
+
+def shadow_direction_mult(signal):
+    return 1.0 if normalize_signal(signal) == "BUY" else -1.0
+
+
+def shadow_leg_pnl(entry, exit_price, signal, lot=None):
+    lot = SHADOW_LEG_LOT if lot is None else to_float(lot, SHADOW_LEG_LOT)
+    gross = (to_float(exit_price) - to_float(entry)) * shadow_direction_mult(signal) * lot * SHADOW_EUR_PER_POINT_PER_LOT
+    return round(gross - SHADOW_COST_EUR_PER_LEG, 2)
+
+
+def _shadow_trade_key(engine, source_trade_id):
+    return f"{str(engine).upper()}:{source_trade_id}"
+
+
+def shadow_find_trade(engine, source_trade_id):
+    key = _shadow_trade_key(engine, source_trade_id)
+    for t in SHADOW_STATE.get("trades", []):
+        if t.get("key") == key:
+            return t
+    return None
+
+
+def shadow_active_trades(symbol=None):
+    out = []
+    for t in SHADOW_STATE.get("trades", []):
+        if symbol and str(t.get("symbol", "")).upper() != str(symbol).upper():
+            continue
+        if t.get("status") in ["PENDING", "OPEN"]:
+            out.append(t)
+    return out
+
+
+def shadow_is_locked(day_key=None):
+    d = _shadow_daily(day_key)
+    return bool(SHADOW_ENFORCE_DAILY_LOCK and d.get("actual_lock"))
+
+
+def _shadow_update_daily_thresholds(daily):
+    pnl = round(to_float(daily.get("realized_eur"), 0), 2)
+    now_local = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+
+    if SHADOW_DAILY_TARGET_EUR > 0 and pnl >= SHADOW_DAILY_TARGET_EUR:
+        if not daily.get("shadow_target_hit"):
+            daily["shadow_target_hit"] = True
+            daily["shadow_target_hit_at"] = now_local
+        if not daily.get("would_lock"):
+            daily["would_lock"] = True
+            daily["would_lock_reason"] = "DAILY_TARGET"
+            daily["would_lock_at"] = now_local
+            daily["would_lock_pnl_eur"] = pnl
+        if SHADOW_ENFORCE_DAILY_LOCK:
+            daily["actual_lock"] = True
+            daily["actual_lock_reason"] = "DAILY_TARGET"
+
+    if SHADOW_DAILY_MAX_LOSS_EUR > 0 and pnl <= -abs(SHADOW_DAILY_MAX_LOSS_EUR):
+        if not daily.get("shadow_loss_limit_hit"):
+            daily["shadow_loss_limit_hit"] = True
+            daily["shadow_loss_limit_hit_at"] = now_local
+        if not daily.get("would_lock"):
+            daily["would_lock"] = True
+            daily["would_lock_reason"] = "DAILY_MAX_LOSS"
+            daily["would_lock_at"] = now_local
+            daily["would_lock_pnl_eur"] = pnl
+        if SHADOW_ENFORCE_DAILY_LOCK:
+            daily["actual_lock"] = True
+            daily["actual_lock_reason"] = "DAILY_MAX_LOSS"
+
+    if SHADOW_MAX_TRADES_PER_DAY > 0 and int(daily.get("trade_count", 0)) >= SHADOW_MAX_TRADES_PER_DAY:
+        if not daily.get("would_lock"):
+            daily["would_lock"] = True
+            daily["would_lock_reason"] = "MAX_TRADES"
+            daily["would_lock_at"] = now_local
+            daily["would_lock_pnl_eur"] = pnl
+        if SHADOW_ENFORCE_DAILY_LOCK:
+            daily["actual_lock"] = True
+            daily["actual_lock_reason"] = "MAX_TRADES"
+
+    if SHADOW_MAX_CONSECUTIVE_LOSSES > 0 and int(daily.get("consecutive_losses", 0)) >= SHADOW_MAX_CONSECUTIVE_LOSSES:
+        if not daily.get("would_lock"):
+            daily["would_lock"] = True
+            daily["would_lock_reason"] = "MAX_CONSECUTIVE_LOSSES"
+            daily["would_lock_at"] = now_local
+            daily["would_lock_pnl_eur"] = pnl
+        if SHADOW_ENFORCE_DAILY_LOCK:
+            daily["actual_lock"] = True
+            daily["actual_lock_reason"] = "MAX_CONSECUTIVE_LOSSES"
+
+
+def _shadow_apply_realized(trade, amount, reason):
+    amount = round(to_float(amount), 2)
+    trade["realized_eur"] = round(to_float(trade.get("realized_eur"), 0) + amount, 2)
+    trade.setdefault("events", []).append({
+        "ts": now_ts(),
+        "local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "event": "REALIZED",
+        "reason": reason,
+        "amount_eur": amount,
+        "trade_realized_eur": trade["realized_eur"],
+    })
+    SHADOW_STATE["total_realized_eur"] = round(to_float(SHADOW_STATE.get("total_realized_eur"), 0) + amount, 2)
+    SHADOW_STATE["balance_eur"] = round(to_float(SHADOW_STATE.get("balance_eur"), SHADOW_START_BALANCE_EUR) + amount, 2)
+    daily = _shadow_daily(trade.get("day_key"))
+    daily["realized_eur"] = round(to_float(daily.get("realized_eur"), 0) + amount, 2)
+    daily["peak_realized_eur"] = max(to_float(daily.get("peak_realized_eur"), 0), daily["realized_eur"])
+    daily["trough_realized_eur"] = min(to_float(daily.get("trough_realized_eur"), 0), daily["realized_eur"])
+    _shadow_update_daily_thresholds(daily)
+
+
+def _shadow_finalize_trade(trade, status, close_reason):
+    if trade.get("status") not in ["PENDING", "OPEN"]:
+        return
+    trade["status"] = status
+    trade["closed"] = now_ts()
+    trade["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    trade["close_reason"] = close_reason
+    pnl = round(to_float(trade.get("realized_eur"), 0), 2)
+    daily = _shadow_daily(trade.get("day_key"))
+    if pnl > 0.001:
+        daily["wins"] = int(daily.get("wins", 0)) + 1
+        daily["consecutive_losses"] = 0
+    elif pnl < -0.001:
+        daily["losses"] = int(daily.get("losses", 0)) + 1
+        daily["consecutive_losses"] = int(daily.get("consecutive_losses", 0)) + 1
+        daily["max_consecutive_losses"] = max(int(daily.get("max_consecutive_losses", 0)), int(daily.get("consecutive_losses", 0)))
+    else:
+        daily["be_or_flat"] = int(daily.get("be_or_flat", 0)) + 1
+        daily["consecutive_losses"] = 0
+    _shadow_update_daily_thresholds(daily)
+    save_shadow_execution_state(force=True)
+    if SHADOW_TELEGRAM_ENABLED:
+        send_telegram(
+            f"🧪 SHADOW EXECUTION — TRADE CHIUSO\n\n"
+            f"Motore: {trade.get('engine')}\n"
+            f"{trade.get('symbol')} {trade.get('signal')}\n"
+            f"Source ID: {trade.get('source_trade_id')}\n"
+            f"Esito: {status} / {close_reason}\n"
+            f"PnL simulato trade: {pnl:+.2f} €\n"
+            f"PnL giorno RAW: {to_float(daily.get('realized_eur')):+.2f} €\n"
+            f"Saldo simulato: {to_float(SHADOW_STATE.get('balance_eur')):.2f} €\n"
+            f"Would-lock: {daily.get('would_lock')} {daily.get('would_lock_reason') or ''}\n\n"
+            f"⚠️ Solo simulazione: nessun ordine inviato al broker."
+        )
+
+
+def _shadow_register_trade(engine, source_trade, signal, symbol, entry, sl, tp_levels, pending=True, setup=None, entry_zone=None):
+    if not SHADOW_EXECUTION_ENABLED or not source_trade:
+        return None
+    source_id = str(source_trade.get("id"))
+    if shadow_find_trade(engine, source_id):
+        return shadow_find_trade(engine, source_id)
+    day_key = shadow_trading_day_key()
+    daily = _shadow_daily(day_key)
+    # In fase LAB non blocchiamo nulla di default; se ENFORCE=TRUE, non registriamo nuovi trade dopo lock.
+    if shadow_is_locked(day_key):
+        return None
+    trade = {
+        "key": _shadow_trade_key(engine, source_id),
+        "engine": str(engine).upper(),
+        "source_trade_id": source_id,
+        "setup": setup,
+        "symbol": str(symbol or "XAUUSD").upper(),
+        "signal": normalize_signal(signal),
+        "status": "PENDING" if pending else "OPEN",
+        "entry": round(to_float(entry), 5),
+        "entry_zone": entry_zone,
+        "initial_sl": round(to_float(sl), 5),
+        "managed_sl": round(to_float(sl), 5),
+        "tp_levels": [round(to_float(x), 5) for x in tp_levels if to_float(x)],
+        "highest_tp": 0,
+        "legs": [
+            {"name": f"LEG_{chr(65+i)}", "lot": SHADOW_LEG_LOT, "status": "OPEN" if not pending else "PENDING", "closed_price": None, "pnl_eur": 0.0}
+            for i in range(SHADOW_LEGS)
+        ],
+        "realized_eur": 0.0,
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "activated": now_ts() if not pending else None,
+        "activated_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S") if not pending else None,
+        "closed": None,
+        "closed_local": None,
+        "day_key": day_key,
+        "events": [],
+    }
+    SHADOW_STATE.setdefault("trades", []).append(trade)
+    daily["trade_count"] = int(daily.get("trade_count", 0)) + 1
+    _shadow_update_daily_thresholds(daily)
+    save_shadow_execution_state(force=True)
+    # v47.6: mirror the shadow plan into the MT4 DEMO bridge only when engine=MAIN.
+    # This does not alter the source strategy; it only queues an execution plan.
+    try:
+        mt4_bridge_queue_trade(trade)
+    except Exception as e:
+        print(f"[v47.6] MT4 queue error: {type(e).__name__}: {e}", flush=True)
+    if SHADOW_TELEGRAM_ENABLED and SHADOW_TELEGRAM_OPEN_ENABLED:
+        send_telegram(
+            f"🧪 SHADOW EXECUTION — REGISTRATO\n\n"
+            f"Motore: {trade.get('engine')}\n"
+            f"{trade.get('symbol')} {trade.get('signal')}\n"
+            f"Entry ref: {fmt_price(trade.get('entry'))}\n"
+            f"SL iniziale: {fmt_price(trade.get('initial_sl'))}\n"
+            f"Lotti simulati: {SHADOW_LEGS} x {SHADOW_LEG_LOT}\n"
+            f"Daily RAW: {to_float(daily.get('realized_eur')):+.2f} €\n"
+            f"⚠️ Nessun ordine reale inviato."
+        )
+    return trade
+
+
+def shadow_register_main_trade(source_trade):
+    if not source_trade:
+        return None
+    low = to_float(source_trade.get("entry_low"))
+    high = to_float(source_trade.get("entry_high"))
+    signal = normalize_signal(source_trade.get("signal"))
+    if not low or not high:
+        return None
+    if SHADOW_MAIN_ENTRY_POLICY == "MID":
+        entry = (low + high) / 2.0
+    else:
+        # Conservativo: peggior prezzo della zona per la direzione.
+        entry = high if signal == "BUY" else low
+    tps = [source_trade.get(f"tp{i}") for i in range(1, 9)]
+    return _shadow_register_trade(
+        "MAIN", source_trade, signal, source_trade.get("symbol"), entry,
+        source_trade.get("sl"), tps, pending=True,
+        setup=source_trade.get("setup_type"), entry_zone=[low, high]
+    )
+
+
+def shadow_register_fast_trade(source_trade):
+    if not source_trade:
+        return None
+    return _shadow_register_trade(
+        "FAST", source_trade, source_trade.get("signal"), source_trade.get("symbol"),
+        source_trade.get("entry"), source_trade.get("sl"), [source_trade.get("tp")],
+        pending=True, setup=source_trade.get("fast_version") or "FAST"
+    )
+
+
+def shadow_register_thesis_trade(source_trade):
+    if not source_trade:
+        return None
+    return _shadow_register_trade(
+        "THESIS_FAST", source_trade, source_trade.get("signal"), source_trade.get("symbol"),
+        source_trade.get("entry"), source_trade.get("sl"), [source_trade.get("tp")],
+        pending=False, setup=source_trade.get("thesis_status") or "THESIS_FAST"
+    )
+
+
+def _shadow_activate_if_touched(trade, high, low):
+    if trade.get("status") != "PENDING":
+        return trade.get("status") == "OPEN"
+    entry = to_float(trade.get("entry"))
+    engine = trade.get("engine")
+    touched = False
+    if engine == "MAIN" and trade.get("entry_zone"):
+        zlo, zhi = trade.get("entry_zone")
+        touched = low <= to_float(zhi) and high >= to_float(zlo)
+    else:
+        signal = normalize_signal(trade.get("signal"))
+        touched = (high >= entry) if signal == "BUY" else (low <= entry)
+    if touched:
+        trade["status"] = "OPEN"
+        trade["activated"] = now_ts()
+        trade["activated_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        for leg in trade.get("legs", []):
+            if leg.get("status") == "PENDING":
+                leg["status"] = "OPEN"
+        trade.setdefault("events", []).append({"ts": now_ts(), "event": "ACTIVATED", "price": entry})
+        save_shadow_execution_state(force=True)
+        return True
+    return False
+
+
+def _shadow_close_leg(trade, leg, exit_price, reason):
+    if leg.get("status") != "OPEN":
+        return 0.0
+    pnl = shadow_leg_pnl(trade.get("entry"), exit_price, trade.get("signal"), leg.get("lot"))
+    leg["status"] = "CLOSED"
+    leg["closed_price"] = round(to_float(exit_price), 5)
+    leg["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    leg["pnl_eur"] = pnl
+    leg["close_reason"] = reason
+    _shadow_apply_realized(trade, pnl, reason)
+    return pnl
+
+
+def _shadow_all_legs_closed(trade):
+    return all(leg.get("status") == "CLOSED" for leg in trade.get("legs", []))
+
+
+def _shadow_main_manage(trade, high, low):
+    signal = normalize_signal(trade.get("signal"))
+    entry = to_float(trade.get("entry"))
+    sl = to_float(trade.get("managed_sl"), to_float(trade.get("initial_sl")))
+    tps = [to_float(x) for x in trade.get("tp_levels", [])]
+    if not tps:
+        return
+
+    # Conservativo: se nello stesso bar sono possibili SL e TP, prima SL.
+    stop_hit = (low <= sl) if signal == "BUY" else (high >= sl)
+    if stop_hit:
+        for leg in trade.get("legs", []):
+            _shadow_close_leg(trade, leg, sl, f"SL_MANAGED_AFTER_TP{trade.get('highest_tp', 0)}")
+        status = "SL" if int(trade.get("highest_tp", 0)) == 0 else "TRAIL_EXIT"
+        _shadow_finalize_trade(trade, status, f"SL_MANAGED_{fmt_price(sl)}")
+        return
+
+    highest = int(trade.get("highest_tp", 0))
+    reached = highest
+    for idx, tp in enumerate(tps, 1):
+        hit = (high >= tp) if signal == "BUY" else (low <= tp)
+        if hit:
+            reached = max(reached, idx)
+    if reached <= highest:
+        return
+
+    # Avanza step-by-step anche se la candela salta più TP.
+    for level in range(highest + 1, reached + 1):
+        tp = tps[level - 1]
+        trade["highest_tp"] = level
+        trade.setdefault("events", []).append({"ts": now_ts(), "event": f"TP{level}", "price": tp})
+        if level == 1:
+            trade["managed_sl"] = entry
+        elif level == 2:
+            trade["managed_sl"] = tps[0]
+        elif level == 3:
+            # Chiude la prima gamba a TP3; runner protetto a TP2.
+            if trade.get("legs"):
+                _shadow_close_leg(trade, trade["legs"][0], tp, "PARTIAL_TP3")
+            trade["managed_sl"] = tps[1]
+        elif level < len(tps):
+            # TP4 -> SL TP3, TP5 -> SL TP4, ...
+            trade["managed_sl"] = tps[level - 2]
+        else:
+            # Ultimo TP disponibile: chiude tutte le gambe residue.
+            for leg in trade.get("legs", []):
+                _shadow_close_leg(trade, leg, tp, f"FINAL_TP{level}")
+            _shadow_finalize_trade(trade, "TP_FINAL", f"TP{level}")
+            return
+    save_shadow_execution_state(force=True)
+
+
+def _shadow_scalp_manage(trade, high, low):
+    signal = normalize_signal(trade.get("signal"))
+    sl = to_float(trade.get("initial_sl"))
+    tp = to_float((trade.get("tp_levels") or [0])[0])
+    stop_hit = (low <= sl) if signal == "BUY" else (high >= sl)
+    tp_hit = (high >= tp) if signal == "BUY" else (low <= tp)
+    if stop_hit:
+        for leg in trade.get("legs", []):
+            _shadow_close_leg(trade, leg, sl, "SL")
+        _shadow_finalize_trade(trade, "SL", "SL")
+    elif tp_hit:
+        for leg in trade.get("legs", []):
+            _shadow_close_leg(trade, leg, tp, "TP")
+        trade["highest_tp"] = 1
+        _shadow_finalize_trade(trade, "TP", "TP")
+
+
+def shadow_handle_price_update(data):
+    if not SHADOW_EXECUTION_ENABLED:
+        return []
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    high = to_float((data or {}).get("high"), 0)
+    low = to_float((data or {}).get("low"), 0)
+    if not high or not low:
+        p = get_price_from_data(data or {})
+        high = high or p
+        low = low or p
+    if not high or not low:
+        return []
+
+    _shadow_daily(shadow_trading_day_key())
+    updates = []
+    for trade in list(shadow_active_trades(symbol)):
+        if not _shadow_activate_if_touched(trade, high, low):
+            continue
+        before_status = trade.get("status")
+        before_pnl = to_float(trade.get("realized_eur"), 0)
+        if trade.get("engine") == "MAIN":
+            _shadow_main_manage(trade, high, low)
+        else:
+            _shadow_scalp_manage(trade, high, low)
+        if trade.get("status") != before_status or to_float(trade.get("realized_eur"), 0) != before_pnl:
+            updates.append(trade.get("key"))
+    save_shadow_execution_state(force=False)
+    return updates
+
+
+def shadow_status_payload(day_key=None):
+    day_key = day_key or shadow_trading_day_key()
+    daily = _shadow_daily(day_key)
+    closed_today = [t for t in SHADOW_STATE.get("trades", []) if t.get("day_key") == day_key and t.get("status") not in ["PENDING", "OPEN"]]
+    open_today = [t for t in SHADOW_STATE.get("trades", []) if t.get("day_key") == day_key and t.get("status") in ["PENDING", "OPEN"]]
+    return {
+        "enabled": SHADOW_EXECUTION_ENABLED,
+        "mode": "SHADOW_ONLY_NO_BROKER_ORDERS",
+        "version": SHADOW_STATE.get("version"),
+        "reference_start_balance_eur": SHADOW_START_BALANCE_EUR,
+        "balance_eur": round(to_float(SHADOW_STATE.get("balance_eur")), 2),
+        "total_realized_eur": round(to_float(SHADOW_STATE.get("total_realized_eur")), 2),
+        "leg_lot": SHADOW_LEG_LOT,
+        "legs": SHADOW_LEGS,
+        "eur_per_point_per_lot": SHADOW_EUR_PER_POINT_PER_LOT,
+        "daily_target_eur": SHADOW_DAILY_TARGET_EUR,
+        "daily_max_loss_eur": SHADOW_DAILY_MAX_LOSS_EUR,
+        "enforce_daily_lock": SHADOW_ENFORCE_DAILY_LOCK,
+        "day": daily,
+        "open_shadow_trades": len(open_today),
+        "closed_shadow_trades": len(closed_today),
+    }
+
+
+@app.route("/shadow_execution")
+def shadow_execution_status():
+    return jsonify(shadow_status_payload())
+
+
+@app.route("/shadow_execution/trades")
+def shadow_execution_trades():
+    day = request.args.get("day") or shadow_trading_day_key()
+    trades = [t for t in SHADOW_STATE.get("trades", []) if t.get("day_key") == day]
+    return jsonify({"day": day, "count": len(trades), "trades": trades})
+
+
+@app.route("/shadow_execution/reset", methods=["POST"])
+def shadow_execution_reset():
+    if SHADOW_ADMIN_TOKEN:
+        token = request.headers.get("X-Shadow-Token") or (request.get_json(silent=True) or {}).get("token")
+        if token != SHADOW_ADMIN_TOKEN:
+            return jsonify({"status": "forbidden"}), 403
+    SHADOW_STATE.clear()
+    SHADOW_STATE.update({
+        "version": "v47.4-shadow-1",
+        "balance_start": SHADOW_START_BALANCE_EUR,
+        "balance_eur": SHADOW_START_BALANCE_EUR,
+        "total_realized_eur": 0.0,
+        "trades": [],
+        "daily": {},
+        "last_save": 0,
+    })
+    _shadow_daily()
+    save_shadow_execution_state(force=True)
+    return jsonify({"status": "reset", "shadow": shadow_status_payload()})
+
+
+
+# ============================================================
+# v47.6 — MT4 DEMO EXECUTION BRIDGE — MAIN ONLY
+# ============================================================
+# SCOPO:
+# - NON cambia MAIN / FAST 2P / THESIS FAST / Session Thesis.
+# - Prende SOLO i trade MAIN gia' registrati dallo SHADOW EXECUTION MANAGER e li espone
+#   a un Expert Advisor MT4 tramite polling HTTP. FAST 2P e THESIS FAST restano
+#   attivi nel bot/Telegram ma NON vengono mai inviati a MT4.
+# - DEMO ONLY di default: sia server sia EA rifiutano il reale finche' non viene
+#   esplicitamente disattivata la protezione.
+# - Nel primo mese il Daily Target/Loss resta solo osservato di default:
+#   MT4_ENFORCE_DAILY_LOCK=FALSE. Quando verra' attivato, blocchera' SOLO nuove
+#   aperture; i trade gia' aperti continueranno a essere gestiti localmente dall'EA.
+#
+# Protocollo semplice text/plain (niente JSON dentro MT4):
+#   EA -> POST /mt4/poll   (heartbeat + richiesta comando)
+#   server -> OPEN;key=value;...  oppure NONE / LOCK / DENY
+#   EA -> POST /mt4/event  (OPENED / CLOSED / ERROR)
+#
+# SICUREZZA:
+# - token obbligatorio nell'header X-MT4-Token
+# - demo-only TRUE di default
+# - account whitelist opzionale ma consigliata
+# - bridge disabilitato di default fino alla configurazione Render
+# - MAIN ONLY attivo di default: FAST e THESIS non possono generare ordini MT4
+
+MT4_BRIDGE_ENABLED = os.getenv("MT4_BRIDGE_ENABLED", "FALSE").upper() == "TRUE"
+MT4_MAIN_ONLY = os.getenv("MT4_MAIN_ONLY", "TRUE").upper() == "TRUE"
+MT4_BRIDGE_TOKEN = os.getenv("MT4_BRIDGE_TOKEN", "")
+MT4_DEMO_ONLY = os.getenv("MT4_DEMO_ONLY", "TRUE").upper() == "TRUE"
+MT4_ALLOWED_ACCOUNT = str(os.getenv("MT4_ALLOWED_ACCOUNT", "")).strip()
+MT4_BRIDGE_FILE = os.getenv("MT4_BRIDGE_FILE", "mt4_bridge.json")
+MT4_LEG_LOT = float(os.getenv("MT4_LEG_LOT", str(SHADOW_LEG_LOT)))
+MT4_LEGS = max(1, int(os.getenv("MT4_LEGS", "2")))
+MT4_COMMAND_RETRY_SECONDS = max(2, int(os.getenv("MT4_COMMAND_RETRY_SECONDS", "6")))
+MT4_MAIN_PLAN_EXPIRY_SECONDS = max(300, int(os.getenv("MT4_MAIN_PLAN_EXPIRY_SECONDS", "10800")))
+MT4_FAST_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("MT4_FAST_PLAN_EXPIRY_SECONDS", "300")))
+MT4_THESIS_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("MT4_THESIS_PLAN_EXPIRY_SECONDS", "240")))
+MT4_SCALP_ENTRY_TOLERANCE = max(0.0, float(os.getenv("MT4_SCALP_ENTRY_TOLERANCE", "0.80")))
+MT4_ENFORCE_DAILY_LOCK = os.getenv("MT4_ENFORCE_DAILY_LOCK", "FALSE").upper() == "TRUE"
+MT4_DAILY_TARGET_EUR = float(os.getenv("MT4_DAILY_TARGET_EUR", "50.0"))
+MT4_DAILY_MAX_LOSS_EUR = float(os.getenv("MT4_DAILY_MAX_LOSS_EUR", "30.0"))
+MT4_MAX_TRADES_PER_DAY = max(0, int(os.getenv("MT4_MAX_TRADES_PER_DAY", "0")))
+MT4_MAX_CONSECUTIVE_LOSSES = max(0, int(os.getenv("MT4_MAX_CONSECUTIVE_LOSSES", "0")))
+MT4_TARGET_CURRENCY = str(os.getenv("MT4_TARGET_CURRENCY", "EUR")).upper().strip()
+MT4_TELEGRAM_EVENTS = os.getenv("MT4_TELEGRAM_EVENTS", "TRUE").upper() == "TRUE"
+MT4_ADMIN_TOKEN = os.getenv("MT4_ADMIN_TOKEN", SHADOW_ADMIN_TOKEN)
+
+MT4_STATE = {
+    "version": "v47.6-mt4-demo-main-only-1",
+    "commands": [],
+    "daily": {},
+    "accounts": {},
+    "events": [],
+    "last_save": 0,
+}
+
+
+def _mt4_clean(v):
+    """Sanitize a value for the semicolon key=value wire protocol."""
+    return str(v if v is not None else "").replace(";", "_").replace("\n", " ").replace("\r", " ")
+
+
+def save_mt4_bridge_state(force=False):
+    if not MT4_BRIDGE_ENABLED:
+        return
+    try:
+        now = now_ts()
+        if not force and now - to_float(MT4_STATE.get("last_save"), 0) < 2:
+            return
+        MT4_STATE["last_save"] = now
+        tmp = MT4_BRIDGE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(MT4_STATE, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, MT4_BRIDGE_FILE)
+    except Exception as e:
+        print(f"[v47.6] MT4 bridge save error: {type(e).__name__}: {e}", flush=True)
+
+
+def load_mt4_bridge_state():
+    global MT4_STATE
+    if not MT4_BRIDGE_ENABLED:
+        return
+    if not os.path.exists(MT4_BRIDGE_FILE):
+        return
+    try:
+        with open(MT4_BRIDGE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            MT4_STATE.update(data)
+            MT4_STATE.setdefault("commands", [])
+            MT4_STATE.setdefault("daily", {})
+            MT4_STATE.setdefault("accounts", {})
+            MT4_STATE.setdefault("events", [])
+    except Exception as e:
+        print(f"[v47.6] MT4 bridge load error: {type(e).__name__}: {e}", flush=True)
+
+
+def _mt4_daily(day_key=None):
+    day_key = day_key or shadow_trading_day_key()
+    d = MT4_STATE.setdefault("daily", {}).setdefault(day_key, {
+        "day": day_key,
+        "start_balance": None,
+        "balance": None,
+        "equity": None,
+        "currency": None,
+        "closed_pnl": 0.0,
+        "equity_pnl": 0.0,
+        "trade_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "flat": 0,
+        "consecutive_losses": 0,
+        "max_consecutive_losses": 0,
+        "target_observed": False,
+        "loss_limit_observed": False,
+        "locked": False,
+        "lock_reason": None,
+        "last_heartbeat": None,
+    })
+    return d
+
+
+def _mt4_authorized(req):
+    if not MT4_BRIDGE_ENABLED:
+        return False, "BRIDGE_DISABLED"
+    if not MT4_BRIDGE_TOKEN:
+        return False, "TOKEN_NOT_CONFIGURED"
+    token = req.headers.get("X-MT4-Token", "")
+    if token != MT4_BRIDGE_TOKEN:
+        return False, "BAD_TOKEN"
+    return True, "OK"
+
+
+def _mt4_bool(v):
+    return str(v or "").strip().lower() in ["1", "true", "yes", "y", "on"]
+
+
+def _mt4_account_gate(payload):
+    account = str(payload.get("account") or "").strip()
+    is_demo = _mt4_bool(payload.get("demo"))
+    if not account:
+        return False, "MISSING_ACCOUNT"
+    if MT4_ALLOWED_ACCOUNT and account != MT4_ALLOWED_ACCOUNT:
+        return False, "ACCOUNT_NOT_ALLOWED"
+    if MT4_DEMO_ONLY and not is_demo:
+        return False, "REAL_ACCOUNT_BLOCKED"
+    return True, "OK"
+
+
+def _mt4_record_heartbeat(payload):
+    account = str(payload.get("account") or "").strip()
+    day_key = shadow_trading_day_key()
+    d = _mt4_daily(day_key)
+    balance = to_float(payload.get("balance"), 0)
+    equity = to_float(payload.get("equity"), balance)
+    currency = str(payload.get("currency") or "").upper().strip()
+    now = now_ts()
+
+    if d.get("start_balance") is None and balance:
+        d["start_balance"] = round(balance, 2)
+    if balance:
+        d["balance"] = round(balance, 2)
+    if equity:
+        d["equity"] = round(equity, 2)
+    if currency:
+        d["currency"] = currency
+    if d.get("start_balance") is not None and d.get("balance") is not None:
+        d["closed_pnl"] = round(to_float(d.get("balance")) - to_float(d.get("start_balance")), 2)
+    if d.get("start_balance") is not None and d.get("equity") is not None:
+        d["equity_pnl"] = round(to_float(d.get("equity")) - to_float(d.get("start_balance")), 2)
+    d["last_heartbeat"] = now
+
+    MT4_STATE.setdefault("accounts", {})[account] = {
+        "account": account,
+        "demo": _mt4_bool(payload.get("demo")),
+        "balance": round(balance, 2),
+        "equity": round(equity, 2),
+        "currency": currency,
+        "broker_symbol": str(payload.get("broker_symbol") or ""),
+        "ea_version": str(payload.get("ea_version") or ""),
+        "last_seen": now,
+        "last_seen_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _mt4_refresh_lock(d)
+    save_mt4_bridge_state(force=False)
+    return d
+
+
+def _mt4_refresh_lock(d):
+    pnl = to_float(d.get("closed_pnl"), 0)
+    currency = str(d.get("currency") or "").upper()
+    currency_ok = (not MT4_TARGET_CURRENCY) or (currency == MT4_TARGET_CURRENCY)
+
+    if currency_ok and MT4_DAILY_TARGET_EUR > 0 and pnl >= MT4_DAILY_TARGET_EUR:
+        d["target_observed"] = True
+        if MT4_ENFORCE_DAILY_LOCK:
+            d["locked"] = True
+            d["lock_reason"] = "DAILY_TARGET"
+    if currency_ok and MT4_DAILY_MAX_LOSS_EUR > 0 and pnl <= -abs(MT4_DAILY_MAX_LOSS_EUR):
+        d["loss_limit_observed"] = True
+        if MT4_ENFORCE_DAILY_LOCK:
+            d["locked"] = True
+            d["lock_reason"] = "DAILY_MAX_LOSS"
+    if MT4_MAX_TRADES_PER_DAY > 0 and int(d.get("trade_count", 0)) >= MT4_MAX_TRADES_PER_DAY:
+        if MT4_ENFORCE_DAILY_LOCK:
+            d["locked"] = True
+            d["lock_reason"] = "MAX_TRADES"
+    if MT4_MAX_CONSECUTIVE_LOSSES > 0 and int(d.get("consecutive_losses", 0)) >= MT4_MAX_CONSECUTIVE_LOSSES:
+        if MT4_ENFORCE_DAILY_LOCK:
+            d["locked"] = True
+            d["lock_reason"] = "MAX_CONSECUTIVE_LOSSES"
+
+
+def mt4_is_locked(day_key=None):
+    d = _mt4_daily(day_key)
+    _mt4_refresh_lock(d)
+    return bool(MT4_ENFORCE_DAILY_LOCK and d.get("locked")), d.get("lock_reason")
+
+
+def _mt4_command_id(shadow_trade):
+    return f"OPEN:{shadow_trade.get('engine')}:{shadow_trade.get('source_trade_id')}"
+
+
+def _mt4_find_command(cmd_id):
+    for c in MT4_STATE.get("commands", []):
+        if c.get("cmd_id") == cmd_id:
+            return c
+    return None
+
+
+def _mt4_engine_allowed(engine):
+    """Execution scope guard. v47.6 defaults to MAIN-only automatic execution."""
+    engine = str(engine or "").upper().strip()
+    if MT4_MAIN_ONLY:
+        return engine == "MAIN"
+    return engine in ["MAIN", "FAST", "THESIS_FAST"]
+
+
+def mt4_bridge_queue_trade(shadow_trade):
+    """Queue one deterministic OPEN plan. Safe to call repeatedly. MAIN only by default."""
+    if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN or not shadow_trade:
+        return None
+    engine = str(shadow_trade.get("engine") or "").upper().strip()
+    if not _mt4_engine_allowed(engine):
+        return None
+    cmd_id = _mt4_command_id(shadow_trade)
+    existing = _mt4_find_command(cmd_id)
+    if existing:
+        return existing
+    locked, reason = mt4_is_locked(shadow_trade.get("day_key"))
+    if locked:
+        return None
+
+    entry = to_float(shadow_trade.get("entry"), 0)
+    zone = shadow_trade.get("entry_zone") or []
+    if engine == "MAIN" and len(zone) >= 2:
+        entry_low = min(to_float(zone[0]), to_float(zone[1]))
+        entry_high = max(to_float(zone[0]), to_float(zone[1]))
+        expiry = MT4_MAIN_PLAN_EXPIRY_SECONDS
+        mode = "ZONE"
+    else:
+        entry_low = entry - MT4_SCALP_ENTRY_TOLERANCE
+        entry_high = entry + MT4_SCALP_ENTRY_TOLERANCE
+        expiry = MT4_THESIS_PLAN_EXPIRY_SECONDS if engine == "THESIS_FAST" else MT4_FAST_PLAN_EXPIRY_SECONDS
+        mode = "NEAR"
+
+    tps = [to_float(x) for x in shadow_trade.get("tp_levels", []) if to_float(x)]
+    payload = {
+        "trade_id": str(shadow_trade.get("source_trade_id")),
+        "engine": engine,
+        "setup": str(shadow_trade.get("setup") or engine),
+        "side": normalize_signal(shadow_trade.get("signal")),
+        "source_symbol": str(shadow_trade.get("symbol") or "XAUUSD").upper(),
+        "entry": round(entry, 5),
+        "entry_low": round(entry_low, 5),
+        "entry_high": round(entry_high, 5),
+        "entry_mode": mode,
+        "sl": round(to_float(shadow_trade.get("initial_sl")), 5),
+        "tp_levels": [round(x, 5) for x in tps[:8]],
+        "lot": MT4_LEG_LOT,
+        "legs": MT4_LEGS,
+        "day_key": shadow_trade.get("day_key") or shadow_trading_day_key(),
+    }
+    cmd = {
+        "cmd_id": cmd_id,
+        "type": "OPEN",
+        "status": "QUEUED",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": now_ts() + expiry,
+        "last_delivered": 0,
+        "deliveries": 0,
+        "acked_at": None,
+        "account": None,
+        "payload": payload,
+    }
+    MT4_STATE.setdefault("commands", []).append(cmd)
+    # Keep state bounded.
+    if len(MT4_STATE["commands"]) > 1000:
+        MT4_STATE["commands"] = MT4_STATE["commands"][-1000:]
+    save_mt4_bridge_state(force=True)
+    return cmd
+
+
+def mt4_bridge_reconcile_shadow():
+    if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN:
+        return
+    for t in SHADOW_STATE.get("trades", []):
+        if t.get("status") in ["PENDING", "OPEN"]:
+            try:
+                mt4_bridge_queue_trade(t)
+            except Exception as e:
+                print(f"[v47.6] MT4 reconcile error: {type(e).__name__}: {e}", flush=True)
+
+
+def _mt4_expire_commands():
+    now = now_ts()
+    changed = False
+    for c in MT4_STATE.get("commands", []):
+        if c.get("status") in ["QUEUED", "DELIVERED"] and to_float(c.get("expires_at"), 0) and now > to_float(c.get("expires_at")):
+            c["status"] = "EXPIRED"
+            c["expired_at"] = now
+            changed = True
+    if changed:
+        save_mt4_bridge_state(force=True)
+
+
+def _mt4_next_command(account):
+    _mt4_expire_commands()
+    now = now_ts()
+    for c in MT4_STATE.get("commands", []):
+        if c.get("status") not in ["QUEUED", "DELIVERED"]:
+            continue
+        payload = c.get("payload") or {}
+        if not _mt4_engine_allowed(payload.get("engine")):
+            # Safety migration: a persisted v47.5 FAST/THESIS command must never reach MT4.
+            c["status"] = "SKIPPED_ENGINE"
+            c["skipped_at"] = now
+            c["skip_reason"] = "MT4_MAIN_ONLY"
+            save_mt4_bridge_state(force=True)
+            continue
+        if c.get("status") == "DELIVERED" and now - to_float(c.get("last_delivered"), 0) < MT4_COMMAND_RETRY_SECONDS:
+            continue
+        c["status"] = "DELIVERED"
+        c["last_delivered"] = now
+        c["deliveries"] = int(c.get("deliveries", 0)) + 1
+        c["account"] = account
+        save_mt4_bridge_state(force=True)
+        return c
+    return None
+
+
+def _mt4_wire_command(c):
+    if not c:
+        return "NONE"
+    p = c.get("payload") or {}
+    parts = [
+        "OPEN",
+        f"cmd_id={_mt4_clean(c.get('cmd_id'))}",
+        f"trade_id={_mt4_clean(p.get('trade_id'))}",
+        f"engine={_mt4_clean(p.get('engine'))}",
+        f"setup={_mt4_clean(p.get('setup'))}",
+        f"side={_mt4_clean(p.get('side'))}",
+        f"source_symbol={_mt4_clean(p.get('source_symbol'))}",
+        f"entry_mode={_mt4_clean(p.get('entry_mode'))}",
+        f"entry={to_float(p.get('entry')):.5f}",
+        f"entry_low={to_float(p.get('entry_low')):.5f}",
+        f"entry_high={to_float(p.get('entry_high')):.5f}",
+        f"sl={to_float(p.get('sl')):.5f}",
+        f"lot={to_float(p.get('lot')):.2f}",
+        f"legs={int(p.get('legs') or 2)}",
+        f"expires_at={int(to_float(c.get('expires_at')))}",
+    ]
+    tps = p.get("tp_levels") or []
+    parts.append(f"tp_count={len(tps)}")
+    for i in range(8):
+        val = to_float(tps[i], 0) if i < len(tps) else 0
+        parts.append(f"tp{i+1}={val:.5f}")
+    return ";".join(parts)
+
+
+def _mt4_event_seen(event_id):
+    if not event_id:
+        return False
+    for e in MT4_STATE.get("events", []):
+        if e.get("event_id") == event_id:
+            return True
+    return False
+
+
+def _mt4_record_event(payload):
+    event_type = str(payload.get("event") or "").upper().strip()
+    trade_id = str(payload.get("trade_id") or "").strip()
+    engine = str(payload.get("engine") or "").upper().strip()
+    account = str(payload.get("account") or "").strip()
+    event_id = str(payload.get("event_id") or f"{event_type}:{engine}:{trade_id}")
+    if _mt4_event_seen(event_id):
+        return {"duplicate": True, "event_id": event_id}
+
+    row = {
+        "event_id": event_id,
+        "event": event_type,
+        "trade_id": trade_id,
+        "engine": engine,
+        "account": account,
+        "pnl": round(to_float(payload.get("pnl"), 0), 2),
+        "ticket_a": str(payload.get("ticket_a") or ""),
+        "ticket_b": str(payload.get("ticket_b") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "ts": now_ts(),
+        "local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    MT4_STATE.setdefault("events", []).append(row)
+    if len(MT4_STATE["events"]) > 2000:
+        MT4_STATE["events"] = MT4_STATE["events"][-2000:]
+
+    cmd_id = f"OPEN:{engine}:{trade_id}"
+    cmd = _mt4_find_command(cmd_id)
+    if event_type == "OPENED":
+        if cmd:
+            cmd["status"] = "ACKED"
+            cmd["acked_at"] = now_ts()
+            cmd["account"] = account
+        d = _mt4_daily()
+        d["trade_count"] = int(d.get("trade_count", 0)) + 1
+        _mt4_refresh_lock(d)
+    elif event_type == "CLOSED":
+        if cmd:
+            cmd["status"] = "COMPLETED"
+            cmd["completed_at"] = now_ts()
+        pnl = to_float(payload.get("pnl"), 0)
+        d = _mt4_daily()
+        if pnl > 0.01:
+            d["wins"] = int(d.get("wins", 0)) + 1
+            d["consecutive_losses"] = 0
+        elif pnl < -0.01:
+            d["losses"] = int(d.get("losses", 0)) + 1
+            d["consecutive_losses"] = int(d.get("consecutive_losses", 0)) + 1
+            d["max_consecutive_losses"] = max(int(d.get("max_consecutive_losses", 0)), int(d.get("consecutive_losses", 0)))
+        else:
+            d["flat"] = int(d.get("flat", 0)) + 1
+            d["consecutive_losses"] = 0
+        _mt4_refresh_lock(d)
+
+    save_mt4_bridge_state(force=True)
+    return row
+
+
+def mt4_status_payload():
+    day = _mt4_daily()
+    queued = sum(1 for c in MT4_STATE.get("commands", []) if c.get("status") in ["QUEUED", "DELIVERED"])
+    acked = sum(1 for c in MT4_STATE.get("commands", []) if c.get("status") == "ACKED")
+    completed = sum(1 for c in MT4_STATE.get("commands", []) if c.get("status") == "COMPLETED")
+    return {
+        "version": MT4_STATE.get("version"),
+        "bridge_enabled": MT4_BRIDGE_ENABLED,
+        "execution_scope": "MAIN_ONLY" if MT4_MAIN_ONLY else "ALL_ENGINES",
+        "main_only": MT4_MAIN_ONLY,
+        "token_configured": bool(MT4_BRIDGE_TOKEN),
+        "demo_only": MT4_DEMO_ONLY,
+        "allowed_account_configured": bool(MT4_ALLOWED_ACCOUNT),
+        "daily_lock_enforced": MT4_ENFORCE_DAILY_LOCK,
+        "daily_target": MT4_DAILY_TARGET_EUR,
+        "daily_max_loss": MT4_DAILY_MAX_LOSS_EUR,
+        "leg_lot": MT4_LEG_LOT,
+        "legs": MT4_LEGS,
+        "day": day,
+        "commands_waiting": queued,
+        "commands_opened": acked,
+        "commands_completed": completed,
+        "accounts": MT4_STATE.get("accounts", {}),
+    }
+
+
+@app.route("/mt4/status")
+def mt4_status():
+    return jsonify(mt4_status_payload())
+
+
+@app.route("/mt4/poll", methods=["POST"])
+def mt4_poll():
+    ok, reason = _mt4_authorized(request)
+    if not ok:
+        return f"DENY;reason={reason}", 403, {"Content-Type": "text/plain; charset=utf-8"}
+    payload = request.form.to_dict() or (request.get_json(silent=True) or {})
+    gate, gate_reason = _mt4_account_gate(payload)
+    if not gate:
+        return f"DENY;reason={gate_reason}", 403, {"Content-Type": "text/plain; charset=utf-8"}
+    d = _mt4_record_heartbeat(payload)
+    locked, lock_reason = mt4_is_locked()
+    if locked:
+        return f"LOCK;reason={_mt4_clean(lock_reason)};closed_pnl={to_float(d.get('closed_pnl')):.2f}", 200, {"Content-Type": "text/plain; charset=utf-8"}
+    cmd = _mt4_next_command(str(payload.get("account") or ""))
+    return _mt4_wire_command(cmd), 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.route("/mt4/event", methods=["POST"])
+def mt4_event():
+    ok, reason = _mt4_authorized(request)
+    if not ok:
+        return f"DENY;reason={reason}", 403, {"Content-Type": "text/plain; charset=utf-8"}
+    payload = request.form.to_dict() or (request.get_json(silent=True) or {})
+    gate, gate_reason = _mt4_account_gate(payload)
+    if not gate:
+        return f"DENY;reason={gate_reason}", 403, {"Content-Type": "text/plain; charset=utf-8"}
+    row = _mt4_record_event(payload)
+    if MT4_TELEGRAM_EVENTS and not row.get("duplicate"):
+        try:
+            if row.get("event") == "OPENED":
+                send_telegram(
+                    f"🤖 MT4 DEMO — APERTO\n\n"
+                    f"{row.get('engine')} trade {row.get('trade_id')}\n"
+                    f"Ticket A/B: {row.get('ticket_a')} / {row.get('ticket_b')}\n"
+                    f"Account demo: {row.get('account')}\n"
+                    f"⚠️ Bridge v47.6 DEMO — MAIN ONLY"
+                )
+            elif row.get("event") == "CLOSED":
+                send_telegram(
+                    f"🤖 MT4 DEMO — CHIUSO\n\n"
+                    f"{row.get('engine')} trade {row.get('trade_id')}\n"
+                    f"PnL broker: {to_float(row.get('pnl')):+.2f}\n"
+                    f"Motivo: {row.get('reason') or 'N/D'}\n"
+                    f"⚠️ Bridge v47.6 DEMO — MAIN ONLY"
+                )
+        except Exception as e:
+            print(f"[v47.6] MT4 Telegram event error: {type(e).__name__}: {e}", flush=True)
+    return "OK", 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.route("/mt4/reset", methods=["POST"])
+def mt4_reset():
+    token = request.headers.get("X-MT4-Admin-Token", "")
+    if MT4_ADMIN_TOKEN and token != MT4_ADMIN_TOKEN:
+        return jsonify({"status": "forbidden"}), 403
+    MT4_STATE.clear()
+    MT4_STATE.update({
+        "version": "v47.6-mt4-demo-main-only-1",
+        "commands": [], "daily": {}, "accounts": {}, "events": [], "last_save": 0,
+    })
+    save_mt4_bridge_state(force=True)
+    mt4_bridge_reconcile_shadow()
+    return jsonify({"status": "reset", "mt4": mt4_status_payload()})
+
 # =========================
 # TRADE MANAGEMENT
 # =========================
@@ -15182,6 +16458,12 @@ def save_trade(data, signal, score, setup_type):
 
     OPEN_TRADES.append(trade)
     save_trades()
+
+    # v47.4: registra una copia SHADOW indipendente; non cambia il trade ufficiale.
+    try:
+        shadow_register_main_trade(trade)
+    except Exception as e:
+        print(f"[v47.4] shadow MAIN register error: {type(e).__name__}: {e}", flush=True)
 
     return trade
 
@@ -15773,6 +17055,13 @@ def webhook():
             print(f"[v47.3] THESIS_FAST management error: {type(e).__name__}: {e}", flush=True)
             thesis_fast_updates = []
 
+        # v47.4: gestione parallela del conto SHADOW. Fail-safe assoluto.
+        try:
+            shadow_updates = shadow_handle_price_update(data)
+        except Exception as e:
+            print(f"[v47.4] SHADOW management error: {type(e).__name__}: {e}", flush=True)
+            shadow_updates = []
+
         # v46: MAX WAIT MODE / NFP SHOCK GUARD.
         # Durante news/NFP il bot continua a gestire trade esistenti, ma non genera nuove entry autonome.
         wait_active, wait_ctx = max_wait_active(data.get("symbol", "XAUUSD"))
@@ -15790,6 +17079,8 @@ def webhook():
                 "updates": len(updates),
                 "fast_updates": len(fast_updates),
                 "thesis_fast_updates": len(thesis_fast_updates),
+                "shadow_updates": len(shadow_updates),
+                "shadow_day_pnl_eur": shadow_status_payload().get("day", {}).get("realized_eur"),
                 "max_wait_active": True,
                 "max_wait_until": wait_ctx.get("until"),
                 "max_wait_reason": wait_ctx.get("reason"),
@@ -15881,6 +17172,10 @@ def webhook():
             "fast_updates": len(fast_updates),
             "fast_active_trades": len(fast_active_trades(data.get("symbol", "XAUUSD"))),
             "thesis_fast_updates": len(thesis_fast_updates),
+            "shadow_updates": len(shadow_updates),
+            "shadow_day_pnl_eur": shadow_status_payload().get("day", {}).get("realized_eur"),
+            "shadow_would_lock": shadow_status_payload().get("day", {}).get("would_lock"),
+            "shadow_would_lock_reason": shadow_status_payload().get("day", {}).get("would_lock_reason"),
             "thesis_fast_active_trades": len(thesis_fast_active_trades(data.get("symbol", "XAUUSD"))),
             "thesis_fast_triggered": thesis_fast_result.get("triggered"),
             "thesis_fast_trade_id": thesis_fast_result.get("trade_id"),
@@ -17066,9 +18361,12 @@ Score delta richiesto: +{DUPLICATE_SCORE_DELTA}
 # =========================
 
 load_runtime_state()
+load_shadow_execution_state()
 load_trades()
 load_fast_trades()
 load_thesis_fast_trades()
+load_mt4_bridge_state()
+mt4_bridge_reconcile_shadow()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
