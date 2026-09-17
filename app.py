@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.9 Dual Main: MAIN + THESIS Europe+NY 2-Confirm + MT4 Demo"
+VERSION = "v47.10 Dual Main + Morning Session Forecast"
 # v47.9: MAIN e THESIS diventano due motori UFFICIALI e SEPARATI.
 # - MAIN conserva integralmente la logica originale e la gestione TP1->TP8.
 # - THESIS opera SOLO EUROPE + NEWYORK, 2 conferme + trigger, TP 3 / SL 6.
@@ -175,6 +175,28 @@ SESSION_FREEZE_ENABLED = os.getenv("SESSION_FREEZE_ENABLED", "TRUE").upper() == 
 SESSION_FREEZE_PROTECT_NONZERO = os.getenv("SESSION_FREEZE_PROTECT_NONZERO", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_SAVE_ON_EVERY_UPDATE = os.getenv("SESSION_FREEZE_SAVE_ON_EVERY_UPDATE", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_WARN_MISSING_ASIA = os.getenv("SESSION_FREEZE_WARN_MISSING_ASIA", "TRUE").upper() == "TRUE"
+
+# v47.10: MORNING SESSION FORECAST.
+# Legge la notte Asia + i primi minuti Europa e costruisce una mappa ampia della mattinata.
+# ATTENZIONE: e' una previsione euristica / mappa di scenario, NON una entry e NON una
+# probabilita' statistica calibrata. Non modifica le decisioni operative dei motori.
+SESSION_FORECAST_ENABLED = os.getenv("SESSION_FORECAST_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_FORECAST_ALERT_ENABLED = os.getenv("SESSION_FORECAST_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+SESSION_FORECAST_MIN_EUROPE_MINUTES = max(0, int(os.getenv("SESSION_FORECAST_MIN_EUROPE_MINUTES", "3")))
+SESSION_FORECAST_MAX_EUROPE_MINUTES = max(SESSION_FORECAST_MIN_EUROPE_MINUTES + 1, int(os.getenv("SESSION_FORECAST_MAX_EUROPE_MINUTES", "45")))
+SESSION_FORECAST_MIN_ASIA_RANGE = max(1.0, float(os.getenv("SESSION_FORECAST_MIN_ASIA_RANGE", "8.0")))
+SESSION_FORECAST_MAX_REFERENCE_RANGE = max(SESSION_FORECAST_MIN_ASIA_RANGE, float(os.getenv("SESSION_FORECAST_MAX_REFERENCE_RANGE", "90.0")))
+SESSION_FORECAST_WORK_LOW_FACTOR = max(0.05, float(os.getenv("SESSION_FORECAST_WORK_LOW_FACTOR", "0.22")))
+SESSION_FORECAST_TARGET1_FACTOR = max(0.10, float(os.getenv("SESSION_FORECAST_TARGET1_FACTOR", "0.25")))
+SESSION_FORECAST_TARGET2_FACTOR = max(SESSION_FORECAST_TARGET1_FACTOR, float(os.getenv("SESSION_FORECAST_TARGET2_FACTOR", "0.45")))
+SESSION_FORECAST_EXTENSION_FACTOR = max(SESSION_FORECAST_TARGET2_FACTOR, float(os.getenv("SESSION_FORECAST_EXTENSION_FACTOR", "0.65")))
+SESSION_FORECAST_INVALIDATION_FACTOR = max(0.15, float(os.getenv("SESSION_FORECAST_INVALIDATION_FACTOR", "0.28")))
+SESSION_FORECAST_RANGE_FACTOR = max(0.15, float(os.getenv("SESSION_FORECAST_RANGE_FACTOR", "0.35")))
+SESSION_FORECAST_HISTORY_MAX = max(10, int(os.getenv("SESSION_FORECAST_HISTORY_MAX", "120")))
+SESSION_FORECAST_SEND_TARGET2_UPDATE = os.getenv("SESSION_FORECAST_SEND_TARGET2_UPDATE", "TRUE").upper() == "TRUE"
+SESSION_FORECAST_SEND_EXTENSION_UPDATE = os.getenv("SESSION_FORECAST_SEND_EXTENSION_UPDATE", "TRUE").upper() == "TRUE"
+SESSION_FORECAST_SEND_INVALIDATION_UPDATE = os.getenv("SESSION_FORECAST_SEND_INVALIDATION_UPDATE", "TRUE").upper() == "TRUE"
+SESSION_FORECAST_SEND_REVIEW = os.getenv("SESSION_FORECAST_SEND_REVIEW", "TRUE").upper() == "TRUE"
 
 
 # v46: Max Wait Mode + NFP Shock Guard.
@@ -653,6 +675,7 @@ BEAR_CONTINUATION_STATE = {}
 PRICE_HISTORY = {}
 DAILY_THESIS_STATE = {}
 SESSION_THESIS_STATE = {}
+SESSION_FORECAST_HISTORY = []
 
 # v45 diagnostics / heartbeat
 LAST_WEBHOOK_TS = 0
@@ -2164,6 +2187,7 @@ def runtime_state_payload():
         "warmup_tracker": WARMUP_TRACKER,
         "daily_thesis_state": DAILY_THESIS_STATE,
         "session_thesis_state": SESSION_THESIS_STATE,
+        "session_forecast_history": SESSION_FORECAST_HISTORY[-SESSION_FORECAST_HISTORY_MAX:],
         "max_wait_state": MAX_WAIT_STATE,
         "last_webhook_ts": LAST_WEBHOOK_TS,
         "last_webhook_kind": LAST_WEBHOOK_KIND,
@@ -2281,6 +2305,10 @@ def load_runtime_state():
             SESSION_THESIS_STATE,
             payload.get("session_thesis_state")
         )
+        saved_forecast_history = payload.get("session_forecast_history")
+        if isinstance(saved_forecast_history, list):
+            SESSION_FORECAST_HISTORY.clear()
+            SESSION_FORECAST_HISTORY.extend(saved_forecast_history[-SESSION_FORECAST_HISTORY_MAX:])
 
         LAST_WEBHOOK_TS = to_float(payload.get("last_webhook_ts"), 0)
         LAST_WEBHOOK_KIND = str(payload.get("last_webhook_kind") or "RESTORED")
@@ -2494,6 +2522,10 @@ def health():
         "session_intelligence_enabled": SESSION_INTELLIGENCE_ENABLED,
         "session_thesis_alert_enabled": SESSION_THESIS_ALERT_ENABLED,
         "session_thesis_state": SESSION_THESIS_STATE,
+        "session_forecast_enabled": SESSION_FORECAST_ENABLED,
+        "session_forecast_alert_enabled": SESSION_FORECAST_ALERT_ENABLED,
+        "session_forecast_history_count": len(SESSION_FORECAST_HISTORY),
+        "session_forecast_history": SESSION_FORECAST_HISTORY[-10:],
         "asian_thesis_state": DAILY_THESIS_STATE,
         "max_flip_buy_after_sell_be_enabled": MAX_FLIP_BUY_AFTER_SELL_BE_ENABLED,
         "virtual_runner_enabled": VIRTUAL_RUNNER_ENABLED,
@@ -2909,6 +2941,20 @@ def telegram_poll_control():
 def test():
     ok = send_telegram(f"✅ TEST TELEGRAM DA RENDER - {VERSION}")
     return jsonify({"status": "ok", "telegram_sent": ok})
+
+
+@app.route("/session_forecast")
+def session_forecast_status():
+    symbol = str(request.args.get("symbol") or "XAUUSD").upper()
+    state = get_session_thesis_state(symbol)
+    return jsonify({
+        "status": "ok",
+        "version": VERSION,
+        "symbol": symbol,
+        "forecast": state.get("morning_forecast"),
+        "history": [x for x in SESSION_FORECAST_HISTORY if str(x.get("symbol", "")).upper() == symbol][-20:],
+        "note": "Forecast euristico di sessione: mappa, non entry e non probabilita statistica."
+    })
 
 
 @app.route("/trades")
@@ -9948,6 +9994,484 @@ Azione pratica:
 - Se Asia ha già venduto tanto, non inseguo SELL bassi: cerco recupero BUY o aspetto retest alto.
 - Se Asia ha già comprato tanto, non compro spike alto: cerco pullback o fade SELL da zona alta.
 - Operazione ufficiale solo quando arriva il messaggio copiabile."""
+
+
+
+def _forecast_round(value):
+    return round(to_float(value, 0), 3)
+
+
+def _forecast_confidence_label(score):
+    score = int(score or 0)
+    if score >= 78:
+        return "FORTE"
+    if score >= 64:
+        return "MEDIA"
+    return "PRUDENTE"
+
+
+def _morning_forecast_bias_score(ctx, data, asia, europe):
+    """Score EURISTICO, non probabilita': serve solo a scegliere lo scenario principale."""
+    score = 0
+    reasons = []
+
+    asia_open = to_float(asia.get("open"), 0)
+    asia_high = to_float(asia.get("high"), 0)
+    asia_low = to_float(asia.get("low"), 0)
+    asia_close = to_float(asia.get("close"), 0)
+    asia_range = max(0.0, asia_high - asia_low)
+    asia_move = asia_close - asia_open if asia_open and asia_close else 0
+    asia_mid = asia_low + asia_range * 0.5 if asia_range > 0 else 0
+    asia_pos = ((asia_close - asia_low) / asia_range) if asia_range > 0 else 0.5
+
+    euro_open = to_float(europe.get("open"), 0)
+    price = get_price_from_data(data)
+
+    trend_gate = max(SESSION_TREND_POINTS, asia_range * 0.18)
+    if asia_move >= trend_gate:
+        score += 2
+        reasons.append(f"Asia direzionale BUY (+2): move {round(asia_move, 2)}")
+    elif asia_move <= -trend_gate:
+        score -= 2
+        reasons.append(f"Asia direzionale SELL (-2): move {round(asia_move, 2)}")
+
+    if asia_pos >= 0.68:
+        score += 1
+        reasons.append(f"chiusura Asia alta nel range (+1): pos {round(asia_pos, 2)}")
+    elif asia_pos <= 0.32:
+        score -= 1
+        reasons.append(f"chiusura Asia bassa nel range (-1): pos {round(asia_pos, 2)}")
+
+    if euro_open and asia_mid:
+        if euro_open >= asia_mid + SESSION_BREAKOUT_BUFFER:
+            score += 1
+            reasons.append("Europa apre sopra il midpoint Asia (+1)")
+        elif euro_open <= asia_mid - SESSION_BREAKOUT_BUFFER:
+            score -= 1
+            reasons.append("Europa apre sotto il midpoint Asia (-1)")
+
+    if price and asia_high and price >= asia_high + SESSION_BREAKOUT_BUFFER:
+        score += 2
+        reasons.append("Europa rompe il massimo Asia (+2)")
+    elif price and asia_low and price <= asia_low - SESSION_BREAKOUT_BUFFER:
+        score -= 2
+        reasons.append("Europa rompe il minimo Asia (-2)")
+    elif price and asia_mid:
+        if price > asia_mid:
+            score += 1
+            reasons.append("prezzo Europa sopra midpoint Asia (+1)")
+        elif price < asia_mid:
+            score -= 1
+            reasons.append("prezzo Europa sotto midpoint Asia (-1)")
+
+    bullish_now = _bullish_context_from_data(data)
+    bearish_now = _bearish_context_from_data(data)
+    if bullish_now and not bearish_now:
+        score += 1
+        reasons.append("micro-contesto corrente bullish (+1)")
+    elif bearish_now and not bullish_now:
+        score -= 1
+        reasons.append("micro-contesto corrente bearish (-1)")
+
+    try:
+        active_news_bias, _ = get_auto_news_bias()
+    except Exception:
+        active_news_bias = "NEUTRAL"
+    if active_news_bias == "BULLISH_GOLD":
+        score += 1
+        reasons.append("news bias bullish gold (+1)")
+    elif active_news_bias == "BEARISH_GOLD":
+        score -= 1
+        reasons.append("news bias bearish gold (-1)")
+
+    session_pref = str(ctx.get("preferred", "RANGE")).upper()
+    if session_pref == "BUY":
+        score += 1
+        reasons.append("Session Thesis Europa BUY (+1)")
+    elif session_pref == "SELL":
+        score -= 1
+        reasons.append("Session Thesis Europa SELL (-1)")
+
+    return score, reasons, active_news_bias
+
+
+def build_morning_session_forecast(symbol, data, thesis_ctx=None, force=False):
+    """
+    Costruisce UNA mappa previsionale della mattinata Europa.
+    Non crea ordini, non filtra ordini, non modifica MAIN/THESIS/FAST.
+    """
+    if not SESSION_FORECAST_ENABLED:
+        return None
+
+    symbol = str(symbol or "XAUUSD").upper()
+    ctx = thesis_ctx or update_session_intelligence(data)
+    state = get_session_thesis_state(symbol)
+    active = str(ctx.get("session") or state.get("active_session") or "").upper()
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    asia = sessions.get("ASIA") if isinstance(sessions, dict) else None
+    europe = sessions.get("EUROPE") if isinstance(sessions, dict) else None
+
+    if not _valid_session_snapshot(asia):
+        return None
+
+    existing = state.get("morning_forecast")
+    if isinstance(existing, dict) and existing.get("day_key") == _thesis_day_key():
+        return existing
+
+    if active != "EUROPE" or not _valid_session_snapshot(europe):
+        return None
+
+    minute_now = _minute_of_day_from_ts()
+    minutes_into_europe = minute_now - _europe_start_minutes()
+    if not force and minutes_into_europe < SESSION_FORECAST_MIN_EUROPE_MINUTES:
+        return None
+    if not force and minutes_into_europe > SESSION_FORECAST_MAX_EUROPE_MINUTES:
+        return None
+
+    price = get_price_from_data(data)
+    euro_open = to_float(europe.get("open"), price)
+    asia_high = to_float(asia.get("high"), 0)
+    asia_low = to_float(asia.get("low"), 0)
+    asia_open = to_float(asia.get("open"), 0)
+    asia_close = to_float(asia.get("close"), 0)
+    asia_range_raw = max(0.0, asia_high - asia_low)
+    if asia_range_raw <= 0 or not euro_open:
+        return None
+
+    ref_range = min(
+        SESSION_FORECAST_MAX_REFERENCE_RANGE,
+        max(SESSION_FORECAST_MIN_ASIA_RANGE, asia_range_raw)
+    )
+    asia_mid = asia_low + asia_range_raw * 0.5
+    score, reasons, active_news_bias = _morning_forecast_bias_score(ctx, data, asia, europe)
+
+    if score >= 2:
+        bias = "BUY"
+    elif score <= -2:
+        bias = "SELL"
+    else:
+        bias = "RANGE"
+
+    # Non e' una probabilita'. E' un indice interno di coerenza tra i segnali disponibili.
+    strength = int(max(50, min(88, 50 + abs(score) * 6 + (4 if asia_range_raw >= ASIAN_THESIS_STRONG_POINTS else 0))))
+
+    if bias == "BUY":
+        working_low = euro_open - ref_range * SESSION_FORECAST_WORK_LOW_FACTOR
+        target1 = euro_open + ref_range * SESSION_FORECAST_TARGET1_FACTOR
+        target2 = euro_open + ref_range * SESSION_FORECAST_TARGET2_FACTOR
+        extension = euro_open + ref_range * SESSION_FORECAST_EXTENSION_FACTOR
+        working_high = extension
+        invalidation = min(
+            euro_open - ref_range * SESSION_FORECAST_INVALIDATION_FACTOR,
+            asia_mid - ref_range * 0.03,
+        )
+        preferred_zone_low = euro_open - ref_range * 0.12
+        preferred_zone_high = euro_open + ref_range * 0.04
+        alternative = f"Sotto {round(invalidation, 3)} la previsione BUY perde validita': rivaluto RANGE/SELL."
+    elif bias == "SELL":
+        working_high = euro_open + ref_range * SESSION_FORECAST_WORK_LOW_FACTOR
+        target1 = euro_open - ref_range * SESSION_FORECAST_TARGET1_FACTOR
+        target2 = euro_open - ref_range * SESSION_FORECAST_TARGET2_FACTOR
+        extension = euro_open - ref_range * SESSION_FORECAST_EXTENSION_FACTOR
+        working_low = extension
+        invalidation = max(
+            euro_open + ref_range * SESSION_FORECAST_INVALIDATION_FACTOR,
+            asia_mid + ref_range * 0.03,
+        )
+        preferred_zone_low = euro_open - ref_range * 0.04
+        preferred_zone_high = euro_open + ref_range * 0.12
+        alternative = f"Sopra {round(invalidation, 3)} la previsione SELL perde validita': rivaluto RANGE/BUY."
+    else:
+        working_low = euro_open - ref_range * SESSION_FORECAST_RANGE_FACTOR
+        working_high = euro_open + ref_range * SESSION_FORECAST_RANGE_FACTOR
+        target1 = working_low
+        target2 = working_high
+        extension = 0
+        invalidation = 0
+        preferred_zone_low = working_low
+        preferred_zone_high = working_high
+        alternative = (
+            f"Break sopra {round(working_high, 3)} -> rivaluto BUY; "
+            f"break sotto {round(working_low, 3)} -> rivaluto SELL."
+        )
+
+    forecast = {
+        "day_key": _thesis_day_key(),
+        "symbol": symbol,
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "minutes_into_europe": minutes_into_europe,
+        "bias": bias,
+        "strength_score": strength,
+        "strength_label": _forecast_confidence_label(strength),
+        "heuristic_score": score,
+        "reasons": reasons,
+        "news_bias": active_news_bias,
+        "asia_open": _forecast_round(asia_open),
+        "asia_high": _forecast_round(asia_high),
+        "asia_low": _forecast_round(asia_low),
+        "asia_close": _forecast_round(asia_close),
+        "asia_range": _forecast_round(asia_range_raw),
+        "asia_mid": _forecast_round(asia_mid),
+        "europe_open": _forecast_round(euro_open),
+        "entry_reference_price": _forecast_round(price),
+        "working_low": _forecast_round(min(working_low, working_high)),
+        "working_high": _forecast_round(max(working_low, working_high)),
+        "preferred_zone_low": _forecast_round(min(preferred_zone_low, preferred_zone_high)),
+        "preferred_zone_high": _forecast_round(max(preferred_zone_low, preferred_zone_high)),
+        "target1": _forecast_round(target1),
+        "target2": _forecast_round(target2),
+        "extension": _forecast_round(extension),
+        "invalidation": _forecast_round(invalidation),
+        "alternative": alternative,
+        "status": "ACTIVE",
+        "target2_notified": False,
+        "extension_notified": False,
+        "invalidation_notified": False,
+        "review_sent": False,
+        "actual_europe_low": None,
+        "actual_europe_high": None,
+        "actual_europe_close": None,
+        "review_result": None,
+    }
+    state["morning_forecast"] = forecast
+    save_runtime_state(force=False)
+    return forecast
+
+
+def morning_session_forecast_text(forecast):
+    if not isinstance(forecast, dict):
+        return None
+    bias = forecast.get("bias")
+    if bias == "BUY":
+        targets = (
+            f"Target mappa 1: {forecast.get('target1')}\n"
+            f"Target mappa 2: {forecast.get('target2')}\n"
+            f"Estensione mattina: {forecast.get('extension')}\n"
+            f"Invalidazione BUY: sotto {forecast.get('invalidation')}"
+        )
+    elif bias == "SELL":
+        targets = (
+            f"Target mappa 1: {forecast.get('target1')}\n"
+            f"Target mappa 2: {forecast.get('target2')}\n"
+            f"Estensione mattina: {forecast.get('extension')}\n"
+            f"Invalidazione SELL: sopra {forecast.get('invalidation')}"
+        )
+    else:
+        targets = (
+            f"Supporto mappa: {forecast.get('working_low')}\n"
+            f"Resistenza mappa: {forecast.get('working_high')}"
+        )
+
+    reason_lines = "\n".join(f"- {x}" for x in (forecast.get("reasons") or [])[:6]) or "- quadro misto"
+    return f"""🔭 MORNING SESSION FORECAST v47.10 — MAPPA, NON È ENTRY
+
+Symbol: {forecast.get('symbol')}
+Scenario principale mattina: {bias}
+Forza scenario: {forecast.get('strength_score')}/100 ({forecast.get('strength_label')})
+⚠️ Score euristico interno: NON è una probabilità statistica.
+
+🌙 ASIA COMPLETA
+Open: {forecast.get('asia_open')}
+High: {forecast.get('asia_high')}
+Low: {forecast.get('asia_low')}
+Close: {forecast.get('asia_close')}
+Range: {forecast.get('asia_range')}
+Mid: {forecast.get('asia_mid')}
+
+🇪🇺 EUROPA
+Open: {forecast.get('europe_open')}
+Prezzo al forecast: {forecast.get('entry_reference_price')}
+Minuti dall'apertura: {forecast.get('minutes_into_europe')}
+
+🗺️ MAPPA MATTINA
+Range di lavoro previsto: {forecast.get('working_low')} - {forecast.get('working_high')}
+Zona preferita {bias if bias in ['BUY','SELL'] else 'RANGE'}: {forecast.get('preferred_zone_low')} - {forecast.get('preferred_zone_high')}
+{targets}
+
+Scenario alternativo:
+{forecast.get('alternative')}
+
+Perché:
+{reason_lines}
+
+IMPORTANTE:
+- Questa è una MAPPA previsionale ampia, non un'operazione.
+- MAIN e THESIS MAIN restano indipendenti.
+- THESIS MAIN entra solo con le sue 2 conferme + trigger.
+- Se l'invalidazione viene rotta, il forecast viene marcato INVALIDATO."""
+
+
+def _forecast_review_result(forecast, europe):
+    bias = str(forecast.get("bias", "RANGE")).upper()
+    euro_open = to_float(forecast.get("europe_open"), 0)
+    high = to_float(europe.get("high"), 0)
+    low = to_float(europe.get("low"), 0)
+    close = to_float(europe.get("close"), 0)
+    move = close - euro_open if euro_open and close else 0
+
+    if bias == "BUY":
+        direction_ok = move >= SESSION_TREND_POINTS or high >= to_float(forecast.get("target2"), 0)
+    elif bias == "SELL":
+        direction_ok = move <= -SESSION_TREND_POINTS or low <= to_float(forecast.get("target2"), 0)
+    else:
+        direction_ok = abs(move) < SESSION_TREND_POINTS
+
+    range_ok = (
+        low >= to_float(forecast.get("working_low"), low) - SESSION_BREAKOUT_BUFFER
+        and high <= to_float(forecast.get("working_high"), high) + SESSION_BREAKOUT_BUFFER
+    )
+
+    if direction_ok and range_ok:
+        result = "CORRETTO"
+    elif direction_ok or range_ok:
+        result = "PARZIALE"
+    else:
+        result = "ERRATO"
+    return result, round(move, 3), range_ok, direction_ok
+
+
+def maybe_morning_session_forecast_alert(symbol, data, thesis_ctx=None):
+    """Crea il forecast una volta, poi invia solo update importanti e review di fine Europa."""
+    if not SESSION_FORECAST_ENABLED:
+        return None
+
+    symbol = str(symbol or "XAUUSD").upper()
+    ctx = thesis_ctx or update_session_intelligence(data)
+    state = get_session_thesis_state(symbol)
+    active = str(ctx.get("session") or state.get("active_session") or "").upper()
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    forecast = state.get("morning_forecast")
+
+    if not isinstance(forecast, dict) or forecast.get("day_key") != _thesis_day_key():
+        forecast = build_morning_session_forecast(symbol, data, thesis_ctx=ctx)
+        if forecast and SESSION_FORECAST_ALERT_ENABLED:
+            return morning_session_forecast_text(forecast)
+        return None
+
+    price = get_price_from_data(data)
+    bias = str(forecast.get("bias", "RANGE")).upper()
+
+    if active == "EUROPE" and price:
+        if bias == "BUY":
+            invalid = to_float(forecast.get("invalidation"), 0)
+            target2 = to_float(forecast.get("target2"), 0)
+            extension = to_float(forecast.get("extension"), 0)
+            if invalid and price <= invalid and not forecast.get("invalidation_notified"):
+                forecast["status"] = "INVALIDATED"
+                forecast["invalidation_notified"] = True
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_INVALIDATION_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — INVALIDATO
+
+{symbol} | Morning Forecast BUY
+Prezzo: {round(price, 3)}
+Invalidazione prevista: {forecast.get('invalidation')}
+
+La mappa BUY della mattina non è più valida. Da qui la Session Thesis deve rivalutare RANGE/SELL; nessuna entry viene forzata dal forecast."""
+            if target2 and price >= target2 and not forecast.get("target2_notified"):
+                forecast["target2_notified"] = True
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_TARGET2_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — TARGET MAPPA 2 RAGGIUNTO ✅
+
+{symbol} | Morning Forecast BUY
+Prezzo: {round(price, 3)}
+Target mappa 2: {forecast.get('target2')}
+Estensione prevista: {forecast.get('extension')}
+
+Il forecast resta una mappa; THESIS MAIN continua a usare 2 conferme + trigger."""
+            if extension and price >= extension and not forecast.get("extension_notified"):
+                forecast["extension_notified"] = True
+                forecast["status"] = "EXTENSION_REACHED"
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_EXTENSION_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — ESTENSIONE MATTINA RAGGIUNTA ✅
+
+{symbol} | Morning Forecast BUY
+Prezzo: {round(price, 3)}
+Estensione prevista: {forecast.get('extension')}
+
+Da qui non inseguo il prezzo solo perché il forecast era BUY: servono nuovi trigger/retest."""
+
+        elif bias == "SELL":
+            invalid = to_float(forecast.get("invalidation"), 0)
+            target2 = to_float(forecast.get("target2"), 0)
+            extension = to_float(forecast.get("extension"), 0)
+            if invalid and price >= invalid and not forecast.get("invalidation_notified"):
+                forecast["status"] = "INVALIDATED"
+                forecast["invalidation_notified"] = True
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_INVALIDATION_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — INVALIDATO
+
+{symbol} | Morning Forecast SELL
+Prezzo: {round(price, 3)}
+Invalidazione prevista: {forecast.get('invalidation')}
+
+La mappa SELL della mattina non è più valida. Da qui la Session Thesis deve rivalutare RANGE/BUY; nessuna entry viene forzata dal forecast."""
+            if target2 and price <= target2 and not forecast.get("target2_notified"):
+                forecast["target2_notified"] = True
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_TARGET2_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — TARGET MAPPA 2 RAGGIUNTO ✅
+
+{symbol} | Morning Forecast SELL
+Prezzo: {round(price, 3)}
+Target mappa 2: {forecast.get('target2')}
+Estensione prevista: {forecast.get('extension')}
+
+Il forecast resta una mappa; THESIS MAIN continua a usare 2 conferme + trigger."""
+            if extension and price <= extension and not forecast.get("extension_notified"):
+                forecast["extension_notified"] = True
+                forecast["status"] = "EXTENSION_REACHED"
+                save_runtime_state(force=False)
+                if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_EXTENSION_UPDATE:
+                    return f"""🔭 FORECAST UPDATE — ESTENSIONE MATTINA RAGGIUNTA ✅
+
+{symbol} | Morning Forecast SELL
+Prezzo: {round(price, 3)}
+Estensione prevista: {forecast.get('extension')}
+
+Da qui non inseguo il prezzo solo perché il forecast era SELL: servono nuovi trigger/retest."""
+
+    # Quando Europa finisce, produco una review una sola volta e salvo lo storico.
+    if active in ["PRE_NY", "NEWYORK", "LATE_US"] and not forecast.get("review_sent"):
+        europe = sessions.get("EUROPE") if isinstance(sessions, dict) else None
+        if _valid_session_snapshot(europe):
+            result, move, range_ok, direction_ok = _forecast_review_result(forecast, europe)
+            forecast["review_sent"] = True
+            forecast["review_result"] = result
+            forecast["actual_europe_low"] = _forecast_round(europe.get("low"))
+            forecast["actual_europe_high"] = _forecast_round(europe.get("high"))
+            forecast["actual_europe_close"] = _forecast_round(europe.get("close"))
+            forecast["actual_europe_move"] = move
+            forecast["range_covered"] = bool(range_ok)
+            forecast["direction_correct"] = bool(direction_ok)
+            SESSION_FORECAST_HISTORY.append(dict(forecast))
+            if len(SESSION_FORECAST_HISTORY) > SESSION_FORECAST_HISTORY_MAX:
+                del SESSION_FORECAST_HISTORY[:-SESSION_FORECAST_HISTORY_MAX]
+            save_runtime_state(force=True)
+            if SESSION_FORECAST_ALERT_ENABLED and SESSION_FORECAST_SEND_REVIEW:
+                return f"""📊 MORNING FORECAST REVIEW — {result}
+
+{symbol}
+Forecast: {forecast.get('bias')} | Forza {forecast.get('strength_score')}/100
+Range previsto: {forecast.get('working_low')} - {forecast.get('working_high')}
+
+Europa reale:
+Open: {forecast.get('europe_open')}
+Low: {forecast.get('actual_europe_low')}
+High: {forecast.get('actual_europe_high')}
+Close: {forecast.get('actual_europe_close')}
+Move: {forecast.get('actual_europe_move')}
+
+Direzione coerente: {forecast.get('direction_correct')}
+Range contenuto nella mappa: {forecast.get('range_covered')}
+
+Questa review serve per misurare il forecast giorno dopo giorno, separatamente dai risultati MAIN e THESIS MAIN."""
+
+    return None
 
 
 def daily_thesis_allows_counter(ctx, signal, setup_type, score, data):
@@ -17118,6 +17642,9 @@ def webhook():
             daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
             if daily_thesis_alert:
                 send_telegram(daily_thesis_alert)
+            forecast_alert = maybe_morning_session_forecast_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
+            if forecast_alert:
+                send_telegram(forecast_alert)
             maybe_send_max_wait_observe_alert(data.get("symbol", "XAUUSD"), data)
             maybe_system_heartbeat(data.get("symbol", "XAUUSD"), data)
             save_runtime_state(force=False)
@@ -17151,6 +17678,11 @@ def webhook():
         daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
+
+        # v47.10: forecast strategico della mattina, completamente separato dalle entry.
+        forecast_alert = maybe_morning_session_forecast_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
+        if forecast_alert:
+            send_telegram(forecast_alert)
 
         # v47.3: THESIS FAST v2 3P separato e stabilizzato.
         # Trasforma solo una tesi NY già esplicita in micro-scalp da 3 punti,
