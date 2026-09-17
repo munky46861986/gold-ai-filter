@@ -14,12 +14,13 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.8 Thesis Fast Europe+NY 2-Confirm + Shadow Execution + MT4 Demo Bridge MAIN ONLY"
-# v47.8: Thesis Fast 3P opera in EUROPE + NEWYORK; ASIA/PRE_NY/LATE_US esclusi.
-# Entrata rapida: 1a conferma = ARMED, 2a conferma consecutiva + trigger locale = OPERAZIONE.
-# Anche durante event/shock NON si aspetta piu' una 3a conferma.
-# MT4 bridge resta MAIN ONLY per default: le Thesis Fast sono ufficiali su Telegram/shadow,
-# ma non vengono auto-eseguite dal bridge finche' MT4_MAIN_ONLY resta TRUE.
+VERSION = "v47.9 Dual Main: MAIN + THESIS Europe+NY 2-Confirm + MT4 Demo"
+# v47.9: MAIN e THESIS diventano due motori UFFICIALI e SEPARATI.
+# - MAIN conserva integralmente la logica originale e la gestione TP1->TP8.
+# - THESIS opera SOLO EUROPE + NEWYORK, 2 conferme + trigger, TP 3 / SL 6.
+# - THESIS non viene piu' bloccata solo perche' esiste un MAIN/FAST nella stessa direzione.
+# - MT4 DEMO esegue di default MAIN + THESIS; FAST 2P resta Telegram/Shadow ma NON auto-eseguito.
+# - La vecchia env MT4_MAIN_ONLY resta solo diagnostica e NON blocca la Thesis in questa versione.
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -1106,7 +1107,7 @@ MATURE_NY_FADE_EXCEPTION_MIN_RETRACE = float(os.getenv("MATURE_NY_FADE_EXCEPTION
 # - un NY_REBOUND_BUY maturo non viene venduto per una sola rejection;
 # - regola speculare per un NY sell maturo;
 # - il ramo BUY può usare anche il retest/pullback di un recovery già maturo.
-THESIS_FAST_VERSION = "Thesis Fast v4 - Europe + New York 2-Confirm Trigger"
+THESIS_FAST_VERSION = "Thesis Main v1 - Europe + New York 2-Confirm Trigger"
 THESIS_FAST_ENABLED = os.getenv("THESIS_FAST_ENABLED", "TRUE").upper() == "TRUE"
 THESIS_FAST_TRADES_FILE = os.getenv("THESIS_FAST_TRADES_FILE", "thesis_fast_trades.json")
 THESIS_FAST_TP_POINTS = float(os.getenv("THESIS_FAST_TP_POINTS", "3.0"))
@@ -13784,15 +13785,9 @@ def thesis_fast_context(data, thesis_ctx=None):
         ctx["reason"] = f"Cooldown Thesis Fast: ultimo trade {age}s fa / {THESIS_FAST_COOLDOWN_SECONDS}s"
         return ctx
 
-    # Non duplica un MAIN o FAST 2P già attivo nella stessa direzione.
-    main_same, main_trade = _thesis_fast_has_main_same_direction(symbol, signal)
-    if main_same:
-        ctx["reason"] = f"MAIN {signal} già attivo #{main_trade.get('id')}: evito layering"
-        return ctx
-    fast_same, fast_trade = _thesis_fast_has_fast_same_direction(symbol, signal)
-    if fast_same:
-        ctx["reason"] = f"FAST 2P {signal} già attivo #{fast_trade.get('id')}: evito duplicato"
-        return ctx
+    # v47.9 DUAL MAIN: THESIS e' un motore ufficiale indipendente.
+    # Non viene bloccata dalla presenza di un MAIN o FAST 2P nella stessa direzione.
+    # Mantiene pero' i propri limiti: stabilita', trigger, cooldown, max attive e gamba tesi.
 
     cur_open = to_float(current.get("open"), 0)
     cur_high = to_float(current.get("high"), 0)
@@ -14063,7 +14058,7 @@ def build_thesis_fast_trade(data, ctx):
 def thesis_fast_message(trade, ctx):
     return f"""⚡🧭 {THESIS_FAST_VERSION}
 
-THESIS FAST 3 PUNTI — OPERAZIONE UFFICIALE 🚀
+🟣 THESIS MAIN — OPERAZIONE UFFICIALE 🚀
 {trade.get('symbol')} {trade.get('signal')}
 
 Entry: {fmt_price(trade.get('entry'))}
@@ -14090,9 +14085,10 @@ Session Low: {round(to_float(ctx.get('session_low')), 3)}
 Regola:
 - operativo SOLO EUROPE + NEWYORK
 - 1a conferma = ARMED, 2a conferma + trigger = OPERAZIONE
+- motore ufficiale SEPARATO dal MAIN
 - 1 trade massimo per gamba della tesi per sessione
-- target rapido {THESIS_FAST_TP_POINTS} punti
-- MAIN e FAST 2P restano indipendenti
+- TP Thesis: {THESIS_FAST_TP_POINTS} punti | SL Thesis: {THESIS_FAST_SL_POINTS} punti
+- MAIN conserva i suoi TP1->TP8 e il suo SL; FAST 2P resta separato
 """
 
 
@@ -14163,13 +14159,13 @@ def handle_thesis_fast_price_update(data):
             if low <= sl:
                 close_thesis_fast_trade(trade, "LOSS")
                 changed = True
-                updates.append(f"❌ THESIS FAST #{tid} BUY SL\nSL: {fmt_price(sl)}")
+                updates.append(f"❌ THESIS MAIN #{tid} BUY SL\nSL: {fmt_price(sl)}")
                 continue
             if high >= tp:
                 close_thesis_fast_trade(trade, "WIN")
                 changed = True
                 updates.append(
-                    f"✅ THESIS FAST #{tid} BUY TP PRESO\n"
+                    f"✅ THESIS MAIN #{tid} BUY TP PRESO\n"
                     f"Entry: {fmt_price(entry)}\nTP: {fmt_price(tp)}\n+{fmt_price(THESIS_FAST_TP_POINTS)} punti"
                 )
                 continue
@@ -14177,13 +14173,13 @@ def handle_thesis_fast_price_update(data):
             if high >= sl:
                 close_thesis_fast_trade(trade, "LOSS")
                 changed = True
-                updates.append(f"❌ THESIS FAST #{tid} SELL SL\nSL: {fmt_price(sl)}")
+                updates.append(f"❌ THESIS MAIN #{tid} SELL SL\nSL: {fmt_price(sl)}")
                 continue
             if low <= tp:
                 close_thesis_fast_trade(trade, "WIN")
                 changed = True
                 updates.append(
-                    f"✅ THESIS FAST #{tid} SELL TP PRESO\n"
+                    f"✅ THESIS MAIN #{tid} SELL TP PRESO\n"
                     f"Entry: {fmt_price(entry)}\nTP: {fmt_price(tp)}\n+{fmt_price(THESIS_FAST_TP_POINTS)} punti"
                 )
                 continue
@@ -15612,8 +15608,8 @@ def _shadow_register_trade(engine, source_trade, signal, symbol, entry, sl, tp_l
     daily["trade_count"] = int(daily.get("trade_count", 0)) + 1
     _shadow_update_daily_thresholds(daily)
     save_shadow_execution_state(force=True)
-    # v47.6: mirror the shadow plan into the MT4 DEMO bridge only when engine=MAIN.
-    # This does not alter the source strategy; it only queues an execution plan.
+    # v47.9: mirror the shadow plan into MT4 only if that engine is authorized.
+    # MAIN + THESIS are enabled by default; FAST remains disabled by default.
     try:
         mt4_bridge_queue_trade(trade)
     except Exception as e:
@@ -15873,13 +15869,13 @@ def shadow_execution_reset():
 
 
 # ============================================================
-# v47.6 — MT4 DEMO EXECUTION BRIDGE — MAIN ONLY
+# v47.9 — MT4 DEMO EXECUTION BRIDGE — DUAL MAIN (MAIN + THESIS)
 # ============================================================
 # SCOPO:
 # - NON cambia MAIN / FAST 2P / THESIS FAST / Session Thesis.
-# - Prende SOLO i trade MAIN gia' registrati dallo SHADOW EXECUTION MANAGER e li espone
-#   a un Expert Advisor MT4 tramite polling HTTP. FAST 2P e THESIS FAST restano
-#   attivi nel bot/Telegram ma NON vengono mai inviati a MT4.
+# - Espone a MT4 i motori autorizzati. v47.9 default: MAIN + THESIS.
+# - FAST 2P resta disabilitato per l'auto-esecuzione di default.
+# - MAIN e THESIS sono indipendenti: possono esistere contemporaneamente e anche in direzioni opposte.
 # - DEMO ONLY di default: sia server sia EA rifiutano il reale finche' non viene
 #   esplicitamente disattivata la protezione.
 # - Nel primo mese il Daily Target/Loss resta solo osservato di default:
@@ -15896,10 +15892,14 @@ def shadow_execution_reset():
 # - demo-only TRUE di default
 # - account whitelist opzionale ma consigliata
 # - bridge disabilitato di default fino alla configurazione Render
-# - MAIN ONLY attivo di default: FAST e THESIS non possono generare ordini MT4
+# - engine allow-list esplicita: MAIN=TRUE, THESIS=TRUE, FAST=FALSE di default
 
 MT4_BRIDGE_ENABLED = os.getenv("MT4_BRIDGE_ENABLED", "FALSE").upper() == "TRUE"
-MT4_MAIN_ONLY = os.getenv("MT4_MAIN_ONLY", "TRUE").upper() == "TRUE"
+# Compatibilita' diagnostica: una vecchia MT4_MAIN_ONLY=TRUE NON governa piu' v47.9.
+MT4_MAIN_ONLY_LEGACY = os.getenv("MT4_MAIN_ONLY", "").upper() == "TRUE"
+MT4_ALLOW_MAIN = os.getenv("MT4_ALLOW_MAIN", "TRUE").upper() == "TRUE"
+MT4_ALLOW_THESIS = os.getenv("MT4_ALLOW_THESIS", "TRUE").upper() == "TRUE"
+MT4_ALLOW_FAST = os.getenv("MT4_ALLOW_FAST", "FALSE").upper() == "TRUE"
 MT4_BRIDGE_TOKEN = os.getenv("MT4_BRIDGE_TOKEN", "")
 MT4_DEMO_ONLY = os.getenv("MT4_DEMO_ONLY", "TRUE").upper() == "TRUE"
 MT4_ALLOWED_ACCOUNT = str(os.getenv("MT4_ALLOWED_ACCOUNT", "")).strip()
@@ -15921,7 +15921,7 @@ MT4_TELEGRAM_EVENTS = os.getenv("MT4_TELEGRAM_EVENTS", "TRUE").upper() == "TRUE"
 MT4_ADMIN_TOKEN = os.getenv("MT4_ADMIN_TOKEN", SHADOW_ADMIN_TOKEN)
 
 MT4_STATE = {
-    "version": "v47.6-mt4-demo-main-only-1",
+    "version": "v47.9-mt4-demo-dual-main-1",
     "commands": [],
     "daily": {},
     "accounts": {},
@@ -15962,6 +15962,8 @@ def load_mt4_bridge_state():
             data = json.load(f)
         if isinstance(data, dict):
             MT4_STATE.update(data)
+            # Migrazione v47.9: conserva lo storico ma espone sempre la versione bridge corrente.
+            MT4_STATE["version"] = "v47.9-mt4-demo-dual-main-1"
             MT4_STATE.setdefault("commands", [])
             MT4_STATE.setdefault("daily", {})
             MT4_STATE.setdefault("accounts", {})
@@ -15991,7 +15993,9 @@ def _mt4_daily(day_key=None):
         "locked": False,
         "lock_reason": None,
         "last_heartbeat": None,
+        "engine_stats": {},
     })
+    d.setdefault("engine_stats", {})
     return d
 
 
@@ -16104,15 +16108,19 @@ def _mt4_find_command(cmd_id):
 
 
 def _mt4_engine_allowed(engine):
-    """Execution scope guard. v47.6 defaults to MAIN-only automatic execution."""
+    """v47.9 explicit execution allow-list: MAIN + THESIS by default, FAST off."""
     engine = str(engine or "").upper().strip()
-    if MT4_MAIN_ONLY:
-        return engine == "MAIN"
-    return engine in ["MAIN", "FAST", "THESIS_FAST"]
+    if engine == "MAIN":
+        return MT4_ALLOW_MAIN
+    if engine == "THESIS_FAST":
+        return MT4_ALLOW_THESIS
+    if engine == "FAST":
+        return MT4_ALLOW_FAST
+    return False
 
 
 def mt4_bridge_queue_trade(shadow_trade):
-    """Queue one deterministic OPEN plan. Safe to call repeatedly. MAIN only by default."""
+    """Queue one deterministic OPEN plan. v47.9 executes allowed engines independently."""
     if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN or not shadow_trade:
         return None
     engine = str(shadow_trade.get("engine") or "").upper().strip()
@@ -16208,10 +16216,10 @@ def _mt4_next_command(account):
             continue
         payload = c.get("payload") or {}
         if not _mt4_engine_allowed(payload.get("engine")):
-            # Safety migration: a persisted v47.5 FAST/THESIS command must never reach MT4.
+            # Safety migration: persisted command for a currently disabled engine is skipped.
             c["status"] = "SKIPPED_ENGINE"
             c["skipped_at"] = now
-            c["skip_reason"] = "MT4_MAIN_ONLY"
+            c["skip_reason"] = "ENGINE_DISABLED"
             save_mt4_bridge_state(force=True)
             continue
         if c.get("status") == "DELIVERED" and now - to_float(c.get("last_delivered"), 0) < MT4_COMMAND_RETRY_SECONDS:
@@ -16263,6 +16271,19 @@ def _mt4_event_seen(event_id):
     return False
 
 
+def _mt4_engine_day_stats(day_row, engine):
+    engine = str(engine or "UNKNOWN").upper().strip() or "UNKNOWN"
+    stats = day_row.setdefault("engine_stats", {}).setdefault(engine, {
+        "trade_count": 0,
+        "closed_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "flat": 0,
+        "realized_pnl": 0.0,
+    })
+    return stats
+
+
 def _mt4_record_event(payload):
     event_type = str(payload.get("event") or "").upper().strip()
     trade_id = str(payload.get("trade_id") or "").strip()
@@ -16298,6 +16319,8 @@ def _mt4_record_event(payload):
             cmd["account"] = account
         d = _mt4_daily()
         d["trade_count"] = int(d.get("trade_count", 0)) + 1
+        es = _mt4_engine_day_stats(d, engine)
+        es["trade_count"] = int(es.get("trade_count", 0)) + 1
         _mt4_refresh_lock(d)
     elif event_type == "CLOSED":
         if cmd:
@@ -16315,7 +16338,22 @@ def _mt4_record_event(payload):
         else:
             d["flat"] = int(d.get("flat", 0)) + 1
             d["consecutive_losses"] = 0
+        es = _mt4_engine_day_stats(d, engine)
+        es["closed_count"] = int(es.get("closed_count", 0)) + 1
+        es["realized_pnl"] = round(to_float(es.get("realized_pnl"), 0) + pnl, 2)
+        if pnl > 0.01:
+            es["wins"] = int(es.get("wins", 0)) + 1
+        elif pnl < -0.01:
+            es["losses"] = int(es.get("losses", 0)) + 1
+        else:
+            es["flat"] = int(es.get("flat", 0)) + 1
         _mt4_refresh_lock(d)
+    elif event_type == "ERROR":
+        # Partial-pair or execution errors are terminal for this command: never keep resending it.
+        if cmd:
+            cmd["status"] = "ERROR"
+            cmd["error_at"] = now_ts()
+            cmd["error_reason"] = str(payload.get("reason") or "ERROR")
 
     save_mt4_bridge_state(force=True)
     return row
@@ -16329,8 +16367,18 @@ def mt4_status_payload():
     return {
         "version": MT4_STATE.get("version"),
         "bridge_enabled": MT4_BRIDGE_ENABLED,
-        "execution_scope": "MAIN_ONLY" if MT4_MAIN_ONLY else "ALL_ENGINES",
-        "main_only": MT4_MAIN_ONLY,
+        "execution_scope": "+".join([
+            name for name, enabled in [
+                ("MAIN", MT4_ALLOW_MAIN),
+                ("THESIS", MT4_ALLOW_THESIS),
+                ("FAST", MT4_ALLOW_FAST),
+            ] if enabled
+        ]) or "NONE",
+        "main_only": bool(MT4_ALLOW_MAIN and not MT4_ALLOW_THESIS and not MT4_ALLOW_FAST),
+        "allow_main": MT4_ALLOW_MAIN,
+        "allow_thesis": MT4_ALLOW_THESIS,
+        "allow_fast": MT4_ALLOW_FAST,
+        "legacy_main_only_env_present": MT4_MAIN_ONLY_LEGACY,
         "token_configured": bool(MT4_BRIDGE_TOKEN),
         "demo_only": MT4_DEMO_ONLY,
         "allowed_account_configured": bool(MT4_ALLOWED_ACCOUNT),
