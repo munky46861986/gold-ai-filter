@@ -14,17 +14,19 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.12 Thesis-Led Main + ReArm + Europe/NY Forecasts"
-# v47.11: MAIN e THESIS restano due motori UFFICIALI e SEPARATI, ma collaborano.
-# - MAIN conserva la propria logica/score/setup/TP1->TP8, ma in EUROPE/NEWYORK non opera
-#   contro una Session Thesis BUY/SELL gia' stabilizzata 2/2.
-# - THESIS MAIN opera EUROPE + NEWYORK, 2 conferme + trigger, TP 3 / SL 6.
-# - THESIS MAIN puo' riarmarsi dopo un TP e un pullback reale, max 3 trade per sessione.
-# - FAST 2P classico e' disattivato operativamente: resta solo codice storico/gestione trade gia' aperti.
-# - MORNING EUROPE FORECAST: Asia completa + primi minuti Europa -> mappa della mattina europea.
-# - NEW YORK FORECAST: Asia completa + Europa completa + PRE_NY recente + primi minuti NY -> mappa USA.
-# - I forecast restano MAPPE: non aprono ordini e non forzano il MAIN.
-# - MT4 DEMO continua a poter eseguire MAIN + THESIS; FAST resta escluso.
+VERSION = "v47.13 Asia Learn-Only + Dynamic Forecast + M1 Timing"
+# v47.13: architettura Thesis-led dopo il test settimanale 21-25 settembre.
+# - ASIA = LEARN ONLY: 00:05-07:30 raccoglie dati/session thesis ma NON apre nuovi MAIN.
+# - THESIS MAIN resta operativo SOLO EUROPE + NEWYORK, 2 conferme + trigger, TP 3 / SL 6.
+# - MAIN conserva score/setup/TP1->TP8, ma la Thesis stabile resta HARD GATE direzionale.
+# - MAIN ascolta anche il Forecast LIVE come peso di contesto (bonus/penalita', NON hard gate).
+# - EUROPE/NY Forecast diventano DINAMICI: VALID -> WEAKENING -> INVALIDATED/REASSESSING -> REVISED.
+# - La mappa iniziale resta immutata nello storico; il LIVE FORECAST puo' cambiare bias/livelli.
+# - M1 TIMING osserva micro-BOS, corpo/chiusura candela, rejection, EMA e allineamento Thesis/Forecast.
+# - M1 e' un grilletto/timing: NON decide la direzione da solo.
+# - FORECAST TREND SHADOW (default solo EUROPE) simula trade piu' lunghi con TP multipli, NON MT4.
+# - FAST 2P classico resta disattivato.
+# - La futura logica target giornaliero 30/50 e max 2 SL NON e' implementata in questa versione.
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -231,6 +233,55 @@ NEWYORK_FORECAST_SEND_TARGET2_UPDATE = os.getenv("NEWYORK_FORECAST_SEND_TARGET2_
 NEWYORK_FORECAST_SEND_EXTENSION_UPDATE = os.getenv("NEWYORK_FORECAST_SEND_EXTENSION_UPDATE", "TRUE").upper() == "TRUE"
 NEWYORK_FORECAST_SEND_INVALIDATION_UPDATE = os.getenv("NEWYORK_FORECAST_SEND_INVALIDATION_UPDATE", "TRUE").upper() == "TRUE"
 NEWYORK_FORECAST_SEND_REVIEW = os.getenv("NEWYORK_FORECAST_SEND_REVIEW", "TRUE").upper() == "TRUE"
+
+# v47.13: ASIA LEARN ONLY.
+# Asia continua a costruire memoria, range, Thesis e dati per il Forecast Europa,
+# ma non puo' creare nuove operazioni MAIN. Le posizioni gia' aperte vengono comunque gestite.
+ASIA_LEARN_ONLY_ENABLED = os.getenv("ASIA_LEARN_ONLY_ENABLED", "TRUE").upper() == "TRUE"
+
+# v47.13: MAIN ascolta Thesis + Forecast con gerarchia esplicita.
+# Thesis stabile = hard gate. Forecast = peso morbido, mai veto se la Thesis stabile dice il contrario.
+MAIN_THESIS_ALIGNMENT_BONUS = int(os.getenv("MAIN_THESIS_ALIGNMENT_BONUS", "3"))
+MAIN_FORECAST_CONTEXT_ENABLED = os.getenv("MAIN_FORECAST_CONTEXT_ENABLED", "TRUE").upper() == "TRUE"
+MAIN_FORECAST_ALIGNMENT_BONUS = int(os.getenv("MAIN_FORECAST_ALIGNMENT_BONUS", "2"))
+MAIN_FORECAST_COUNTER_PENALTY = int(os.getenv("MAIN_FORECAST_COUNTER_PENALTY", "2"))
+MAIN_M1_TIMING_BONUS = int(os.getenv("MAIN_M1_TIMING_BONUS", "2"))
+
+# v47.13: Dynamic Forecast. La prima mappa resta salvata; dopo invalidazione il LIVE forecast
+# rivaluta struttura, momentum, Thesis e M1 e puo' pubblicare una nuova mappa corretta.
+DYNAMIC_FORECAST_ENABLED = os.getenv("DYNAMIC_FORECAST_ENABLED", "TRUE").upper() == "TRUE"
+DYNAMIC_FORECAST_ALERT_ENABLED = os.getenv("DYNAMIC_FORECAST_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+DYNAMIC_FORECAST_MAX_REVISIONS = max(1, int(os.getenv("DYNAMIC_FORECAST_MAX_REVISIONS", "3")))
+DYNAMIC_FORECAST_REVISION_COOLDOWN_SECONDS = max(60, int(os.getenv("DYNAMIC_FORECAST_REVISION_COOLDOWN_SECONDS", "180")))
+DYNAMIC_FORECAST_MIN_REVISION_SCORE = max(2, int(os.getenv("DYNAMIC_FORECAST_MIN_REVISION_SCORE", "3")))
+DYNAMIC_FORECAST_WEAKENING_BUFFER_FACTOR = max(0.03, float(os.getenv("DYNAMIC_FORECAST_WEAKENING_BUFFER_FACTOR", "0.12")))
+DYNAMIC_FORECAST_REQUIRE_INVALIDATION_FOR_REVERSAL = os.getenv("DYNAMIC_FORECAST_REQUIRE_INVALIDATION_FOR_REVERSAL", "TRUE").upper() == "TRUE"
+
+# v47.13: M1 Timing / acceleration detector.
+M1_TIMING_ENABLED = os.getenv("M1_TIMING_ENABLED", "TRUE").upper() == "TRUE"
+M1_TIMING_ALERT_ENABLED = os.getenv("M1_TIMING_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+M1_TIMING_LOOKBACK_UPDATES = max(3, int(os.getenv("M1_TIMING_LOOKBACK_UPDATES", "6")))
+M1_TIMING_BOS_BUFFER = max(0.0, float(os.getenv("M1_TIMING_BOS_BUFFER", "0.10")))
+M1_TIMING_STRONG_BODY_RATIO = min(0.95, max(0.35, float(os.getenv("M1_TIMING_STRONG_BODY_RATIO", "0.55"))))
+M1_TIMING_CLOSE_EXTREME = min(0.95, max(0.55, float(os.getenv("M1_TIMING_CLOSE_EXTREME", "0.68"))))
+M1_TIMING_WATCH_SCORE = max(2, int(os.getenv("M1_TIMING_WATCH_SCORE", "3")))
+M1_TIMING_CONFIRM_SCORE = max(M1_TIMING_WATCH_SCORE + 1, int(os.getenv("M1_TIMING_CONFIRM_SCORE", "4")))
+M1_TIMING_WATCH_COOLDOWN_SECONDS = max(60, int(os.getenv("M1_TIMING_WATCH_COOLDOWN_SECONDS", "300")))
+M1_TIMING_CONFIRM_COOLDOWN_SECONDS = max(30, int(os.getenv("M1_TIMING_CONFIRM_COOLDOWN_SECONDS", "120")))
+
+# v47.13: Forecast Trend SHADOW. Esperimento separato dal MAIN/THESIS/MT4.
+# Default EUROPE only, per misurare se Forecast+Thesis+M1 possono sostenere movimenti piu' lunghi.
+FORECAST_TREND_SHADOW_ENABLED = os.getenv("FORECAST_TREND_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_TREND_SHADOW_ALERT_ENABLED = os.getenv("FORECAST_TREND_SHADOW_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_TREND_SHADOW_SESSIONS_RAW = os.getenv("FORECAST_TREND_SHADOW_SESSIONS", "EUROPE")
+FORECAST_TREND_SHADOW_SESSIONS = {
+    x.strip().upper() for x in FORECAST_TREND_SHADOW_SESSIONS_RAW.split(",") if x.strip()
+}.intersection({"EUROPE", "NEWYORK"}) or {"EUROPE"}
+FORECAST_TREND_SHADOW_MAX_PER_SESSION = max(1, int(os.getenv("FORECAST_TREND_SHADOW_MAX_PER_SESSION", "2")))
+FORECAST_TREND_SHADOW_COOLDOWN_SECONDS = max(60, int(os.getenv("FORECAST_TREND_SHADOW_COOLDOWN_SECONDS", "600")))
+FORECAST_TREND_SHADOW_MIN_SL_POINTS = max(3.0, float(os.getenv("FORECAST_TREND_SHADOW_MIN_SL_POINTS", "6.0")))
+FORECAST_TREND_SHADOW_MAX_SL_POINTS = max(FORECAST_TREND_SHADOW_MIN_SL_POINTS, float(os.getenv("FORECAST_TREND_SHADOW_MAX_SL_POINTS", "12.0")))
+FORECAST_TREND_SHADOW_TPS = [3.0, 6.0, 10.0, 15.0, 20.0, 25.0]
 
 
 # v46: Max Wait Mode + NFP Shock Guard.
@@ -2548,6 +2599,13 @@ def health():
         "thesis_main_rearm_min_seconds": THESIS_MAIN_REARM_MIN_SECONDS,
         "main_thesis_agreement_enabled": MAIN_THESIS_AGREEMENT_ENABLED,
         "main_thesis_agreement_sessions": sorted(MAIN_THESIS_AGREEMENT_SESSIONS),
+        "asia_learn_only_enabled": ASIA_LEARN_ONLY_ENABLED,
+        "main_thesis_alignment_bonus": MAIN_THESIS_ALIGNMENT_BONUS,
+        "main_forecast_context_enabled": MAIN_FORECAST_CONTEXT_ENABLED,
+        "dynamic_forecast_enabled": DYNAMIC_FORECAST_ENABLED,
+        "m1_timing_enabled": M1_TIMING_ENABLED,
+        "forecast_trend_shadow_enabled": FORECAST_TREND_SHADOW_ENABLED,
+        "forecast_trend_shadow_sessions": sorted(FORECAST_TREND_SHADOW_SESSIONS),
         "shadow_execution": shadow_status_payload(),
         "mt4_bridge": mt4_status_payload(),
         "max_discipline_enabled": MAX_DISCIPLINE_ENABLED,
@@ -10284,6 +10342,15 @@ def build_morning_session_forecast(symbol, data, thesis_ctx=None, force=False):
         "invalidation": _forecast_round(invalidation),
         "alternative": alternative,
         "status": "ACTIVE",
+        "initial_bias": bias,
+        "initial_strength_score": strength,
+        "live_bias": bias,
+        "live_strength_score": strength,
+        "live_status": "VALID",
+        "revision_count": 0,
+        "revisions": [],
+        "last_dynamic_alert_ts": 0,
+        "weakening_notified": False,
         "target2_notified": False,
         "extension_notified": False,
         "invalidation_notified": False,
@@ -10323,7 +10390,7 @@ def morning_session_forecast_text(forecast):
         )
 
     reason_lines = "\n".join(f"- {x}" for x in (forecast.get("reasons") or [])[:6]) or "- quadro misto"
-    return f"""🔭 MORNING EUROPE FORECAST v47.12 — MAPPA, NON È ENTRY
+    return f"""🔭 MORNING EUROPE FORECAST v47.13 — MAPPA, NON È ENTRY
 
 Symbol: {forecast.get('symbol')}
 Sessione prevista: EUROPE
@@ -10360,7 +10427,7 @@ IMPORTANTE:
 - Forecast resta una mappa: NON apre ordini e NON blocca direttamente il MAIN.
 - MAIN e THESIS MAIN restano motori separati, ma il MAIN rispetta la direzione Thesis stabile in EUROPE/NEWYORK.
 - THESIS MAIN entra solo con le sue 2 conferme + trigger.
-- Se l'invalidazione viene rotta, il forecast viene marcato INVALIDATO."""
+- Se l'invalidazione viene rotta, la mappa iniziale resta nello storico ma il LIVE Forecast passa REASSESSING e puo' inviare una REVISION corretta."""
 
 
 def _forecast_review_result(forecast, europe):
@@ -10410,10 +10477,15 @@ def maybe_morning_session_forecast_alert(symbol, data, thesis_ctx=None):
             return morning_session_forecast_text(forecast)
         return None
 
+    # v47.13: la mappa iniziale resta storica, ma il LIVE forecast puo' indebolirsi/invalidarsi/rivedersi.
+    dynamic_alert = maybe_dynamic_forecast_update(symbol, data, thesis_ctx=ctx, session="EUROPE")
+    if dynamic_alert:
+        return dynamic_alert
+
     price = get_price_from_data(data)
     bias = str(forecast.get("bias", "RANGE")).upper()
 
-    if active == "EUROPE" and price:
+    if active == "EUROPE" and price and int(forecast.get("revision_count", 0)) == 0:
         if bias == "BUY":
             invalid = to_float(forecast.get("invalidation"), 0)
             target2 = to_float(forecast.get("target2"), 0)
@@ -10527,10 +10599,13 @@ High: {forecast.get('actual_europe_high')}
 Close: {forecast.get('actual_europe_close')}
 Move: {forecast.get('actual_europe_move')}
 
-Direzione coerente: {forecast.get('direction_correct')}
-Range contenuto nella mappa: {forecast.get('range_covered')}
+Direzione coerente MAPPA INIZIALE: {forecast.get('direction_correct')}
+Range contenuto nella mappa iniziale: {forecast.get('range_covered')}
+Revisioni LIVE: {forecast.get('revision_count', 0)}
+Bias LIVE finale: {forecast.get('live_bias', forecast.get('bias'))}
+Stato LIVE finale: {forecast.get('live_status', forecast.get('status'))}
 
-Questa review serve per misurare il forecast giorno dopo giorno, separatamente dai risultati MAIN e THESIS MAIN."""
+La review misura sempre la MAPPA INIZIALE separatamente dalle eventuali revisioni LIVE, MAIN e THESIS MAIN."""
 
     return None
 
@@ -10849,6 +10924,15 @@ def build_newyork_session_forecast(symbol, data, thesis_ctx=None, force=False):
         "invalidation": _forecast_round(invalidation),
         "alternative": alternative,
         "status": "ACTIVE",
+        "initial_bias": bias,
+        "initial_strength_score": strength,
+        "live_bias": bias,
+        "live_strength_score": strength,
+        "live_status": "VALID",
+        "revision_count": 0,
+        "revisions": [],
+        "last_dynamic_alert_ts": 0,
+        "weakening_notified": False,
         "target2_notified": False,
         "extension_notified": False,
         "invalidation_notified": False,
@@ -10888,7 +10972,7 @@ def newyork_session_forecast_text(forecast):
         )
 
     reason_lines = "\n".join(f"- {x}" for x in (forecast.get("reasons") or [])[:8]) or "- quadro misto"
-    return f"""🇺🇸🔭 NEW YORK SESSION FORECAST v47.12 — MAPPA, NON È ENTRY
+    return f"""🇺🇸🔭 NEW YORK SESSION FORECAST v47.13 — MAPPA, NON È ENTRY
 
 Symbol: {forecast.get('symbol')}
 Sessione prevista: NEW YORK
@@ -10940,8 +11024,781 @@ IMPORTANTE:
 - Può essere BUY anche se Europa era SELL, o SELL anche se Europa era BUY: New York viene rivalutata da zero.
 - Forecast NON apre ordini e NON blocca direttamente il MAIN.
 - MAIN e THESIS MAIN continuano a seguire l'accordo con la Session Thesis stabile.
-- THESIS MAIN New York entra solo con 2 conferme + trigger e mantiene il suo re-arm controllato."""
+- THESIS MAIN New York entra solo con 2 conferme + trigger e mantiene il suo re-arm controllato.
+- Se la mappa NY viene invalidata, il LIVE Forecast puo' ricalcolare bias/range/target senza cancellare la previsione originale."""
 
+
+
+# =========================
+# v47.13 DYNAMIC FORECAST + M1 TIMING + FORECAST TREND SHADOW
+# =========================
+
+def _forecast_for_active_session(symbol, session=None):
+    symbol = str(symbol or "XAUUSD").upper()
+    state = get_session_thesis_state(symbol)
+    session = str(session or state.get("active_session") or session_intelligence_name()).upper()
+    key = "morning_forecast" if session == "EUROPE" else "newyork_forecast" if session == "NEWYORK" else None
+    if not key:
+        return None, state, session
+    forecast = state.get(key)
+    if not isinstance(forecast, dict) or forecast.get("day_key") != _thesis_day_key():
+        return None, state, session
+    return forecast, state, session
+
+
+def _forecast_live_bias(forecast):
+    if not isinstance(forecast, dict):
+        return "RANGE"
+    live = str(forecast.get("live_bias") or "").upper()
+    if live in ["BUY", "SELL", "RANGE"]:
+        return live
+    return str(forecast.get("bias") or "RANGE").upper()
+
+
+def _forecast_reference_range(forecast, session_snapshot=None):
+    if not isinstance(forecast, dict):
+        return 10.0
+    ref = to_float(forecast.get("reference_range"), 0)
+    if ref <= 0:
+        ref = to_float(forecast.get("asia_range"), 0)
+    if isinstance(session_snapshot, dict):
+        ref = max(ref, to_float(session_snapshot.get("range"), 0))
+    return max(8.0, min(110.0, ref or 10.0))
+
+
+def _m1_prior_range(symbol, price):
+    symbol = str(symbol or "XAUUSD").upper()
+    history = PRICE_HISTORY.get(symbol, []) or []
+    prior = list(history)
+    if prior:
+        last = prior[-1]
+        same_close = abs(to_float(last.get("close"), 0) - to_float(price, 0)) < 1e-9
+        very_recent = now_ts() - to_float(last.get("time"), 0) <= 5
+        if same_close and very_recent:
+            prior = prior[:-1]
+    prior = prior[-M1_TIMING_LOOKBACK_UPDATES:]
+    highs = [to_float(x.get("high"), to_float(x.get("price"), 0)) for x in prior if isinstance(x, dict)]
+    lows = [to_float(x.get("low"), to_float(x.get("price"), 0)) for x in prior if isinstance(x, dict)]
+    highs = [x for x in highs if x]
+    lows = [x for x in lows if x]
+    return {
+        "count": len(prior),
+        "high": max(highs) if highs else 0,
+        "low": min(lows) if lows else 0,
+    }
+
+
+def m1_timing_context(data, thesis_ctx=None):
+    """M1 e' timing, non direzione: richiede Session Thesis EUROPE/NY e cerca accelerazione coerente."""
+    data = data or {}
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    thesis = thesis_ctx or update_session_intelligence(data)
+    state = get_session_thesis_state(symbol)
+    session = str((thesis or {}).get("session") or state.get("active_session") or "").upper()
+    preferred = str((thesis or {}).get("preferred") or "WAIT").upper()
+    status = str((thesis or {}).get("status") or "").upper()
+    fast_state = _thesis_fast_state(symbol)
+    stable_preferred = str(fast_state.get("stable_preferred") or "").upper()
+    stable_session = str(fast_state.get("stable_session") or "").upper()
+    candidate_count = int(fast_state.get("candidate_count", 0))
+
+    out = {
+        "enabled": M1_TIMING_ENABLED,
+        "session": session,
+        "preferred": preferred,
+        "status": status,
+        "direction": None,
+        "score": 0,
+        "watch": False,
+        "confirmed": False,
+        "reasons": [],
+        "bos": False,
+        "strong_candle": False,
+        "forecast_bias": None,
+    }
+    if not M1_TIMING_ENABLED or session not in ["EUROPE", "NEWYORK"]:
+        return out
+    if preferred not in ["BUY", "SELL"]:
+        return out
+    if stable_preferred != preferred or stable_session != session or candidate_count < THESIS_FAST_THESIS_CONFIRM_BARS:
+        out["reasons"].append("Session Thesis non ancora stabile 2/2")
+        return out
+
+    price = get_price_from_data(data)
+    o = to_float(data.get("open"), price)
+    h = to_float(data.get("high"), price)
+    l = to_float(data.get("low"), price)
+    c = to_float(data.get("close"), price)
+    rng = max(0.0, h - l)
+    body = abs(c - o) if c and o else 0
+    body_ratio = body / rng if rng > 0 else 0
+    close_pos = (c - l) / rng if rng > 0 else 0.5
+    candle_dir = str(data.get("candle_dir") or ("BULL" if c > o else "BEAR" if c < o else "FLAT")).upper()
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    ema50 = str(data.get("ema50_slope", "")).upper()
+    rejection = str(data.get("rejection", "")).upper()
+    lower_wick = to_bool(data.get("lower_wick_strong")) or rejection == "LOWER_WICK"
+    upper_wick = to_bool(data.get("upper_wick_strong")) or rejection == "UPPER_WICK"
+    prior = _m1_prior_range(symbol, c or price)
+
+    pine_bull = to_bool(data.get("micro_bos_bull")) or to_bool(data.get("micro_bos_buy")) or to_bool(data.get("breakout_up"))
+    pine_bear = to_bool(data.get("micro_bos_bear")) or to_bool(data.get("micro_bos_sell")) or to_bool(data.get("breakout_down"))
+    bos_bull = bool(pine_bull or (prior.get("high") and c >= prior.get("high") + M1_TIMING_BOS_BUFFER))
+    bos_bear = bool(pine_bear or (prior.get("low") and c <= prior.get("low") - M1_TIMING_BOS_BUFFER))
+    strong_bull = bool(candle_dir == "BULL" and body_ratio >= M1_TIMING_STRONG_BODY_RATIO and close_pos >= M1_TIMING_CLOSE_EXTREME)
+    strong_bear = bool(candle_dir == "BEAR" and body_ratio >= M1_TIMING_STRONG_BODY_RATIO and close_pos <= 1.0 - M1_TIMING_CLOSE_EXTREME)
+
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    forecast_bias = _forecast_live_bias(forecast) if forecast else "RANGE"
+    out["forecast_bias"] = forecast_bias
+    out["direction"] = preferred
+    score = 0
+    reasons = []
+
+    if preferred == "BUY":
+        if candle_dir == "BULL": score += 1; reasons.append("candela M1 bullish")
+        if strong_bull: score += 2; reasons.append(f"corpo M1 forte ({round(body_ratio, 2)})")
+        if bos_bull: score += 2; reasons.append("micro-BOS M1 bullish")
+        if lower_wick: score += 1; reasons.append("rejection/wick bassa difesa")
+        if ema20 == "UP": score += 1; reasons.append("EMA20 M1 up")
+        if ema50 == "UP": score += 1; reasons.append("EMA50 M1 up")
+        if forecast_bias == "BUY": score += 1; reasons.append("Forecast LIVE BUY allineato")
+        elif forecast_bias == "SELL": score -= 1; reasons.append("Forecast LIVE SELL contrario")
+        out["bos"] = bos_bull
+        out["strong_candle"] = strong_bull
+    else:
+        if candle_dir == "BEAR": score += 1; reasons.append("candela M1 bearish")
+        if strong_bear: score += 2; reasons.append(f"corpo M1 forte ({round(body_ratio, 2)})")
+        if bos_bear: score += 2; reasons.append("micro-BOS M1 bearish")
+        if upper_wick: score += 1; reasons.append("rejection/wick alta respinta")
+        if ema20 == "DOWN": score += 1; reasons.append("EMA20 M1 down")
+        if ema50 == "DOWN": score += 1; reasons.append("EMA50 M1 down")
+        if forecast_bias == "SELL": score += 1; reasons.append("Forecast LIVE SELL allineato")
+        elif forecast_bias == "BUY": score -= 1; reasons.append("Forecast LIVE BUY contrario")
+        out["bos"] = bos_bear
+        out["strong_candle"] = strong_bear
+
+    out.update({
+        "score": score,
+        "reasons": reasons,
+        "watch": score >= M1_TIMING_WATCH_SCORE,
+        "confirmed": bool(score >= M1_TIMING_CONFIRM_SCORE and (out["bos"] or out["strong_candle"])),
+        "body_ratio": round(body_ratio, 3),
+        "close_position": round(close_pos, 3),
+        "prior_high": _forecast_round(prior.get("high")),
+        "prior_low": _forecast_round(prior.get("low")),
+        "candidate_count": candidate_count,
+    })
+    return out
+
+
+def maybe_m1_timing_alert(symbol, data, thesis_ctx=None):
+    ctx = m1_timing_context(data, thesis_ctx=thesis_ctx)
+    if not M1_TIMING_ALERT_ENABLED or not (ctx.get("watch") or ctx.get("confirmed")):
+        return None, ctx
+    symbol = str(symbol or "XAUUSD").upper()
+    state = get_session_thesis_state(symbol)
+    mem = state.setdefault("m1_timing_alert", {})
+    level = "CONFIRMED" if ctx.get("confirmed") else "WATCH"
+    cooldown = M1_TIMING_CONFIRM_COOLDOWN_SECONDS if level == "CONFIRMED" else M1_TIMING_WATCH_COOLDOWN_SECONDS
+    signature = f"{_thesis_day_key()}|{ctx.get('session')}|{ctx.get('direction')}|{level}|{ctx.get('bos')}"
+    if mem.get("signature") == signature and now_ts() - to_float(mem.get("ts"), 0) < cooldown:
+        return None, ctx
+    mem["signature"] = signature
+    mem["ts"] = now_ts()
+    mem["last"] = dict(ctx)
+    save_runtime_state(force=False)
+    emoji = "🚀" if level == "CONFIRMED" else "👀"
+    title = "M1 TRIGGER CONFERMATO" if level == "CONFIRMED" else "M1 WATCH"
+    reasons = "\n".join(f"- {x}" for x in (ctx.get("reasons") or [])[:7]) or "- microstruttura in osservazione"
+    return f"""{emoji} {title} — NON È UNA DIREZIONE AUTONOMA
+
+{symbol} | Sessione {ctx.get('session')}
+Direzione Session Thesis: {ctx.get('direction')}
+Score timing M1: {ctx.get('score')}
+Micro-BOS: {ctx.get('bos')}
+Candela M1 forte: {ctx.get('strong_candle')}
+Forecast LIVE: {ctx.get('forecast_bias')}
+
+Perché:
+{reasons}
+
+Regola:
+- Forecast = mappa
+- Thesis = direzione
+- M1 = timing/accelerazione
+- Il messaggio M1 da solo NON crea una direzione BUY/SELL.""", ctx
+
+
+def _dynamic_forecast_live_score(session, data, forecast, thesis_ctx=None):
+    symbol = str((forecast or {}).get("symbol") or data.get("symbol", "XAUUSD")).upper()
+    thesis = thesis_ctx or update_session_intelligence(data)
+    state = get_session_thesis_state(symbol)
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    snap = sessions.get(session) if isinstance(sessions, dict) else None
+    if not _valid_session_snapshot(snap):
+        return 0, "RANGE", [], {}
+
+    price = get_price_from_data(data)
+    open_ = to_float(snap.get("open"), price)
+    high = to_float(snap.get("high"), price)
+    low = to_float(snap.get("low"), price)
+    rng = max(0.0, high - low)
+    move = price - open_ if price and open_ else 0
+    pos = _range_position(price, low, high)
+    ref = _forecast_reference_range(forecast, snap)
+    gate = max(4.0, min(10.0, ref * 0.14))
+    score = 0
+    reasons = []
+
+    preferred = str((thesis or {}).get("preferred") or "WAIT").upper()
+    status = str((thesis or {}).get("status") or "").upper()
+    fast_state = _thesis_fast_state(symbol)
+    stable_pref = str(fast_state.get("stable_preferred") or "").upper()
+    stable_session = str(fast_state.get("stable_session") or "").upper()
+    stable = stable_pref in ["BUY", "SELL"] and stable_session == session and int(fast_state.get("candidate_count", 0)) >= THESIS_FAST_THESIS_CONFIRM_BARS
+
+    if preferred == "BUY" and status in THESIS_FAST_BUY_STATUSES:
+        score += 3; reasons.append("Session Thesis LIVE BUY (+3)")
+    elif preferred == "SELL" and status in THESIS_FAST_SELL_STATUSES:
+        score -= 3; reasons.append("Session Thesis LIVE SELL (-3)")
+    if stable:
+        if stable_pref == "BUY": score += 2; reasons.append("Thesis stabile BUY 2/2 (+2)")
+        else: score -= 2; reasons.append("Thesis stabile SELL 2/2 (-2)")
+
+    if move >= gate:
+        score += 2; reasons.append(f"session move BUY {round(move,2)} (+2)")
+        if move >= max(SESSION_TREND_POINTS, gate * 1.7): score += 1; reasons.append("espansione BUY forte (+1)")
+    elif move <= -gate:
+        score -= 2; reasons.append(f"session move SELL {round(move,2)} (-2)")
+        if move <= -max(SESSION_TREND_POINTS, gate * 1.7): score -= 1; reasons.append("espansione SELL forte (-1)")
+
+    if pos is not None:
+        if pos >= 0.72: score += 1; reasons.append(f"prezzo alto nel range live {round(pos,2)} (+1)")
+        elif pos <= 0.28: score -= 1; reasons.append(f"prezzo basso nel range live {round(pos,2)} (-1)")
+
+    initial_bias = str(forecast.get("initial_bias") or forecast.get("bias") or "RANGE").upper()
+    revision_count = int(forecast.get("revision_count", 0))
+    if revision_count > 0:
+        current_live = _forecast_live_bias(forecast)
+        live_invalid = to_float(forecast.get("live_invalidation"), 0)
+        if current_live == "SELL" and live_invalid and price >= live_invalid:
+            score += 3; reasons.append("invalidazione LIVE SELL superata (+3 BUY)")
+        elif current_live == "BUY" and live_invalid and price <= live_invalid:
+            score -= 3; reasons.append("invalidazione LIVE BUY superata (-3 SELL)")
+    else:
+        invalid = to_float(forecast.get("invalidation"), 0)
+        if initial_bias == "SELL" and invalid and price >= invalid:
+            score += 3; reasons.append("invalidazione SELL superata (+3 BUY)")
+        elif initial_bias == "BUY" and invalid and price <= invalid:
+            score -= 3; reasons.append("invalidazione BUY superata (-3 SELL)")
+        elif initial_bias == "RANGE":
+            wh = to_float(forecast.get("working_high"), 0)
+            wl = to_float(forecast.get("working_low"), 0)
+            if wh and price >= wh + SESSION_BREAKOUT_BUFFER: score += 3; reasons.append("break sopra range forecast (+3)")
+            elif wl and price <= wl - SESSION_BREAKOUT_BUFFER: score -= 3; reasons.append("break sotto range forecast (-3)")
+
+    m1 = m1_timing_context(data, thesis_ctx=thesis)
+    if m1.get("confirmed"):
+        if m1.get("direction") == "BUY": score += 2; reasons.append("M1 trigger BUY confermato (+2)")
+        elif m1.get("direction") == "SELL": score -= 2; reasons.append("M1 trigger SELL confermato (-2)")
+    elif m1.get("watch"):
+        if m1.get("direction") == "BUY": score += 1; reasons.append("M1 WATCH BUY (+1)")
+        elif m1.get("direction") == "SELL": score -= 1; reasons.append("M1 WATCH SELL (-1)")
+
+    day_bias = str(data.get("day_bias", data.get("daily_bias", ""))).upper()
+    if day_bias == "BUY": score += 1; reasons.append("struttura Daily BUY (+1)")
+    elif day_bias == "SELL": score -= 1; reasons.append("struttura Daily SELL (-1)")
+
+    if score >= DYNAMIC_FORECAST_MIN_REVISION_SCORE:
+        bias = "BUY"
+    elif score <= -DYNAMIC_FORECAST_MIN_REVISION_SCORE:
+        bias = "SELL"
+    else:
+        bias = "RANGE"
+    return score, bias, reasons, {
+        "session_open": open_, "session_high": high, "session_low": low,
+        "session_range": rng, "session_move": move, "session_position": pos,
+        "reference_range": ref, "stable_thesis": stable_pref if stable else None,
+        "m1": m1,
+    }
+
+
+def _build_live_forecast_map(session, data, forecast, live_bias, live_score, reasons, live_ctx):
+    price = get_price_from_data(data)
+    ref = max(8.0, to_float(live_ctx.get("reference_range"), 10.0))
+    open_ = to_float(live_ctx.get("session_open"), price)
+    high = to_float(live_ctx.get("session_high"), price)
+    low = to_float(live_ctx.get("session_low"), price)
+    session_mid = low + max(0.0, high - low) * 0.5 if high > low else open_
+
+    if live_bias == "BUY":
+        work_low = min(price - ref * 0.22, session_mid)
+        work_high = price + ref * 0.60
+        zone_low = price - ref * 0.10
+        zone_high = price + ref * 0.03
+        t1, t2, ext = price + ref * 0.20, price + ref * 0.38, price + ref * 0.60
+        invalid = min(price - ref * 0.25, session_mid - ref * 0.03)
+    else:
+        work_high = max(price + ref * 0.22, session_mid)
+        work_low = price - ref * 0.60
+        zone_low = price - ref * 0.03
+        zone_high = price + ref * 0.10
+        t1, t2, ext = price - ref * 0.20, price - ref * 0.38, price - ref * 0.60
+        invalid = max(price + ref * 0.25, session_mid + ref * 0.03)
+
+    initial = str(forecast.get("initial_bias") or forecast.get("bias") or "RANGE").upper()
+    if live_bias == initial:
+        active_play = f"{live_bias}_CONTINUATION"
+    elif live_bias == "BUY" and initial == "SELL":
+        active_play = "BUY_RIMBALZO_DENTRO_STRUTTURA_SELL"
+    elif live_bias == "SELL" and initial == "BUY":
+        active_play = "SELL_PULLBACK_DENTRO_STRUTTURA_BUY"
+    else:
+        active_play = f"{live_bias}_BREAKOUT_DA_RANGE"
+
+    strength = int(max(50, min(92, 50 + abs(int(live_score)) * 6)))
+    return {
+        "bias": live_bias,
+        "strength_score": strength,
+        "strength_label": _forecast_confidence_label(strength),
+        "structural_bias": initial,
+        "momentum_bias": live_bias,
+        "active_play": active_play,
+        "working_low": _forecast_round(min(work_low, work_high)),
+        "working_high": _forecast_round(max(work_low, work_high)),
+        "preferred_zone_low": _forecast_round(min(zone_low, zone_high)),
+        "preferred_zone_high": _forecast_round(max(zone_low, zone_high)),
+        "target1": _forecast_round(t1),
+        "target2": _forecast_round(t2),
+        "extension": _forecast_round(ext),
+        "invalidation": _forecast_round(invalid),
+        "entry_reference_price": _forecast_round(price),
+        "heuristic_score": live_score,
+        "reasons": list(reasons or []),
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "session": session,
+    }
+
+
+def _apply_forecast_revision(forecast, revision):
+    count = int(forecast.get("revision_count", 0)) + 1
+    forecast["revision_count"] = count
+    forecast["live_bias"] = revision.get("bias")
+    forecast["live_strength_score"] = revision.get("strength_score")
+    forecast["live_status"] = "REVISED"
+    forecast["status"] = "REVISED"
+    forecast["live_working_low"] = revision.get("working_low")
+    forecast["live_working_high"] = revision.get("working_high")
+    forecast["live_preferred_zone_low"] = revision.get("preferred_zone_low")
+    forecast["live_preferred_zone_high"] = revision.get("preferred_zone_high")
+    forecast["live_target1"] = revision.get("target1")
+    forecast["live_target2"] = revision.get("target2")
+    forecast["live_extension"] = revision.get("extension")
+    forecast["live_invalidation"] = revision.get("invalidation")
+    forecast["live_active_play"] = revision.get("active_play")
+    forecast["live_structural_bias"] = revision.get("structural_bias")
+    forecast["live_momentum_bias"] = revision.get("momentum_bias")
+    forecast["last_dynamic_alert_ts"] = now_ts()
+    revisions = forecast.setdefault("revisions", [])
+    revision = dict(revision)
+    revision["revision_number"] = count
+    revisions.append(revision)
+    if len(revisions) > DYNAMIC_FORECAST_MAX_REVISIONS:
+        del revisions[:-DYNAMIC_FORECAST_MAX_REVISIONS]
+    save_runtime_state(force=True)
+    return count
+
+
+def dynamic_forecast_revision_text(symbol, session, forecast, revision, revision_number, trigger_reason):
+    reasons = "\n".join(f"- {x}" for x in (revision.get("reasons") or [])[:8]) or "- cambio di struttura/momentum"
+    label = "EUROPE" if session == "EUROPE" else "NEW YORK"
+    return f"""🔄 {label} FORECAST REVISION #{revision_number} — MAPPA LIVE CORRETTA
+
+{symbol}
+Forecast iniziale: {forecast.get('initial_bias', forecast.get('bias'))} | forza {forecast.get('initial_strength_score', forecast.get('strength_score'))}/100
+Stato vecchia mappa: INVALIDATA / SUPERATA
+Motivo revisione: {trigger_reason}
+
+🧭 LETTURA A 3 LIVELLI
+Struttura iniziale: {revision.get('structural_bias')}
+Momentum attuale: {revision.get('momentum_bias')}
+Active play: {revision.get('active_play')}
+Forza LIVE: {revision.get('strength_score')}/100 ({revision.get('strength_label')})
+
+🗺️ NUOVA MAPPA {label}
+Prezzo revisione: {revision.get('entry_reference_price')}
+Range di lavoro: {revision.get('working_low')} - {revision.get('working_high')}
+Zona preferita {revision.get('bias')}: {revision.get('preferred_zone_low')} - {revision.get('preferred_zone_high')}
+Target LIVE 1: {revision.get('target1')}
+Target LIVE 2: {revision.get('target2')}
+Estensione LIVE: {revision.get('extension')}
+Invalidazione nuova mappa: {revision.get('invalidation')}
+
+Perché:
+{reasons}
+
+IMPORTANTE:
+- La mappa iniziale NON viene cancellata: resta nello storico per misurare se era giusta o sbagliata.
+- Questa è la nuova lettura LIVE, non un'entry automatica.
+- Thesis stabile resta il filtro direzionale piu' forte del MAIN.
+- M1 serve per il timing, non per inventare una direzione."""
+
+
+def maybe_dynamic_forecast_update(symbol, data, thesis_ctx=None, session=None):
+    if not DYNAMIC_FORECAST_ENABLED:
+        return None
+    symbol = str(symbol or "XAUUSD").upper()
+    forecast, state, current_session = _forecast_for_active_session(symbol, session)
+    session = str(session or current_session).upper()
+    if not forecast or session not in ["EUROPE", "NEWYORK"] or current_session != session:
+        return None
+
+    price = get_price_from_data(data)
+    if not price:
+        return None
+    initial = str(forecast.get("initial_bias") or forecast.get("bias") or "RANGE").upper()
+    ref = _forecast_reference_range(forecast, (state.get("sessions", {}) or {}).get(session))
+    invalid = to_float(forecast.get("invalidation"), 0)
+    working_high = to_float(forecast.get("working_high"), 0)
+    working_low = to_float(forecast.get("working_low"), 0)
+    thesis = thesis_ctx or update_session_intelligence(data)
+    preferred = str((thesis or {}).get("preferred") or "WAIT").upper()
+    status = str((thesis or {}).get("status") or "").upper()
+
+    invalidated = False
+    weakening = False
+    trigger_reason = ""
+    if initial == "BUY" and invalid:
+        invalidated = price <= invalid
+        weakening = price <= invalid + ref * DYNAMIC_FORECAST_WEAKENING_BUFFER_FACTOR or (preferred == "SELL" and status in THESIS_FAST_SELL_STATUSES)
+        if invalidated: trigger_reason = f"BUY iniziale invalidato sotto {round(invalid,3)}"
+    elif initial == "SELL" and invalid:
+        invalidated = price >= invalid
+        weakening = price >= invalid - ref * DYNAMIC_FORECAST_WEAKENING_BUFFER_FACTOR or (preferred == "BUY" and status in THESIS_FAST_BUY_STATUSES)
+        if invalidated: trigger_reason = f"SELL iniziale invalidato sopra {round(invalid,3)}"
+    else:
+        if working_high and price >= working_high + SESSION_BREAKOUT_BUFFER:
+            invalidated = True; trigger_reason = f"RANGE rotto sopra {round(working_high,3)}"
+        elif working_low and price <= working_low - SESSION_BREAKOUT_BUFFER:
+            invalidated = True; trigger_reason = f"RANGE rotto sotto {round(working_low,3)}"
+        weakening = invalidated
+
+    if weakening and not invalidated and not forecast.get("weakening_notified"):
+        forecast["weakening_notified"] = True
+        forecast["live_status"] = "WEAKENING"
+        forecast["last_dynamic_alert_ts"] = now_ts()
+        save_runtime_state(force=False)
+        if DYNAMIC_FORECAST_ALERT_ENABLED:
+            return f"""⚠️ FORECAST LIVE — SCENARIO IN INDEBOLIMENTO
+
+{symbol} | {session}
+Forecast iniziale: {initial}
+Prezzo: {round(price,3)}
+Session Thesis: {status} -> {preferred}
+
+La mappa iniziale e' ancora formalmente valida, ma il mercato sta entrando nella zona di rischio.
+Non cambio direzione solo per un tocco: aspetto invalidazione/struttura + Thesis/M1 per una revisione vera."""
+
+    score, live_bias, reasons, live_ctx = _dynamic_forecast_live_score(session, data, forecast, thesis_ctx=thesis)
+    revision_count = int(forecast.get("revision_count", 0))
+    last_revision = to_float(forecast.get("last_dynamic_alert_ts"), 0)
+    cooldown_ok = now_ts() - last_revision >= DYNAMIC_FORECAST_REVISION_COOLDOWN_SECONDS
+
+    if invalidated and not forecast.get("invalidation_notified"):
+        forecast["invalidation_notified"] = True
+        forecast["status"] = "INVALIDATED"
+        forecast["live_status"] = "REASSESSING"
+        forecast["last_dynamic_alert_ts"] = 0  # consente revisione immediata se confermata
+        save_runtime_state(force=False)
+        can_revise = live_bias in ["BUY", "SELL"] and live_bias != initial and abs(score) >= DYNAMIC_FORECAST_MIN_REVISION_SCORE
+        if can_revise and revision_count < DYNAMIC_FORECAST_MAX_REVISIONS:
+            revision = _build_live_forecast_map(session, data, forecast, live_bias, score, reasons, live_ctx)
+            n = _apply_forecast_revision(forecast, revision)
+            if DYNAMIC_FORECAST_ALERT_ENABLED:
+                return dynamic_forecast_revision_text(symbol, session, forecast, revision, n, trigger_reason)
+        if DYNAMIC_FORECAST_ALERT_ENABLED:
+            return f"""🔭 FORECAST LIVE — INVALIDATO / REASSESSING
+
+{symbol} | {session}
+Forecast iniziale: {initial}
+Prezzo: {round(price,3)}
+Motivo: {trigger_reason}
+
+La vecchia mappa non e' piu' valida.
+Il bot NON trasforma automaticamente {initial} nel lato opposto: adesso rivaluta Session Thesis, momentum e M1.
+Quando il nuovo lato sara' confermato, inviera' una FORECAST REVISION con range/zone/target nuovi."""
+
+    if forecast.get("live_status") in ["REASSESSING", "INVALIDATED"]:
+        if revision_count < DYNAMIC_FORECAST_MAX_REVISIONS and cooldown_ok and live_bias in ["BUY", "SELL"] and live_bias != initial:
+            revision = _build_live_forecast_map(session, data, forecast, live_bias, score, reasons, live_ctx)
+            n = _apply_forecast_revision(forecast, revision)
+            if DYNAMIC_FORECAST_ALERT_ENABLED:
+                return dynamic_forecast_revision_text(symbol, session, forecast, revision, n, "nuova direzione confermata dopo invalidazione")
+
+    # Dopo una revisione, consento una nuova revisione solo se la direzione LIVE viene negata con forza.
+    current_live = _forecast_live_bias(forecast)
+    if revision_count > 0 and revision_count < DYNAMIC_FORECAST_MAX_REVISIONS and cooldown_ok:
+        live_invalid = to_float(forecast.get("live_invalidation"), 0)
+        revised_invalidated = (
+            (current_live == "BUY" and live_invalid and price <= live_invalid)
+            or (current_live == "SELL" and live_invalid and price >= live_invalid)
+        )
+        if revised_invalidated and live_bias in ["BUY", "SELL"] and live_bias != current_live:
+            revision = _build_live_forecast_map(session, data, forecast, live_bias, score, reasons, live_ctx)
+            n = _apply_forecast_revision(forecast, revision)
+            if DYNAMIC_FORECAST_ALERT_ENABLED:
+                return dynamic_forecast_revision_text(symbol, session, forecast, revision, n, "mappa LIVE precedente invalidata")
+
+    # Target della MAPPA LIVE: non confonderli con i target della previsione iniziale.
+    revision_count = int(forecast.get("revision_count", 0))
+    if revision_count > 0 and current_live in ["BUY", "SELL"]:
+        live_t2 = to_float(forecast.get("live_target2"), 0)
+        live_ext = to_float(forecast.get("live_extension"), 0)
+        t2_key = f"live_t2_notified_{revision_count}"
+        ext_key = f"live_ext_notified_{revision_count}"
+        t2_hit = (current_live == "BUY" and live_t2 and price >= live_t2) or (current_live == "SELL" and live_t2 and price <= live_t2)
+        ext_hit = (current_live == "BUY" and live_ext and price >= live_ext) or (current_live == "SELL" and live_ext and price <= live_ext)
+        if ext_hit and not forecast.get(ext_key):
+            forecast[ext_key] = True
+            forecast[t2_key] = True
+            save_runtime_state(force=False)
+            if DYNAMIC_FORECAST_ALERT_ENABLED:
+                return f"""🚀 FORECAST LIVE — ESTENSIONE REVISION #{revision_count} RAGGIUNTA
+
+{symbol} | {session} | {current_live}
+Prezzo: {round(price,3)}
+Target LIVE 2: {forecast.get('live_target2')}
+Estensione LIVE: {forecast.get('live_extension')}
+
+La revisione LIVE ha completato l'estensione prevista. Da qui niente inseguimento: servono nuovo pullback/retest e M1."""
+        if t2_hit and not forecast.get(t2_key):
+            forecast[t2_key] = True
+            save_runtime_state(force=False)
+            if DYNAMIC_FORECAST_ALERT_ENABLED:
+                return f"""✅ FORECAST LIVE — TARGET 2 REVISION #{revision_count} RAGGIUNTO
+
+{symbol} | {session} | {current_live}
+Prezzo: {round(price,3)}
+Target LIVE 2: {forecast.get('live_target2')}
+Estensione LIVE: {forecast.get('live_extension')}
+
+La mappa LIVE resta valida finche' non rompe la sua invalidazione."""
+    return None
+
+
+def main_forecast_context(signal, symbol, data=None, thesis_agreement=None):
+    signal = normalize_signal(signal)
+    symbol = str(symbol or "XAUUSD").upper()
+    out = {"enabled": MAIN_FORECAST_CONTEXT_ENABLED, "delta": 0, "bias": "RANGE", "session": None, "reason": ""}
+    if not MAIN_FORECAST_CONTEXT_ENABLED or signal not in ["BUY", "SELL"]:
+        return out
+    thesis = update_session_intelligence(data or {"symbol": symbol})
+    session = str((thesis or {}).get("session") or "").upper()
+    out["session"] = session
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    if not forecast:
+        out["reason"] = "Forecast non disponibile"
+        return out
+    if str(forecast.get("live_status") or "VALID").upper() in ["INVALIDATED", "REASSESSING"]:
+        out["reason"] = "Forecast in reassessing: nessun peso sul MAIN"
+        return out
+    bias = _forecast_live_bias(forecast)
+    out["bias"] = bias
+    if bias not in ["BUY", "SELL"]:
+        out["reason"] = "Forecast RANGE: nessun peso direzionale"
+        return out
+
+    agreement = thesis_agreement or main_thesis_agreement_context(signal, symbol, data)
+    if agreement.get("active"):
+        # Thesis stabile domina il Forecast. Mai penalizzare un MAIN allineato alla Thesis per una vecchia mappa opposta.
+        if signal == agreement.get("preferred") and signal == bias:
+            out["delta"] = 1
+            out["reason"] = f"MAIN+Thesis+Forecast allineati {signal} (+1 contesto)"
+        else:
+            out["delta"] = 0
+            out["reason"] = "Thesis stabile prevale sul Forecast"
+        return out
+
+    if signal == bias:
+        out["delta"] = MAIN_FORECAST_ALIGNMENT_BONUS
+        out["reason"] = f"MAIN {signal} allineato Forecast LIVE {bias} (+{MAIN_FORECAST_ALIGNMENT_BONUS})"
+    else:
+        out["delta"] = -MAIN_FORECAST_COUNTER_PENALTY
+        out["reason"] = f"MAIN {signal} contro Forecast LIVE {bias} (-{MAIN_FORECAST_COUNTER_PENALTY})"
+    return out
+
+
+def _forecast_trend_shadow_trades(symbol):
+    state = get_session_thesis_state(symbol)
+    trades = state.setdefault("forecast_trend_shadow_trades", [])
+    if not isinstance(trades, list):
+        trades = []
+        state["forecast_trend_shadow_trades"] = trades
+    return trades
+
+
+def _manage_forecast_trend_shadow(symbol, data):
+    messages = []
+    trades = _forecast_trend_shadow_trades(symbol)
+    h = to_float(data.get("high"), get_price_from_data(data))
+    l = to_float(data.get("low"), get_price_from_data(data))
+    for trade in trades:
+        if trade.get("status") != "OPEN":
+            continue
+        direction = trade.get("direction")
+        sl = to_float(trade.get("sl_current"), trade.get("sl"))
+        # Conservativo: se nella stessa barra compaiono SL e TP senza tick order, considero prima lo SL.
+        sl_hit = (direction == "BUY" and l <= sl) or (direction == "SELL" and h >= sl)
+        if sl_hit:
+            highest = int(trade.get("highest_tp", 0))
+            trade["status"] = "CLOSED"
+            trade["exit_reason"] = "SL/TRAIL"
+            trade["closed"] = now_ts()
+            trade["exit_price"] = sl
+            points = (sl - trade["entry"]) if direction == "BUY" else (trade["entry"] - sl)
+            trade["result_points"] = round(points, 3)
+            messages.append(f"🧪 FORECAST TREND SHADOW CHIUSO | {direction} | TP max {highest} | uscita {round(sl,3)} | {round(points,2)} punti")
+            continue
+        highest = int(trade.get("highest_tp", 0))
+        new_highest = highest
+        for i, tp in enumerate(trade.get("targets", []), start=1):
+            if i <= highest:
+                continue
+            hit = (direction == "BUY" and h >= tp) or (direction == "SELL" and l <= tp)
+            if hit:
+                new_highest = i
+            else:
+                break
+        if new_highest > highest:
+            trade["highest_tp"] = new_highest
+            entry = to_float(trade.get("entry"), 0)
+            if new_highest == 1:
+                trade["sl_current"] = entry
+            else:
+                trade["sl_current"] = to_float(trade.get("targets", [])[new_highest - 2], entry)
+            messages.append(f"🧪 FORECAST TREND SHADOW {direction} TP{new_highest} ✅ | SL -> {round(to_float(trade.get('sl_current')),3)}")
+            if new_highest >= len(trade.get("targets", [])):
+                trade["status"] = "CLOSED"
+                trade["exit_reason"] = f"TP{new_highest}"
+                trade["closed"] = now_ts()
+                trade["exit_price"] = trade.get("targets", [])[-1]
+                trade["result_points"] = FORECAST_TREND_SHADOW_TPS[-1]
+    if messages:
+        save_runtime_state(force=True)
+    return messages
+
+
+def process_forecast_trend_shadow(data, thesis_ctx=None, m1_ctx=None):
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    result = {"triggered": False, "trade_id": None, "reason": "", "messages": []}
+    if not FORECAST_TREND_SHADOW_ENABLED:
+        result["reason"] = "disabled"
+        return result
+    messages = _manage_forecast_trend_shadow(symbol, data)
+    result["messages"] = messages
+    for msg in messages:
+        if FORECAST_TREND_SHADOW_ALERT_ENABLED:
+            send_telegram(msg)
+
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session = str((thesis or {}).get("session") or "").upper()
+    if session not in FORECAST_TREND_SHADOW_SESSIONS:
+        result["reason"] = f"session {session} non abilitata"
+        return result
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    if not forecast:
+        result["reason"] = "forecast non disponibile"
+        return result
+    if str(forecast.get("live_status") or "VALID").upper() in ["INVALIDATED", "REASSESSING"]:
+        result["reason"] = "forecast in reassessing"
+        return result
+    if forecast.get("extension_notified"):
+        result["reason"] = "estensione gia' raggiunta: non inseguo"
+        return result
+
+    bias = _forecast_live_bias(forecast)
+    if bias not in ["BUY", "SELL"]:
+        result["reason"] = "forecast range"
+        return result
+    state_fast = _thesis_fast_state(symbol)
+    stable_pref = str(state_fast.get("stable_preferred") or "").upper()
+    stable_session = str(state_fast.get("stable_session") or "").upper()
+    if stable_pref != bias or stable_session != session or int(state_fast.get("candidate_count", 0)) < THESIS_FAST_THESIS_CONFIRM_BARS:
+        result["reason"] = "forecast e thesis stabile non allineati"
+        return result
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    if not m1.get("confirmed") or m1.get("direction") != bias:
+        result["reason"] = "manca M1 trigger confermato"
+        return result
+
+    trades = _forecast_trend_shadow_trades(symbol)
+    if any(t.get("status") == "OPEN" for t in trades):
+        result["reason"] = "shadow trend gia' attivo"
+        return result
+    today_session = [t for t in trades if t.get("day_key") == _thesis_day_key() and t.get("session") == session]
+    if len(today_session) >= FORECAST_TREND_SHADOW_MAX_PER_SESSION:
+        result["reason"] = "max shadow trend per sessione raggiunto"
+        return result
+    if today_session:
+        last = max(to_float(t.get("created"), 0) for t in today_session)
+        if now_ts() - last < FORECAST_TREND_SHADOW_COOLDOWN_SECONDS:
+            result["reason"] = "cooldown shadow trend"
+            return result
+
+    price = get_price_from_data(data)
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    sl_dist = min(FORECAST_TREND_SHADOW_MAX_SL_POINTS, max(FORECAST_TREND_SHADOW_MIN_SL_POINTS, ref * 0.22))
+    entry = round(price, 3)
+    if bias == "BUY":
+        sl = round(entry - sl_dist, 3)
+        targets = [round(entry + x, 3) for x in FORECAST_TREND_SHADOW_TPS]
+    else:
+        sl = round(entry + sl_dist, 3)
+        targets = [round(entry - x, 3) for x in FORECAST_TREND_SHADOW_TPS]
+    tid = str(int(now_ts() * 1000))
+    trade = {
+        "id": tid, "day_key": _thesis_day_key(), "symbol": symbol, "session": session,
+        "direction": bias, "entry": entry, "sl": sl, "sl_current": sl, "targets": targets,
+        "highest_tp": 0, "status": "OPEN", "created": now_ts(),
+        "forecast_revision": int(forecast.get("revision_count", 0)),
+        "forecast_bias": bias, "m1_score": m1.get("score"), "result_points": None,
+    }
+    trades.append(trade)
+    save_runtime_state(force=True)
+    result.update({"triggered": True, "trade_id": tid, "reason": "Forecast+Thesis+M1 allineati"})
+    if FORECAST_TREND_SHADOW_ALERT_ENABLED:
+        tlines = "\n".join(f"TP{i}: {tp}" for i, tp in enumerate(targets, start=1))
+        send_telegram(f"""🧪📈 FORECAST TREND SHADOW — SOLO TEST, NON MT4
+
+{symbol} {bias} | Sessione {session}
+Entry simulata: {entry}
+SL simulato: {sl}
+{tlines}
+
+Conferme:
+- Forecast LIVE {bias}
+- Thesis stabile {bias} 2/2
+- M1 trigger confermato score {m1.get('score')}
+
+Gestione simulata:
+TP1 -> SL a BE; poi SL sale/scende un TP alla volta.
+Questo motore NON apre ordini reali e NON entra nel PnL Shadow del MAIN/THESIS.""")
+    return result
+
+
+@app.route("/forecast_trend_shadow", methods=["GET"])
+def forecast_trend_shadow_status():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    return jsonify({
+        "version": VERSION,
+        "enabled": FORECAST_TREND_SHADOW_ENABLED,
+        "sessions": sorted(FORECAST_TREND_SHADOW_SESSIONS),
+        "symbol": symbol,
+        "trades": _forecast_trend_shadow_trades(symbol)[-20:],
+    })
 
 def _newyork_forecast_review_result(forecast, newyork):
     bias = str(forecast.get("bias", "RANGE")).upper()
@@ -10990,10 +11847,15 @@ def maybe_newyork_session_forecast_alert(symbol, data, thesis_ctx=None):
             return newyork_session_forecast_text(forecast)
         return None
 
+    # v47.13: rivalutazione LIVE anche per New York.
+    dynamic_alert = maybe_dynamic_forecast_update(symbol, data, thesis_ctx=ctx, session="NEWYORK")
+    if dynamic_alert:
+        return dynamic_alert
+
     price = get_price_from_data(data)
     bias = str(forecast.get("bias", "RANGE")).upper()
 
-    if active == "NEWYORK" and price:
+    if active == "NEWYORK" and price and int(forecast.get("revision_count", 0)) == 0:
         if bias == "BUY":
             invalid = to_float(forecast.get("invalidation"), 0)
             target2 = to_float(forecast.get("target2"), 0)
@@ -11107,12 +11969,15 @@ High: {forecast.get('actual_newyork_high')}
 Close: {forecast.get('actual_newyork_close')}
 Move: {forecast.get('actual_newyork_move')}
 
-Direzione coerente: {forecast.get('direction_correct')}
-Range contenuto nella mappa: {forecast.get('range_covered')}
-Target 2 raggiunto: {forecast.get('target2_notified')}
-Estensione raggiunta: {forecast.get('extension_notified')}
+Direzione coerente MAPPA INIZIALE: {forecast.get('direction_correct')}
+Range contenuto nella mappa iniziale: {forecast.get('range_covered')}
+Target 2 iniziale raggiunto: {forecast.get('target2_notified')}
+Estensione iniziale raggiunta: {forecast.get('extension_notified')}
+Revisioni LIVE: {forecast.get('revision_count', 0)}
+Bias LIVE finale: {forecast.get('live_bias', forecast.get('bias'))}
+Stato LIVE finale: {forecast.get('live_status', forecast.get('status'))}
 
-Questa review misura il forecast New York separatamente da EUROPE Forecast, MAIN e THESIS MAIN."""
+La review misura la MAPPA INIZIALE separatamente dalle revisioni LIVE, EUROPE Forecast, MAIN e THESIS MAIN."""
 
     return None
 
@@ -14923,10 +15788,13 @@ def main_thesis_agreement_context(signal, symbol, data=None):
         "status": None,
         "stable_preferred": None,
         "stable_session": None,
+        "candidate_count": 0,
+        "mode": "THESIS_AGREEMENT",
+        "score_bonus": 0,
         "reason": "",
     }
-    if not MAIN_THESIS_AGREEMENT_ENABLED or signal not in ["BUY", "SELL"]:
-        out["reason"] = "Agreement disattivato o segnale non operativo"
+    if signal not in ["BUY", "SELL"]:
+        out["reason"] = "Segnale non operativo"
         return out
 
     try:
@@ -14951,6 +15819,20 @@ def main_thesis_agreement_context(signal, symbol, data=None):
         "stable_session": stable_session or None,
         "candidate_count": candidate_count,
     })
+
+    # v47.13: Asia raccoglie/analizza soltanto. Nessun nuovo MAIN puo' essere salvato 00:05-07:30.
+    # Questo blocco e' indipendente dal toggle MAIN_THESIS_AGREEMENT_ENABLED.
+    if ASIA_LEARN_ONLY_ENABLED and session == "ASIA":
+        out["active"] = True
+        out["block"] = True
+        out["mode"] = "ASIA_LEARN_ONLY"
+        out["reason"] = "ASIA LEARN ONLY: raccolgo dati/Thesis/Forecast, nessuna nuova operazione MAIN"
+        return out
+
+    if not MAIN_THESIS_AGREEMENT_ENABLED:
+        out["enabled"] = False
+        out["reason"] = "MAIN/Thesis agreement disattivato"
+        return out
 
     if session not in MAIN_THESIS_AGREEMENT_SESSIONS:
         out["reason"] = f"Sessione {session}: agreement non applicato"
@@ -14977,7 +15859,8 @@ def main_thesis_agreement_context(signal, symbol, data=None):
         out["block"] = True
         out["reason"] = f"MAIN {signal} contro Thesis {session} {preferred} stabilizzata"
     else:
-        out["reason"] = f"MAIN {signal} allineato con Thesis {session} {preferred} stabilizzata"
+        out["score_bonus"] = MAIN_THESIS_ALIGNMENT_BONUS
+        out["reason"] = f"MAIN {signal} allineato con Thesis {session} {preferred} stabilizzata (+{MAIN_THESIS_ALIGNMENT_BONUS})"
     return out
 
 
@@ -18573,15 +19456,32 @@ def webhook():
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
 
-        # v47.12: Forecast EUROPE + Forecast NEW YORK, entrambi separati dalle entry.
+        # v47.13: Forecast EUROPE + Forecast NEW YORK, ora anche LIVE/DINAMICI.
         forecast_alert = maybe_morning_session_forecast_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
         if forecast_alert:
             send_telegram(forecast_alert)
 
-        # v47.12: secondo forecast dedicato a New York, separato da quello europeo.
+        # v47.13: secondo forecast New York, con rivalutazione dinamica separata.
         ny_forecast_alert = maybe_newyork_session_forecast_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
         if ny_forecast_alert:
             send_telegram(ny_forecast_alert)
+
+        # v47.13: M1 timing. Thesis decide la direzione, M1 osserva l'accelerazione.
+        try:
+            m1_alert, m1_ctx = maybe_m1_timing_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
+            if m1_alert:
+                send_telegram(m1_alert)
+        except Exception as e:
+            print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
+            m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
+
+        # v47.13: motore sperimentale LUNGO in SHADOW, default solo Europa.
+        # Richiede Forecast LIVE + Thesis stabile + M1 confermato; non invia nulla a MT4.
+        try:
+            forecast_trend_shadow_result = process_forecast_trend_shadow(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
+        except Exception as e:
+            print(f"[v47.13] Forecast Trend Shadow error: {type(e).__name__}: {e}", flush=True)
+            forecast_trend_shadow_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
         # v47.3: THESIS FAST v2 3P separato e stabilizzato.
         # Trasforma solo una tesi NY già esplicita in micro-scalp da 3 punti,
@@ -18659,6 +19559,12 @@ def webhook():
             "thesis_fast_triggered": thesis_fast_result.get("triggered"),
             "thesis_fast_trade_id": thesis_fast_result.get("trade_id"),
             "thesis_fast_reason": thesis_fast_result.get("reason"),
+            "m1_timing_confirmed": m1_ctx.get("confirmed"),
+            "m1_timing_direction": m1_ctx.get("direction"),
+            "m1_timing_score": m1_ctx.get("score"),
+            "forecast_trend_shadow_triggered": forecast_trend_shadow_result.get("triggered"),
+            "forecast_trend_shadow_trade_id": forecast_trend_shadow_result.get("trade_id"),
+            "forecast_trend_shadow_reason": forecast_trend_shadow_result.get("reason"),
             "synthetic_triggered": synthetic_result.get("triggered"),
             "synthetic_trade_id": synthetic_result.get("trade_id"),
             "event_state": synthetic_result.get("state"),
@@ -18813,6 +19719,70 @@ Aspetta vera rottura bearish oppure zona Max A+.
         )
 
     # =========================
+    # v47.13 HIERARCHY: ASIA LEARN ONLY -> THESIS HARD GATE -> FORECAST SOFT WEIGHT -> M1 TIMING BONUS
+    # =========================
+    thesis_agreement = main_thesis_agreement_context(signal, symbol, data)
+    if thesis_agreement.get("block"):
+        if thesis_agreement.get("mode") == "ASIA_LEARN_ONLY":
+            text = f"""🌙📚 MAIN BLOCCATO — ASIA LEARN ONLY {VERSION}
+
+Segnale MAIN: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup: {setup_type}
+Score grezzo: {score}
+
+Azione:
+- 00:05-07:30 Asia serve SOLO per apprendimento/mappa Thesis.
+- Nessuna nuova operazione MAIN viene aperta.
+- PRICE_UPDATE continua a raccogliere high/low/open/close, struttura e news.
+- Eventuali trade gia' aperti continuano a essere gestiti.
+- La prima vera fase operativa riparte con EUROPE."""
+            send_telegram(text)
+            return jsonify({"status": "blocked_asia_learn_only", "score": score, "setup_type": setup_type, "reason": thesis_agreement.get("reason")})
+        text = f"""🧭🤝 MAIN BLOCCATO {VERSION}
+
+Motivo: MAIN / THESIS DIRECTION AGREEMENT
+
+Segnale MAIN: {signal}
+Symbol: {symbol}
+Prezzo: {price}
+Setup MAIN: {setup_type}
+Score MAIN: {score}
+
+Sessione: {thesis_agreement.get('session')}
+Session Thesis: {thesis_agreement.get('status')} -> {thesis_agreement.get('preferred')}
+Thesis stabile: {thesis_agreement.get('stable_preferred')} | sessione stabile: {thesis_agreement.get('stable_session')}
+Conferme Thesis: {thesis_agreement.get('candidate_count')}/2
+
+Dettaglio:
+{thesis_agreement.get('reason')}
+
+Azione:
+La Thesis stabile e' il filtro direzionale piu' forte: il MAIN non apre contro di lei."""
+        send_telegram(text)
+        return jsonify({
+            "status": "blocked_main_thesis_disagreement", "score": score, "setup_type": setup_type,
+            "main_signal": signal, "thesis_session": thesis_agreement.get("session"),
+            "thesis_status": thesis_agreement.get("status"), "thesis_preferred": thesis_agreement.get("preferred"),
+            "reason": thesis_agreement.get("reason"), "fast_pre": fast_pre_result,
+        })
+
+    if thesis_agreement.get("active") and thesis_agreement.get("score_bonus"):
+        score += int(thesis_agreement.get("score_bonus", 0))
+        reasons.append(thesis_agreement.get("reason"))
+
+    forecast_ctx = main_forecast_context(signal, symbol, data, thesis_agreement=thesis_agreement)
+    if forecast_ctx.get("delta"):
+        score += int(forecast_ctx.get("delta", 0))
+        reasons.append(forecast_ctx.get("reason"))
+
+    main_m1_ctx = m1_timing_context(data)
+    if main_m1_ctx.get("confirmed") and main_m1_ctx.get("direction") == signal:
+        score += MAIN_M1_TIMING_BONUS
+        reasons.append(f"M1 timing {signal} confermato (+{MAIN_M1_TIMING_BONUS})")
+
+    # =========================
     # SCORE BLOCK
     # =========================
 
@@ -18845,47 +19815,6 @@ News:
             "fast_pre": fast_pre_result
         })
 
-    # =========================
-    # MAIN <-> THESIS AGREEMENT v47.11
-    # =========================
-    thesis_agreement = main_thesis_agreement_context(signal, symbol, data)
-    if thesis_agreement.get("block"):
-        text = f"""🧭🤝 MAIN BLOCCATO {VERSION}
-
-Motivo: MAIN / THESIS DIRECTION AGREEMENT
-
-Segnale MAIN: {signal}
-Symbol: {symbol}
-Prezzo: {price}
-Setup MAIN: {setup_type}
-Score MAIN: {score}
-
-Sessione: {thesis_agreement.get('session')}
-Session Thesis: {thesis_agreement.get('status')} -> {thesis_agreement.get('preferred')}
-Thesis stabile: {thesis_agreement.get('stable_preferred')} | sessione stabile: {thesis_agreement.get('stable_session')}
-Conferme Thesis: {thesis_agreement.get('candidate_count')}/2
-
-Dettaglio:
-{thesis_agreement.get('reason')}
-
-Azione:
-Il MAIN mantiene tutte le sue regole, ma durante EUROPE/NEWYORK non apre contro una Thesis operativa stabilizzata.
-Aspetta che la Thesis diventi neutra/RANGE oppure confermi la stessa direzione del MAIN.
-"""
-        send_telegram(text)
-        return jsonify({
-            "status": "blocked_main_thesis_disagreement",
-            "score": score,
-            "setup_type": setup_type,
-            "main_signal": signal,
-            "thesis_session": thesis_agreement.get("session"),
-            "thesis_status": thesis_agreement.get("status"),
-            "thesis_preferred": thesis_agreement.get("preferred"),
-            "reason": thesis_agreement.get("reason"),
-            "fast_pre": fast_pre_result,
-        })
-    if thesis_agreement.get("active"):
-        reasons.append(f"MAIN allineato con Thesis {thesis_agreement.get('session')} {thesis_agreement.get('preferred')} stabilizzata")
 
     # =========================
     # POST SL QUARANTINE BLOCK v37
