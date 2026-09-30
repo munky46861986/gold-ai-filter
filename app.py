@@ -14,18 +14,22 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.13 Asia Learn-Only + Dynamic Forecast + M1 Timing"
-# v47.13: architettura Thesis-led dopo il test settimanale 21-25 settembre.
-# - ASIA = LEARN ONLY: 00:05-07:30 raccoglie dati/session thesis ma NON apre nuovi MAIN.
-# - THESIS MAIN resta operativo SOLO EUROPE + NEWYORK, 2 conferme + trigger, TP 3 / SL 6.
-# - MAIN conserva score/setup/TP1->TP8, ma la Thesis stabile resta HARD GATE direzionale.
-# - MAIN ascolta anche il Forecast LIVE come peso di contesto (bonus/penalita', NON hard gate).
-# - EUROPE/NY Forecast diventano DINAMICI: VALID -> WEAKENING -> INVALIDATED/REASSESSING -> REVISED.
-# - La mappa iniziale resta immutata nello storico; il LIVE FORECAST puo' cambiare bias/livelli.
-# - M1 TIMING osserva micro-BOS, corpo/chiusura candela, rejection, EMA e allineamento Thesis/Forecast.
-# - M1 e' un grilletto/timing: NON decide la direzione da solo.
-# - FORECAST TREND SHADOW (default solo EUROPE) simula trade piu' lunghi con TP multipli, NON MT4.
-# - FAST 2P classico resta disattivato.
+VERSION = "v47.14 Forecast First + 3-Leg Campaign + Session Ownership"
+# v47.14: FORECAST FIRST. Base Forecast/M1 derivata IDENTICA dalla v47.13;
+# le formule di Europe Forecast, New York Forecast e Dynamic Revision NON vengono riscritte.
+# - ASIA = LEARN ONLY invariato.
+# - Session Thesis resta ON come regista direzionale/stabilita' per Forecast e M1.
+# - MAIN operativo = PAUSA di default; i trade gia' aperti continuano a essere gestiti.
+# - THESIS MAIN +3/-6 operativo = PAUSA di default; la sua macchina di stabilita' resta attiva.
+# - EUROPE Forecast e NEW YORK Forecast restano v47.13; fix solo di SESSION OWNERSHIP:
+#   quando inizia New York, Europa viene archiviata e non puo' piu' revisionare/mandare target live.
+# - M1 WATCH/TRIGGER resta v47.13 e frequente; per aprire una Forecast Campaign serve score M1 >= 6.
+# - FORECAST CAMPAIGN = nuovo motore ufficiale: 3 x 0.01, TP1 chiude A, TP2 chiude B, C e' runner.
+# - Dopo TP1 B+C -> BE; dopo TP2 runner C protegge almeno TP1 e usa trailing dinamico.
+# - Una vera Forecast Revision BUY<->SELL puo' chiudere la vecchia campaign e crearne una nuova
+#   al primo trigger M1 valido della nuova direzione.
+# - Bridge MT4 esteso con engine FORECAST e 3 gambe; DEMO ONLY e EnableTrading=false restano default.
+# - FORECAST TREND SHADOW v47.13 resta nel codice ma e' disattivato di default per evitare doppioni.
 # - La futura logica target giornaliero 30/50 e max 2 SL NON e' implementata in questa versione.
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -269,9 +273,38 @@ M1_TIMING_CONFIRM_SCORE = max(M1_TIMING_WATCH_SCORE + 1, int(os.getenv("M1_TIMIN
 M1_TIMING_WATCH_COOLDOWN_SECONDS = max(60, int(os.getenv("M1_TIMING_WATCH_COOLDOWN_SECONDS", "300")))
 M1_TIMING_CONFIRM_COOLDOWN_SECONDS = max(30, int(os.getenv("M1_TIMING_CONFIRM_COOLDOWN_SECONDS", "120")))
 
-# v47.13: Forecast Trend SHADOW. Esperimento separato dal MAIN/THESIS/MT4.
-# Default EUROPE only, per misurare se Forecast+Thesis+M1 possono sostenere movimenti piu' lunghi.
-FORECAST_TREND_SHADOW_ENABLED = os.getenv("FORECAST_TREND_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
+# v47.14: MAIN e micro-trade THESIS vengono messi in PAUSA OPERATIVA,
+# ma la Session Thesis / stabilita' rimane attiva per Forecast + M1.
+MAIN_OPERATIONAL_ENABLED = os.getenv("MAIN_OPERATIONAL_ENABLED", "FALSE").upper() == "TRUE"
+MAIN_PAUSE_ALERT_ENABLED = os.getenv("MAIN_PAUSE_ALERT_ENABLED", "FALSE").upper() == "TRUE"
+THESIS_TRADE_OPERATIONAL_ENABLED = os.getenv("THESIS_TRADE_OPERATIONAL_ENABLED", "FALSE").upper() == "TRUE"
+THESIS_TRADE_PAUSE_ALERT_ENABLED = os.getenv("THESIS_TRADE_PAUSE_ALERT_ENABLED", "FALSE").upper() == "TRUE"
+
+# v47.14: Forecast Campaign ufficiale. NON cambia la matematica del Forecast v47.13.
+FORECAST_CAMPAIGN_ENABLED = os.getenv("FORECAST_CAMPAIGN_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_CAMPAIGN_ALERT_ENABLED = os.getenv("FORECAST_CAMPAIGN_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_CAMPAIGN_SESSIONS_RAW = os.getenv("FORECAST_CAMPAIGN_SESSIONS", "EUROPE,NEWYORK")
+FORECAST_CAMPAIGN_SESSIONS = {
+    x.strip().upper() for x in FORECAST_CAMPAIGN_SESSIONS_RAW.split(",") if x.strip()
+}.intersection({"EUROPE", "NEWYORK"}) or {"EUROPE", "NEWYORK"}
+FORECAST_CAMPAIGN_MIN_M1_SCORE = max(4, int(os.getenv("FORECAST_CAMPAIGN_MIN_M1_SCORE", "6")))
+FORECAST_CAMPAIGN_LEG_LOT = min(0.01, max(0.01, float(os.getenv("FORECAST_CAMPAIGN_LEG_LOT", "0.01"))))
+FORECAST_CAMPAIGN_LEGS = 3
+FORECAST_CAMPAIGN_TP1_POINTS = max(1.0, float(os.getenv("FORECAST_CAMPAIGN_TP1_POINTS", "3.0")))
+FORECAST_CAMPAIGN_TP2_POINTS = max(FORECAST_CAMPAIGN_TP1_POINTS + 0.5, float(os.getenv("FORECAST_CAMPAIGN_TP2_POINTS", "6.0")))
+FORECAST_CAMPAIGN_MIN_SL_POINTS = max(3.0, float(os.getenv("FORECAST_CAMPAIGN_MIN_SL_POINTS", "6.0")))
+FORECAST_CAMPAIGN_MAX_SL_POINTS = max(FORECAST_CAMPAIGN_MIN_SL_POINTS, float(os.getenv("FORECAST_CAMPAIGN_MAX_SL_POINTS", "12.0")))
+FORECAST_CAMPAIGN_RUNNER_ARM_POINTS = max(FORECAST_CAMPAIGN_TP2_POINTS, float(os.getenv("FORECAST_CAMPAIGN_RUNNER_ARM_POINTS", "10.0")))
+FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS = max(1.0, float(os.getenv("FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS", "4.0")))
+FORECAST_CAMPAIGN_ENTRY_TOLERANCE = max(0.10, float(os.getenv("FORECAST_CAMPAIGN_ENTRY_TOLERANCE", "0.80")))
+FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS", "240")))
+FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP = os.getenv("FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP", "TRUE").upper() == "TRUE"
+FORECAST_CAMPAIGN_ONE_PER_REVISION = os.getenv("FORECAST_CAMPAIGN_ONE_PER_REVISION", "TRUE").upper() == "TRUE"
+FORECAST_CAMPAIGN_HISTORY_MAX = max(20, int(os.getenv("FORECAST_CAMPAIGN_HISTORY_MAX", "120")))
+
+# v47.13 Forecast Trend SHADOW resta disponibile come diagnostica legacy,
+# ma default OFF: il nuovo Forecast Campaign ne prende il posto operativo.
+FORECAST_TREND_SHADOW_ENABLED = os.getenv("FORECAST_TREND_SHADOW_ENABLED", "FALSE").upper() == "TRUE"
 FORECAST_TREND_SHADOW_ALERT_ENABLED = os.getenv("FORECAST_TREND_SHADOW_ALERT_ENABLED", "TRUE").upper() == "TRUE"
 FORECAST_TREND_SHADOW_SESSIONS_RAW = os.getenv("FORECAST_TREND_SHADOW_SESSIONS", "EUROPE")
 FORECAST_TREND_SHADOW_SESSIONS = {
@@ -2606,6 +2639,11 @@ def health():
         "m1_timing_enabled": M1_TIMING_ENABLED,
         "forecast_trend_shadow_enabled": FORECAST_TREND_SHADOW_ENABLED,
         "forecast_trend_shadow_sessions": sorted(FORECAST_TREND_SHADOW_SESSIONS),
+        "forecast_campaign_enabled": FORECAST_CAMPAIGN_ENABLED,
+        "forecast_campaign_sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
+        "forecast_campaign_min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
+        "main_operational_enabled": MAIN_OPERATIONAL_ENABLED,
+        "thesis_trade_operational_enabled": THESIS_TRADE_OPERATIONAL_ENABLED,
         "shadow_execution": shadow_status_payload(),
         "mt4_bridge": mt4_status_payload(),
         "max_discipline_enabled": MAX_DISCIPLINE_ENABLED,
@@ -10477,10 +10515,12 @@ def maybe_morning_session_forecast_alert(symbol, data, thesis_ctx=None):
             return morning_session_forecast_text(forecast)
         return None
 
-    # v47.13: la mappa iniziale resta storica, ma il LIVE forecast puo' indebolirsi/invalidarsi/rivedersi.
-    dynamic_alert = maybe_dynamic_forecast_update(symbol, data, thesis_ctx=ctx, session="EUROPE")
-    if dynamic_alert:
-        return dynamic_alert
+    # v47.14 SESSION OWNERSHIP: la matematica LIVE e' quella v47.13, ma dopo Europa
+    # la mappa europea viene congelata/archiviata e non puo' piu' revisionarsi durante New York.
+    if active == "EUROPE":
+        dynamic_alert = maybe_dynamic_forecast_update(symbol, data, thesis_ctx=ctx, session="EUROPE")
+        if dynamic_alert:
+            return dynamic_alert
 
     price = get_price_from_data(data)
     bias = str(forecast.get("bias", "RANGE")).upper()
@@ -11455,6 +11495,14 @@ def maybe_dynamic_forecast_update(symbol, data, thesis_ctx=None, session=None):
     if not forecast or session not in ["EUROPE", "NEWYORK"] or current_session != session:
         return None
 
+    # v47.14 SESSION OWNERSHIP: una mappa puo' essere revisionata SOLO durante la propria sessione.
+    # Questo NON cambia score/livelli/formule v47.13; impedisce soltanto che, ad esempio,
+    # una vecchia EUROPE map venga revisionata alle 16:25 mentre il mercato attivo e' NEWYORK.
+    thesis_owner = thesis_ctx or update_session_intelligence(data)
+    actual_active = str((thesis_owner or {}).get("session") or state.get("active_session") or "").upper()
+    if actual_active != session:
+        return None
+
     price = get_price_from_data(data)
     if not price:
         return None
@@ -11799,6 +11847,375 @@ def forecast_trend_shadow_status():
         "symbol": symbol,
         "trades": _forecast_trend_shadow_trades(symbol)[-20:],
     })
+
+# =========================
+# v47.14 FORECAST CAMPAIGN — OFFICIAL 3-LEG ENGINE
+# =========================
+
+def _forecast_campaigns(symbol):
+    symbol = str(symbol or "XAUUSD").upper()
+    state = get_session_thesis_state(symbol)
+    rows = state.setdefault("forecast_campaigns", [])
+    if not isinstance(rows, list):
+        rows = []
+        state["forecast_campaigns"] = rows
+    if len(rows) > FORECAST_CAMPAIGN_HISTORY_MAX:
+        del rows[:-FORECAST_CAMPAIGN_HISTORY_MAX]
+    return rows
+
+
+def _forecast_campaign_key(session, forecast, bias):
+    return f"{_thesis_day_key()}|{session}|R{int((forecast or {}).get('revision_count', 0))}|{bias}"
+
+
+def _forecast_campaign_map_exhausted(forecast, bias, price):
+    if not forecast or bias not in ["BUY", "SELL"] or not price:
+        return True
+    rev = int(forecast.get("revision_count", 0))
+    ext = to_float(forecast.get("live_extension") if rev > 0 else forecast.get("extension"), 0)
+    if not ext:
+        return False
+    return (bias == "BUY" and price >= ext) or (bias == "SELL" and price <= ext)
+
+
+def _forecast_campaign_result_points(campaign):
+    total = 0.0
+    entry = to_float(campaign.get("entry"), 0)
+    direction = str(campaign.get("direction") or "").upper()
+    for leg in campaign.get("legs", []):
+        if leg.get("status") != "CLOSED":
+            continue
+        exit_price = to_float(leg.get("exit_price"), entry)
+        pts = exit_price - entry if direction == "BUY" else entry - exit_price
+        total += pts
+    return round(total, 3)
+
+
+def _forecast_campaign_close_leg(campaign, leg_name, exit_price, reason):
+    for leg in campaign.get("legs", []):
+        if leg.get("name") != leg_name or leg.get("status") == "CLOSED":
+            continue
+        leg["status"] = "CLOSED"
+        leg["exit_price"] = round(to_float(exit_price), 3)
+        leg["exit_reason"] = reason
+        leg["closed"] = now_ts()
+        return True
+    return False
+
+
+def _forecast_campaign_all_closed(campaign):
+    legs = campaign.get("legs", []) or []
+    return bool(legs) and all(x.get("status") == "CLOSED" for x in legs)
+
+
+def _forecast_campaign_request_mt4_close(campaign, reason="FORECAST_FLIP"):
+    if not campaign or campaign.get("mt4_close_queued"):
+        return None
+    try:
+        cmd = mt4_bridge_queue_close_forecast_campaign(campaign, reason=reason)
+        if cmd:
+            campaign["mt4_close_queued"] = True
+            campaign["mt4_close_cmd_id"] = cmd.get("cmd_id")
+            save_runtime_state(force=True)
+        return cmd
+    except Exception as e:
+        print(f"[v47.14] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
+def _close_forecast_campaign_sim(campaign, price, reason):
+    if not campaign or campaign.get("status") not in ["OPEN", "OPENED", "PENDING"]:
+        return None
+    for leg in campaign.get("legs", []):
+        if leg.get("status") != "CLOSED":
+            _forecast_campaign_close_leg(campaign, leg.get("name"), price, reason)
+    campaign["status"] = "CLOSED"
+    campaign["closed"] = now_ts()
+    campaign["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    campaign["close_reason"] = reason
+    campaign["result_points_total"] = _forecast_campaign_result_points(campaign)
+    save_runtime_state(force=True)
+    return f"🔄 FORECAST CAMPAIGN CHIUSA | {campaign.get('direction')} | {reason} | uscita {round(to_float(price),3)} | totale simulato {campaign.get('result_points_total'):+.2f} pt"
+
+
+def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_session=None):
+    messages = []
+    symbol = str(symbol or "XAUUSD").upper()
+    high = to_float(data.get("high"), get_price_from_data(data))
+    low = to_float(data.get("low"), get_price_from_data(data))
+    price = get_price_from_data(data)
+    live_bias = _forecast_live_bias(active_forecast) if active_forecast else "RANGE"
+
+    for c in _forecast_campaigns(symbol):
+        if c.get("status") not in ["OPEN", "OPENED", "PENDING"]:
+            continue
+        direction = str(c.get("direction") or "").upper()
+
+        # A confirmed live forecast flip owns the direction: old campaign exits before a new one.
+        if (FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP and active_session == c.get("session")
+                and live_bias in ["BUY", "SELL"] and live_bias != direction
+                and int((active_forecast or {}).get("revision_count", 0)) > int(c.get("forecast_revision", 0))):
+            _forecast_campaign_request_mt4_close(c, reason="FORECAST_REVISION_FLIP")
+            msg = _close_forecast_campaign_sim(c, price, "FORECAST_REVISION_FLIP")
+            if msg: messages.append(msg)
+            continue
+
+        # Session ownership: Europe campaign may continue to be managed, but no new Europe logic is generated in NY.
+        sl = to_float(c.get("runner_sl"), to_float(c.get("sl"), 0))
+        sl_hit = (direction == "BUY" and low <= sl) or (direction == "SELL" and high >= sl)
+        if sl_hit:
+            for leg in c.get("legs", []):
+                if leg.get("status") != "CLOSED":
+                    _forecast_campaign_close_leg(c, leg.get("name"), sl, "SL/TRAIL")
+            c["status"] = "CLOSED"
+            c["closed"] = now_ts()
+            c["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+            c["close_reason"] = "SL/TRAIL"
+            c["result_points_total"] = _forecast_campaign_result_points(c)
+            messages.append(f"🛡 FORECAST CAMPAIGN CHIUSA | {direction} | SL/TRAIL {round(sl,3)} | totale simulato {c.get('result_points_total'):+.2f} pt")
+            continue
+
+        tp1 = to_float(c.get("tp1"), 0)
+        tp2 = to_float(c.get("tp2"), 0)
+        entry = to_float(c.get("entry"), 0)
+        leg_a = next((x for x in c.get("legs", []) if x.get("name") == "A"), {})
+        leg_b = next((x for x in c.get("legs", []) if x.get("name") == "B"), {})
+        leg_c = next((x for x in c.get("legs", []) if x.get("name") == "C"), {})
+
+        hit1 = (direction == "BUY" and high >= tp1) or (direction == "SELL" and low <= tp1)
+        if hit1 and leg_a.get("status") != "CLOSED":
+            _forecast_campaign_close_leg(c, "A", tp1, "TP1")
+            c["runner_sl"] = entry  # B + C to BE in the simulator; EA does the same locally.
+            c["tp1_hit"] = True
+            messages.append(f"✅ FORECAST CAMPAIGN {direction} TP1 | A chiusa {round(tp1,3)} | B+C -> BE {round(entry,3)}")
+
+        hit2 = (direction == "BUY" and high >= tp2) or (direction == "SELL" and low <= tp2)
+        if hit2 and leg_b.get("status") != "CLOSED":
+            _forecast_campaign_close_leg(c, "B", tp2, "TP2")
+            c["tp2_hit"] = True
+            # Runner C protects at least TP1 after TP2.
+            c["runner_sl"] = tp1
+            messages.append(f"✅ FORECAST CAMPAIGN {direction} TP2 | B chiusa {round(tp2,3)} | C RUNNER protetta a TP1 {round(tp1,3)}")
+
+        if leg_c.get("status") != "CLOSED" and c.get("tp2_hit"):
+            if direction == "BUY":
+                best = max(to_float(c.get("best_price"), entry), high)
+                c["best_price"] = best
+                if best - entry >= FORECAST_CAMPAIGN_RUNNER_ARM_POINTS:
+                    trail = max(tp1, best - FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS)
+                    c["runner_sl"] = max(to_float(c.get("runner_sl"), tp1), trail)
+            else:
+                best_prev = to_float(c.get("best_price"), entry) or entry
+                best = min(best_prev, low)
+                c["best_price"] = best
+                if entry - best >= FORECAST_CAMPAIGN_RUNNER_ARM_POINTS:
+                    trail = min(tp1, best + FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS)
+                    current = to_float(c.get("runner_sl"), tp1)
+                    c["runner_sl"] = min(current, trail)
+
+        if _forecast_campaign_all_closed(c):
+            c["status"] = "CLOSED"
+            c["closed"] = c.get("closed") or now_ts()
+            c["closed_local"] = c.get("closed_local") or local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+            c["result_points_total"] = _forecast_campaign_result_points(c)
+
+    if messages:
+        save_runtime_state(force=True)
+    return messages
+
+
+def _forecast_campaign_mt4_source(campaign):
+    entry = to_float(campaign.get("entry"), 0)
+    tol = FORECAST_CAMPAIGN_ENTRY_TOLERANCE
+    return {
+        "engine": "FORECAST",
+        "source_trade_id": str(campaign.get("id")),
+        "symbol": campaign.get("symbol", "XAUUSD"),
+        "signal": campaign.get("direction"),
+        "entry": entry,
+        "entry_zone": [entry - tol, entry + tol],
+        "initial_sl": to_float(campaign.get("sl"), 0),
+        "tp_levels": [to_float(campaign.get("tp1"), 0), to_float(campaign.get("tp2"), 0)],
+        "setup": f"FORECAST_CAMPAIGN_{campaign.get('session')}_R{campaign.get('forecast_revision',0)}",
+        "day_key": campaign.get("day_key") or _thesis_day_key(),
+        "mt4_legs": 3,
+        "requested_lot": FORECAST_CAMPAIGN_LEG_LOT,
+        "plan_expiry_seconds": FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS,
+    }
+
+
+def _queue_forecast_campaign_mt4(campaign):
+    try:
+        cmd = mt4_bridge_queue_trade(_forecast_campaign_mt4_source(campaign))
+        if cmd:
+            campaign["mt4_cmd_id"] = cmd.get("cmd_id")
+            campaign["mt4_status"] = cmd.get("status")
+            save_runtime_state(force=True)
+        return cmd
+    except Exception as e:
+        print(f"[v47.14] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
+def forecast_campaign_message(c):
+    return f"""🚀📈 FORECAST CAMPAIGN — OPERAZIONE UFFICIALE
+
+{c.get('symbol')} {c.get('direction')} | Sessione {c.get('session')}
+Forecast revision: #{c.get('forecast_revision')} | Forecast LIVE: {c.get('forecast_bias')}
+M1 trigger score: {c.get('m1_score')}
+
+3 posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
+A -> TP1 {c.get('tp1')}
+B -> TP2 {c.get('tp2')}
+C -> RUNNER dinamico (nessun TP fisso)
+
+Entry: {c.get('entry')}
+SL iniziale: {c.get('sl')}
+
+GESTIONE:
+- TP1: chiude A; B + C -> BE
+- TP2: chiude B; C resta RUNNER e protegge almeno TP1
+- RUNNER: da +{FORECAST_CAMPAIGN_RUNNER_ARM_POINTS:g} pt segue il best price a {FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS:g} pt
+- Se il Forecast LIVE fa una vera REVISION opposta, la vecchia campaign viene chiusa prima del nuovo lato
+
+Conferme:
+- Forecast LIVE {c.get('direction')}
+- Session Thesis stabile {c.get('direction')} 2/2
+- M1 trigger >= {FORECAST_CAMPAIGN_MIN_M1_SCORE}
+
+⚠️ I target di questa OPERAZIONE sono calcolati dall'ENTRY reale.
+I target della MAPPA Forecast restano separati e NON vengono usati come TP broker se sono gia' stati superati."""
+
+
+def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    result = {"triggered": False, "trade_id": None, "reason": "", "messages": []}
+    if not FORECAST_CAMPAIGN_ENABLED:
+        result["reason"] = "disabled"
+        return result
+
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session = str((thesis or {}).get("session") or "").upper()
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+
+    # First manage all existing campaigns, including a confirmed forecast flip.
+    messages = _manage_forecast_campaigns(symbol, data, active_forecast=forecast, active_session=session)
+    result["messages"] = messages
+    for msg in messages:
+        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+            send_telegram(msg)
+
+    if session not in FORECAST_CAMPAIGN_SESSIONS:
+        result["reason"] = f"session {session} non abilitata"
+        return result
+    if not forecast:
+        result["reason"] = "forecast non disponibile"
+        return result
+    if str(forecast.get("live_status") or "VALID").upper() in ["INVALIDATED", "REASSESSING", "ARCHIVED"]:
+        result["reason"] = "forecast non operativo"
+        return result
+
+    bias = _forecast_live_bias(forecast)
+    if bias not in ["BUY", "SELL"]:
+        result["reason"] = "forecast RANGE"
+        return result
+
+    state_fast = _thesis_fast_state(symbol)
+    stable_pref = str(state_fast.get("stable_preferred") or "").upper()
+    stable_session = str(state_fast.get("stable_session") or "").upper()
+    if stable_pref != bias or stable_session != session or int(state_fast.get("candidate_count", 0)) < THESIS_FAST_THESIS_CONFIRM_BARS:
+        result["reason"] = "forecast e Session Thesis stabile non allineati"
+        return result
+
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    if not m1.get("confirmed") or m1.get("direction") != bias or int(m1.get("score", 0)) < FORECAST_CAMPAIGN_MIN_M1_SCORE:
+        result["reason"] = f"serve M1 trigger {bias} score >= {FORECAST_CAMPAIGN_MIN_M1_SCORE}"
+        return result
+
+    price = get_price_from_data(data)
+    if _forecast_campaign_map_exhausted(forecast, bias, price):
+        result["reason"] = "mappa gia' arrivata oltre estensione: non inseguo"
+        return result
+
+    campaigns = _forecast_campaigns(symbol)
+    if any(c.get("status") in ["OPEN", "OPENED", "PENDING"] for c in campaigns):
+        result["reason"] = "Forecast Campaign gia' attiva"
+        return result
+
+    key = _forecast_campaign_key(session, forecast, bias)
+    if FORECAST_CAMPAIGN_ONE_PER_REVISION and any(c.get("campaign_key") == key for c in campaigns):
+        result["reason"] = "campaign gia' usata per questa mappa/revision"
+        return result
+
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    sl_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
+    entry = round(price, 3)
+    if bias == "BUY":
+        sl = round(entry - sl_dist, 3)
+        tp1 = round(entry + FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry + FORECAST_CAMPAIGN_TP2_POINTS, 3)
+    else:
+        sl = round(entry + sl_dist, 3)
+        tp1 = round(entry - FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
+
+    tid = str(int(now_ts() * 1000))
+    c = {
+        "id": tid,
+        "campaign_key": key,
+        "day_key": _thesis_day_key(),
+        "symbol": symbol,
+        "session": session,
+        "direction": bias,
+        "entry": entry,
+        "sl": sl,
+        "runner_sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "best_price": entry,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "status": "OPEN",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "forecast_revision": int(forecast.get("revision_count", 0)),
+        "forecast_bias": bias,
+        "forecast_strength": forecast.get("live_strength_score", forecast.get("strength_score")),
+        "m1_score": int(m1.get("score", 0)),
+        "legs": [
+            {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
+            {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
+            {"name": "C", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "RUNNER", "status": "OPEN"},
+        ],
+    }
+    campaigns.append(c)
+    save_runtime_state(force=True)
+    _queue_forecast_campaign_mt4(c)
+    result.update({"triggered": True, "trade_id": tid, "reason": "Forecast+Thesis+M1 ufficiali"})
+    if FORECAST_CAMPAIGN_ALERT_ENABLED:
+        send_telegram(forecast_campaign_message(c))
+    return result
+
+
+@app.route("/forecast_campaign", methods=["GET"])
+def forecast_campaign_status():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    return jsonify({
+        "version": VERSION,
+        "enabled": FORECAST_CAMPAIGN_ENABLED,
+        "sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
+        "min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
+        "leg_lot": FORECAST_CAMPAIGN_LEG_LOT,
+        "legs": FORECAST_CAMPAIGN_LEGS,
+        "tp1_points": FORECAST_CAMPAIGN_TP1_POINTS,
+        "tp2_points": FORECAST_CAMPAIGN_TP2_POINTS,
+        "runner_arm_points": FORECAST_CAMPAIGN_RUNNER_ARM_POINTS,
+        "runner_trail_points": FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS,
+        "symbol": symbol,
+        "campaigns": _forecast_campaigns(symbol)[-30:],
+    })
+
 
 def _newyork_forecast_review_result(forecast, newyork):
     bias = str(forecast.get("bias", "RANGE")).upper()
@@ -16384,6 +16801,13 @@ def process_thesis_fast(data, thesis_ctx=None):
         result["reason"] = ctx.get("reason")
         if not ctx.get("allow"):
             return result
+        # v47.14: la macchina Thesis continua a stabilizzare BUY/SELL per Forecast e M1,
+        # ma il vecchio micro-trade +3/-6 resta in pausa operativa.
+        if not THESIS_TRADE_OPERATIONAL_ENABLED:
+            result["reason"] = "THESIS trade +3/-6 in PAUSA; Session Thesis resta attiva"
+            if THESIS_TRADE_PAUSE_ALERT_ENABLED:
+                send_telegram(f"⏸ THESIS TRADE PAUSA — {symbol} | {ctx.get('signal')} | Session Thesis/M1 restano attivi")
+            return result
         trade, error = build_thesis_fast_trade(data, ctx)
         if error:
             result["reason"] = error
@@ -18195,9 +18619,10 @@ def shadow_execution_reset():
 MT4_BRIDGE_ENABLED = os.getenv("MT4_BRIDGE_ENABLED", "FALSE").upper() == "TRUE"
 # Compatibilita' diagnostica: una vecchia MT4_MAIN_ONLY=TRUE NON governa piu' v47.9.
 MT4_MAIN_ONLY_LEGACY = os.getenv("MT4_MAIN_ONLY", "").upper() == "TRUE"
-MT4_ALLOW_MAIN = os.getenv("MT4_ALLOW_MAIN", "TRUE").upper() == "TRUE"
-MT4_ALLOW_THESIS = os.getenv("MT4_ALLOW_THESIS", "TRUE").upper() == "TRUE"
+MT4_ALLOW_MAIN = os.getenv("MT4_ALLOW_MAIN", "FALSE").upper() == "TRUE" and MAIN_OPERATIONAL_ENABLED
+MT4_ALLOW_THESIS = os.getenv("MT4_ALLOW_THESIS", "FALSE").upper() == "TRUE" and THESIS_TRADE_OPERATIONAL_ENABLED
 MT4_ALLOW_FAST = os.getenv("MT4_ALLOW_FAST", "FALSE").upper() == "TRUE"
+MT4_ALLOW_FORECAST = os.getenv("MT4_ALLOW_FORECAST", "TRUE").upper() == "TRUE"
 MT4_BRIDGE_TOKEN = os.getenv("MT4_BRIDGE_TOKEN", "")
 MT4_DEMO_ONLY = os.getenv("MT4_DEMO_ONLY", "TRUE").upper() == "TRUE"
 MT4_ALLOWED_ACCOUNT = str(os.getenv("MT4_ALLOWED_ACCOUNT", "")).strip()
@@ -18208,6 +18633,7 @@ MT4_COMMAND_RETRY_SECONDS = max(2, int(os.getenv("MT4_COMMAND_RETRY_SECONDS", "6
 MT4_MAIN_PLAN_EXPIRY_SECONDS = max(300, int(os.getenv("MT4_MAIN_PLAN_EXPIRY_SECONDS", "10800")))
 MT4_FAST_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("MT4_FAST_PLAN_EXPIRY_SECONDS", "300")))
 MT4_THESIS_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("MT4_THESIS_PLAN_EXPIRY_SECONDS", "240")))
+MT4_FORECAST_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("MT4_FORECAST_PLAN_EXPIRY_SECONDS", str(FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS))))
 MT4_SCALP_ENTRY_TOLERANCE = max(0.0, float(os.getenv("MT4_SCALP_ENTRY_TOLERANCE", "0.80")))
 MT4_ENFORCE_DAILY_LOCK = os.getenv("MT4_ENFORCE_DAILY_LOCK", "FALSE").upper() == "TRUE"
 MT4_DAILY_TARGET_EUR = float(os.getenv("MT4_DAILY_TARGET_EUR", "50.0"))
@@ -18219,7 +18645,7 @@ MT4_TELEGRAM_EVENTS = os.getenv("MT4_TELEGRAM_EVENTS", "TRUE").upper() == "TRUE"
 MT4_ADMIN_TOKEN = os.getenv("MT4_ADMIN_TOKEN", SHADOW_ADMIN_TOKEN)
 
 MT4_STATE = {
-    "version": "v47.9-mt4-demo-dual-main-1",
+    "version": "v47.14-mt4-demo-forecast-3leg-1",
     "commands": [],
     "daily": {},
     "accounts": {},
@@ -18406,7 +18832,7 @@ def _mt4_find_command(cmd_id):
 
 
 def _mt4_engine_allowed(engine):
-    """v47.9 explicit execution allow-list: MAIN + THESIS by default, FAST off."""
+    """v47.14 execution allow-list: FORECAST on by default; MAIN/THESIS paused; FAST off."""
     engine = str(engine or "").upper().strip()
     if engine == "MAIN":
         return MT4_ALLOW_MAIN
@@ -18414,6 +18840,8 @@ def _mt4_engine_allowed(engine):
         return MT4_ALLOW_THESIS
     if engine == "FAST":
         return MT4_ALLOW_FAST
+    if engine == "FORECAST":
+        return MT4_ALLOW_FORECAST
     return False
 
 
@@ -18439,6 +18867,12 @@ def mt4_bridge_queue_trade(shadow_trade):
         entry_high = max(to_float(zone[0]), to_float(zone[1]))
         expiry = MT4_MAIN_PLAN_EXPIRY_SECONDS
         mode = "ZONE"
+    elif engine == "FORECAST":
+        tol = FORECAST_CAMPAIGN_ENTRY_TOLERANCE
+        entry_low = min(to_float(zone[0]), to_float(zone[1])) if len(zone) >= 2 else entry - tol
+        entry_high = max(to_float(zone[0]), to_float(zone[1])) if len(zone) >= 2 else entry + tol
+        expiry = int(shadow_trade.get("plan_expiry_seconds") or MT4_FORECAST_PLAN_EXPIRY_SECONDS)
+        mode = "NEAR"
     else:
         entry_low = entry - MT4_SCALP_ENTRY_TOLERANCE
         entry_high = entry + MT4_SCALP_ENTRY_TOLERANCE
@@ -18458,8 +18892,8 @@ def mt4_bridge_queue_trade(shadow_trade):
         "entry_mode": mode,
         "sl": round(to_float(shadow_trade.get("initial_sl")), 5),
         "tp_levels": [round(x, 5) for x in tps[:8]],
-        "lot": MT4_LEG_LOT,
-        "legs": MT4_LEGS,
+        "lot": min(MT4_LEG_LOT, max(0.0, to_float(shadow_trade.get("requested_lot"), MT4_LEG_LOT))) or MT4_LEG_LOT,
+        "legs": int(shadow_trade.get("mt4_legs") or MT4_LEGS),
         "day_key": shadow_trade.get("day_key") or shadow_trading_day_key(),
     }
     cmd = {
@@ -18483,6 +18917,39 @@ def mt4_bridge_queue_trade(shadow_trade):
     return cmd
 
 
+def mt4_bridge_queue_close_forecast_campaign(campaign, reason="FORECAST_FLIP"):
+    if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN or not campaign or not MT4_ALLOW_FORECAST:
+        return None
+    trade_id = str(campaign.get("id") or "")
+    if not trade_id:
+        return None
+    cmd_id = f"CLOSE:FORECAST:{trade_id}"
+    existing = _mt4_find_command(cmd_id)
+    if existing:
+        return existing
+    cmd = {
+        "cmd_id": cmd_id,
+        "type": "CLOSE",
+        "status": "QUEUED",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": now_ts() + 300,
+        "last_delivered": 0,
+        "deliveries": 0,
+        "acked_at": None,
+        "account": None,
+        "payload": {
+            "trade_id": trade_id,
+            "engine": "FORECAST",
+            "reason": str(reason or "FORECAST_FLIP"),
+            "source_symbol": str(campaign.get("symbol") or "XAUUSD").upper(),
+        },
+    }
+    MT4_STATE.setdefault("commands", []).append(cmd)
+    save_mt4_bridge_state(force=True)
+    return cmd
+
+
 def mt4_bridge_reconcile_shadow():
     if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN:
         return
@@ -18491,7 +18958,18 @@ def mt4_bridge_reconcile_shadow():
             try:
                 mt4_bridge_queue_trade(t)
             except Exception as e:
-                print(f"[v47.6] MT4 reconcile error: {type(e).__name__}: {e}", flush=True)
+                print(f"[v47.14] MT4 reconcile shadow error: {type(e).__name__}: {e}", flush=True)
+    # Forecast Campaign lives in runtime session state, not SHADOW_STATE.
+    if FORECAST_CAMPAIGN_ENABLED and MT4_ALLOW_FORECAST:
+        for symbol, st in list(SESSION_THESIS_STATE.items()):
+            if not isinstance(st, dict):
+                continue
+            for c in st.get("forecast_campaigns", []) or []:
+                if c.get("status") in ["OPEN", "OPENED", "PENDING"]:
+                    try:
+                        mt4_bridge_queue_trade(_forecast_campaign_mt4_source(c))
+                    except Exception as e:
+                        print(f"[v47.14] MT4 reconcile Forecast error: {type(e).__name__}: {e}", flush=True)
 
 
 def _mt4_expire_commands():
@@ -18535,6 +19013,15 @@ def _mt4_wire_command(c):
     if not c:
         return "NONE"
     p = c.get("payload") or {}
+    if str(c.get("type") or "OPEN").upper() == "CLOSE":
+        return ";".join([
+            "CLOSE",
+            f"cmd_id={_mt4_clean(c.get('cmd_id'))}",
+            f"trade_id={_mt4_clean(p.get('trade_id'))}",
+            f"engine={_mt4_clean(p.get('engine'))}",
+            f"reason={_mt4_clean(p.get('reason'))}",
+            f"expires_at={int(to_float(c.get('expires_at')))}",
+        ])
     parts = [
         "OPEN",
         f"cmd_id={_mt4_clean(c.get('cmd_id'))}",
@@ -18600,6 +19087,7 @@ def _mt4_record_event(payload):
         "pnl": round(to_float(payload.get("pnl"), 0), 2),
         "ticket_a": str(payload.get("ticket_a") or ""),
         "ticket_b": str(payload.get("ticket_b") or ""),
+        "ticket_c": str(payload.get("ticket_c") or ""),
         "reason": str(payload.get("reason") or ""),
         "ts": now_ts(),
         "local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
@@ -18610,6 +19098,7 @@ def _mt4_record_event(payload):
 
     cmd_id = f"OPEN:{engine}:{trade_id}"
     cmd = _mt4_find_command(cmd_id)
+    close_cmd = _mt4_find_command(f"CLOSE:{engine}:{trade_id}")
     if event_type == "OPENED":
         if cmd:
             cmd["status"] = "ACKED"
@@ -18624,6 +19113,19 @@ def _mt4_record_event(payload):
         if cmd:
             cmd["status"] = "COMPLETED"
             cmd["completed_at"] = now_ts()
+        if close_cmd:
+            close_cmd["status"] = "COMPLETED"
+            close_cmd["completed_at"] = now_ts()
+        if engine == "FORECAST":
+            for st in SESSION_THESIS_STATE.values():
+                if not isinstance(st, dict):
+                    continue
+                for c in st.get("forecast_campaigns", []) or []:
+                    if str(c.get("id")) == trade_id:
+                        c["mt4_status"] = "CLOSED"
+                        c["mt4_pnl"] = round(to_float(payload.get("pnl"), 0), 2)
+                        c["mt4_close_reason"] = str(payload.get("reason") or "")
+                        c["mt4_closed"] = now_ts()
         pnl = to_float(payload.get("pnl"), 0)
         d = _mt4_daily()
         if pnl > 0.01:
@@ -18670,12 +19172,15 @@ def mt4_status_payload():
                 ("MAIN", MT4_ALLOW_MAIN),
                 ("THESIS", MT4_ALLOW_THESIS),
                 ("FAST", MT4_ALLOW_FAST),
+                ("FORECAST", MT4_ALLOW_FORECAST),
             ] if enabled
         ]) or "NONE",
-        "main_only": bool(MT4_ALLOW_MAIN and not MT4_ALLOW_THESIS and not MT4_ALLOW_FAST),
+        "main_only": bool(MT4_ALLOW_MAIN and not MT4_ALLOW_THESIS and not MT4_ALLOW_FAST and not MT4_ALLOW_FORECAST),
         "allow_main": MT4_ALLOW_MAIN,
         "allow_thesis": MT4_ALLOW_THESIS,
         "allow_fast": MT4_ALLOW_FAST,
+        "allow_forecast": MT4_ALLOW_FORECAST,
+        "forecast_campaign_enabled": FORECAST_CAMPAIGN_ENABLED,
         "legacy_main_only_env_present": MT4_MAIN_ONLY_LEGACY,
         "token_configured": bool(MT4_BRIDGE_TOKEN),
         "demo_only": MT4_DEMO_ONLY,
@@ -18731,9 +19236,9 @@ def mt4_event():
                 send_telegram(
                     f"🤖 MT4 DEMO — APERTO\n\n"
                     f"{row.get('engine')} trade {row.get('trade_id')}\n"
-                    f"Ticket A/B: {row.get('ticket_a')} / {row.get('ticket_b')}\n"
+                    f"Ticket A/B/C: {row.get('ticket_a')} / {row.get('ticket_b')} / {row.get('ticket_c')}\n"
                     f"Account demo: {row.get('account')}\n"
-                    f"⚠️ Bridge v47.6 DEMO — MAIN ONLY"
+                    f"⚠️ Bridge v47.14 DEMO — FORECAST FIRST"
                 )
             elif row.get("event") == "CLOSED":
                 send_telegram(
@@ -18741,7 +19246,7 @@ def mt4_event():
                     f"{row.get('engine')} trade {row.get('trade_id')}\n"
                     f"PnL broker: {to_float(row.get('pnl')):+.2f}\n"
                     f"Motivo: {row.get('reason') or 'N/D'}\n"
-                    f"⚠️ Bridge v47.6 DEMO — MAIN ONLY"
+                    f"⚠️ Bridge v47.14 DEMO — FORECAST FIRST"
                 )
         except Exception as e:
             print(f"[v47.6] MT4 Telegram event error: {type(e).__name__}: {e}", flush=True)
@@ -18755,7 +19260,7 @@ def mt4_reset():
         return jsonify({"status": "forbidden"}), 403
     MT4_STATE.clear()
     MT4_STATE.update({
-        "version": "v47.6-mt4-demo-main-only-1",
+        "version": "v47.14-mt4-demo-forecast-3leg-1",
         "commands": [], "daily": {}, "accounts": {}, "events": [], "last_save": 0,
     })
     save_mt4_bridge_state(force=True)
@@ -19445,10 +19950,13 @@ def webhook():
             })
 
         # v20 state machine: event spike -> failed retest.
-        synthetic_result = process_event_state_machine(data)
-
-        # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
-        bear_result = process_bear_continuation_state_machine(data)
+        if MAIN_OPERATIONAL_ENABLED:
+            synthetic_result = process_event_state_machine(data)
+            # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
+            bear_result = process_bear_continuation_state_machine(data)
+        else:
+            synthetic_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"}
+            bear_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"}
 
         # v43: aggiorna e notifica la tesi giornaliera Asia/Londra/NY.
         daily_thesis_ctx = update_session_intelligence(data)
@@ -19475,15 +19983,22 @@ def webhook():
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
 
-        # v47.13: motore sperimentale LUNGO in SHADOW, default solo Europa.
-        # Richiede Forecast LIVE + Thesis stabile + M1 confermato; non invia nulla a MT4.
+        # v47.14: motore principale FORECAST CAMPAIGN (3 x 0.01).
+        # Forecast v47.13 decide la mappa, Session Thesis conferma la direzione, M1 >=6 da' il timing.
+        try:
+            forecast_campaign_result = process_forecast_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
+        except Exception as e:
+            print(f"[v47.14] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
+            forecast_campaign_result = {"triggered": False, "trade_id": None, "reason": str(e)}
+
+        # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
         try:
             forecast_trend_shadow_result = process_forecast_trend_shadow(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.13] Forecast Trend Shadow error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.14] Forecast Trend Shadow legacy error: {type(e).__name__}: {e}", flush=True)
             forecast_trend_shadow_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
-        # v47.3: THESIS FAST v2 3P separato e stabilizzato.
+        # Thesis trade +3/-6 resta PAUSA; process_thesis_fast continua pero' a mantenere stabilita' Thesis.
         # Trasforma solo una tesi NY già esplicita in micro-scalp da 3 punti,
         # senza modificare i TP/SL del MAIN; FAST 2P classico è disattivato.
         try:
@@ -19500,7 +20015,9 @@ def webhook():
         # Può anticipare il vecchio MAX_FLIP_BUY quando Europa/NY hanno già girato BUY
         # dopo un SELL TP5+ ma il prezzo non ha ancora invalidato tutta la vecchia zona SELL.
         try:
-            session_recovery_buy_result = process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
+            session_recovery_buy_result = (process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
+                                           if MAIN_OPERATIONAL_ENABLED else
+                                           {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"})
         except Exception as e:
             # Fail-safe: la nuova intelligenza BUY non deve MAI interrompere PRICE_UPDATE.
             print(f"[v47.1] SESSION_RECOVERY_BUY error: {type(e).__name__}: {e}", flush=True)
@@ -19510,8 +20027,9 @@ def webhook():
                 "reason": f"hotfix fail-safe: {type(e).__name__}: {e}"
             }
 
-        # v23: failed recovery prima del bear impulse completo.
-        pre_bear_result = process_pre_bear_thesis(data)
+        # v23 legacy MAIN pre-bear: in v47.14 nessuna nuova entry MAIN quando il motore e' in pausa.
+        pre_bear_result = (process_pre_bear_thesis(data) if MAIN_OPERATIONAL_ENABLED else
+                           {"status": "PAUSED", "confirmed": False, "reason": "MAIN operational pause v47.14"})
         deep_extension_ctx = get_deep_extension_context(
             data.get("symbol", "XAUUSD"),
             data
@@ -19529,7 +20047,8 @@ def webhook():
 
         # v33: se un SELL già pagato/BE viene invalidato da recupero forte,
         # genera un BUY autonomo stile Max senza aspettare un nuovo alert Pine.
-        max_flip_buy_result = process_max_flip_buy_after_sell_be(data)
+        max_flip_buy_result = (process_max_flip_buy_after_sell_be(data) if MAIN_OPERATIONAL_ENABLED else
+                               {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"})
 
         # v25/v28: aggiorna l'arbitro centrale sul nuovo prezzo e valuta Big Move Thesis.
         regime_ctx = get_regime_arbiter_context(data.get("symbol", "XAUUSD"), data)
@@ -19559,6 +20078,9 @@ def webhook():
             "thesis_fast_triggered": thesis_fast_result.get("triggered"),
             "thesis_fast_trade_id": thesis_fast_result.get("trade_id"),
             "thesis_fast_reason": thesis_fast_result.get("reason"),
+            "forecast_campaign_triggered": forecast_campaign_result.get("triggered"),
+            "forecast_campaign_trade_id": forecast_campaign_result.get("trade_id"),
+            "forecast_campaign_reason": forecast_campaign_result.get("reason"),
             "m1_timing_confirmed": m1_ctx.get("confirmed"),
             "m1_timing_direction": m1_ctx.get("direction"),
             "m1_timing_score": m1_ctx.get("score"),
@@ -19619,6 +20141,18 @@ def webhook():
 
     if signal not in ["BUY", "SELL"]:
         return jsonify({"error": "invalid signal", "received": data}), 400
+
+    # v47.14 FORECAST FIRST: Pine MAIN resta nel codice ma non crea nuove operazioni finche' e' in pausa.
+    if not MAIN_OPERATIONAL_ENABLED:
+        if MAIN_PAUSE_ALERT_ENABLED:
+            send_telegram(f"⏸ MAIN PAUSA v47.14 — {symbol} {signal} ricevuto ma non operativo; Forecast+Thesis+M1 restano attivi")
+        return jsonify({
+            "status": "main_operational_pause",
+            "version": VERSION,
+            "signal": signal,
+            "symbol": symbol,
+            "forecast_first": True,
+        })
 
     max_wait_block, max_wait_ctx = should_block_new_entry_by_max_wait(symbol, signal, data, is_fast=False)
     if max_wait_block:
