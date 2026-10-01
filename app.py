@@ -14,7 +14,10 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.14 Forecast First + 3-Leg Campaign + Session Ownership"
+VERSION = "v47.14.1 Forecast First + Always-On History + 3-Leg Campaign"
+# v47.14.1: HOTFIX raccolta dati. Forecast/M1 restano IDENTICI alla v47.13/v47.14;
+# nessuna formula Forecast, Dynamic Revision o M1 viene modificata.
+# FIX: ogni PRICE_UPDATE alimenta PRICE_HISTORY SEMPRE, anche con MAIN operativo in pausa.
 # v47.14: FORECAST FIRST. Base Forecast/M1 derivata IDENTICA dalla v47.13;
 # le formule di Europe Forecast, New York Forecast e Dynamic Revision NON vengono riscritte.
 # - ASIA = LEARN ONLY invariato.
@@ -195,6 +198,7 @@ SESSION_FREEZE_ENABLED = os.getenv("SESSION_FREEZE_ENABLED", "TRUE").upper() == 
 SESSION_FREEZE_PROTECT_NONZERO = os.getenv("SESSION_FREEZE_PROTECT_NONZERO", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_SAVE_ON_EVERY_UPDATE = os.getenv("SESSION_FREEZE_SAVE_ON_EVERY_UPDATE", "TRUE").upper() == "TRUE"
 SESSION_FREEZE_WARN_MISSING_ASIA = os.getenv("SESSION_FREEZE_WARN_MISSING_ASIA", "TRUE").upper() == "TRUE"
+ASIA_MEMORY_ALERT_ENABLED = os.getenv("ASIA_MEMORY_ALERT_ENABLED", "TRUE").upper() == "TRUE"
 
 # v47.10: MORNING SESSION FORECAST.
 # Legge la notte Asia + i primi minuti Europa e costruisce una mappa ampia della mattinata.
@@ -2968,6 +2972,11 @@ def diag():
         "main_active": active_trades_count(),
         "runtime_state_restored": RUNTIME_STATE_RESTORED,
         "runtime_state_file": RUNTIME_STATE_FILE,
+        "price_history_count": len(PRICE_HISTORY.get(symbol, []) or []),
+        "price_history_last_local": (
+            local_datetime((PRICE_HISTORY.get(symbol, []) or [])[-1].get("time")).strftime("%Y-%m-%d %H:%M:%S")
+            if (PRICE_HISTORY.get(symbol, []) or []) else None
+        ),
     })
 
 
@@ -9584,6 +9593,11 @@ def record_price_history(data):
         if p.get("time", 0) >= cutoff
     ][-BEAR_HISTORY_MAX_POINTS:]
 
+    # v47.14.1: marker solo-runtime sul dict del webhook.
+    # Evita un doppio append se la bear state machine viene eseguita nello stesso PRICE_UPDATE.
+    if isinstance(data, dict):
+        data["_price_history_recorded"] = True
+
     return history
 
 
@@ -10147,6 +10161,65 @@ Azione pratica:
 - Se Asia ha già venduto tanto, non inseguo SELL bassi: cerco recupero BUY o aspetto retest alto.
 - Se Asia ha già comprato tanto, non compro spike alto: cerco pullback o fade SELL da zona alta.
 - Operazione ufficiale solo quando arriva il messaggio copiabile."""
+
+
+
+# =========================
+# v47.14.1 ASIA MEMORY LOCK DIAGNOSTIC
+# =========================
+
+def maybe_asia_memory_alert(symbol, thesis_ctx=None):
+    """
+    Messaggio diagnostico una sola volta al giorno dopo la fine Asia.
+    NON modifica Thesis/Forecast: segnala soltanto se lo snapshot Asia e' disponibile e congelato.
+    """
+    if not ASIA_MEMORY_ALERT_ENABLED:
+        return None
+
+    symbol = str(symbol or "XAUUSD").upper()
+    minute_now = _minutes_of_day(_thesis_local_dt())
+    if minute_now <= _asian_end_minute():
+        return None
+
+    state = get_session_thesis_state(symbol)
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    asia = sessions.get("ASIA") if isinstance(sessions, dict) else None
+    day_key = _thesis_day_key()
+
+    if _valid_session_snapshot(asia):
+        if not asia.get("frozen"):
+            remembered = _remember_session_snapshot(
+                symbol, "ASIA", asia, frozen=True, source=asia.get("source") or "asia_memory_lock"
+            )
+            if remembered:
+                asia = remembered
+                sessions["ASIA"] = remembered
+
+        if state.get("asia_memory_alert_ok_day") == day_key:
+            return None
+        state["asia_memory_alert_ok_day"] = day_key
+        state.pop("asia_memory_alert_error_day", None)
+        return f"""🌙✅ ASIA LOCKED — MEMORIA FORECAST OK
+
+Symbol: {symbol}
+Open: {round(to_float(asia.get('open'), 0), 3)}
+High: {round(to_float(asia.get('high'), 0), 3)}
+Low: {round(to_float(asia.get('low'), 0), 3)}
+Close: {round(to_float(asia.get('close'), 0), 3)}
+Range: {round(to_float(asia.get('range'), 0), 3)}
+Frozen: {'YES' if asia.get('frozen') else 'NO'}
+Source: {asia.get('source') or 'N/D'}
+
+La fotografia Asia e' disponibile per il Forecast Europa."""
+
+    if state.get("asia_memory_alert_error_day") == day_key:
+        return None
+    state["asia_memory_alert_error_day"] = day_key
+    return f"""🚨 ASIA MEMORY ERROR — FORECAST EUROPA SOSPESO
+
+Symbol: {symbol}
+Asia 00:05-07:30 non disponibile nella memoria sessione.
+Il bot continua a ricevere PRICE_UPDATE, ma NON costruira' il Morning Europe Forecast senza una fotografia Asia valida."""
 
 
 
@@ -13394,7 +13467,12 @@ def process_bear_continuation_state_machine(data):
         return result
 
     symbol = str(data.get("symbol", "XAUUSD")).upper()
-    history = record_price_history(data)
+    # v47.14.1: il recorder principale vive nel PRICE_UPDATE webhook.
+    # Se questa funzione viene richiamata standalone/test, registra comunque il punto una volta sola.
+    if isinstance(data, dict) and data.get("_price_history_recorded"):
+        history = PRICE_HISTORY.get(symbol, [])
+    else:
+        history = record_price_history(data)
     state = get_bear_continuation_state(symbol)
 
     price = get_price_from_data(data)
@@ -19886,6 +19964,12 @@ def webhook():
         # v24: ogni update alimenta il warmup prima di valutare trigger autonomi.
         note_price_update_for_warmup(data)
 
+        # v47.14.1 HOTFIX CRITICO:
+        # PRICE_HISTORY e' memoria di MERCATO, non del motore MAIN.
+        # Deve essere alimentata SEMPRE, anche quando MAIN_OPERATIONAL_ENABLED = FALSE
+        # e anche durante MAX WAIT. Questo mantiene Asia/session snapshot/Forecast indipendenti dal MAIN.
+        record_price_history(data)
+
         # v20:
         # 1) aggiorna Auto Event + memoria spike;
         # 2) gestisce i trade già esistenti;
@@ -19918,6 +20002,9 @@ def webhook():
         wait_active, wait_ctx = max_wait_active(data.get("symbol", "XAUUSD"))
         if wait_active and MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY:
             daily_thesis_ctx = update_session_intelligence(data)
+            asia_memory_alert = maybe_asia_memory_alert(data.get("symbol", "XAUUSD"), thesis_ctx=daily_thesis_ctx)
+            if asia_memory_alert:
+                send_telegram(asia_memory_alert)
             daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
             if daily_thesis_alert:
                 send_telegram(daily_thesis_alert)
@@ -19955,11 +20042,14 @@ def webhook():
             # v21 state machine: bear impulse -> relief rally -> lower high -> continuation SELL.
             bear_result = process_bear_continuation_state_machine(data)
         else:
-            synthetic_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"}
-            bear_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"}
+            synthetic_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14.1"}
+            bear_result = {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14.1"}
 
         # v43: aggiorna e notifica la tesi giornaliera Asia/Londra/NY.
         daily_thesis_ctx = update_session_intelligence(data)
+        asia_memory_alert = maybe_asia_memory_alert(data.get("symbol", "XAUUSD"), thesis_ctx=daily_thesis_ctx)
+        if asia_memory_alert:
+            send_telegram(asia_memory_alert)
         daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
         if daily_thesis_alert:
             send_telegram(daily_thesis_alert)
@@ -20017,7 +20107,7 @@ def webhook():
         try:
             session_recovery_buy_result = (process_session_recovery_buy(data, thesis_ctx=daily_thesis_ctx)
                                            if MAIN_OPERATIONAL_ENABLED else
-                                           {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"})
+                                           {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14.1"})
         except Exception as e:
             # Fail-safe: la nuova intelligenza BUY non deve MAI interrompere PRICE_UPDATE.
             print(f"[v47.1] SESSION_RECOVERY_BUY error: {type(e).__name__}: {e}", flush=True)
@@ -20029,7 +20119,7 @@ def webhook():
 
         # v23 legacy MAIN pre-bear: in v47.14 nessuna nuova entry MAIN quando il motore e' in pausa.
         pre_bear_result = (process_pre_bear_thesis(data) if MAIN_OPERATIONAL_ENABLED else
-                           {"status": "PAUSED", "confirmed": False, "reason": "MAIN operational pause v47.14"})
+                           {"status": "PAUSED", "confirmed": False, "reason": "MAIN operational pause v47.14.1"})
         deep_extension_ctx = get_deep_extension_context(
             data.get("symbol", "XAUUSD"),
             data
@@ -20048,7 +20138,7 @@ def webhook():
         # v33: se un SELL già pagato/BE viene invalidato da recupero forte,
         # genera un BUY autonomo stile Max senza aspettare un nuovo alert Pine.
         max_flip_buy_result = (process_max_flip_buy_after_sell_be(data) if MAIN_OPERATIONAL_ENABLED else
-                               {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14"})
+                               {"triggered": False, "trade_id": None, "reason": "MAIN operational pause v47.14.1"})
 
         # v25/v28: aggiorna l'arbitro centrale sul nuovo prezzo e valuta Big Move Thesis.
         regime_ctx = get_regime_arbiter_context(data.get("symbol", "XAUUSD"), data)
