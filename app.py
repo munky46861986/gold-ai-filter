@@ -14,9 +14,12 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.14.1 Forecast First + Always-On History + 3-Leg Campaign"
+VERSION = "v47.14.2 Forecast First + Always-On History + Bidirectional Pre-Revision"
+# v47.14.2: PRE-REVISION bidirezionale BUY<->SELL per anticipare un cambio operativo
+# quando il prezzo esce dalla mappa di lavoro, Thesis stabile e M1 confermano il lato opposto.
+# NON cambia la matematica del Forecast v47.13/v47.14.1, Dynamic Revision o M1.
+# La vera FORECAST REVISION resta legata alla logica strutturale/invalidation originale.
 # v47.14.1: HOTFIX raccolta dati. Forecast/M1 restano IDENTICI alla v47.13/v47.14;
-# nessuna formula Forecast, Dynamic Revision o M1 viene modificata.
 # FIX: ogni PRICE_UPDATE alimenta PRICE_HISTORY SEMPRE, anche con MAIN operativo in pausa.
 # v47.14: FORECAST FIRST. Base Forecast/M1 derivata IDENTICA dalla v47.13;
 # le formule di Europe Forecast, New York Forecast e Dynamic Revision NON vengono riscritte.
@@ -305,6 +308,23 @@ FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS = max(60, int(os.getenv("FORECAST_CAMPAIGN
 FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP = os.getenv("FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP", "TRUE").upper() == "TRUE"
 FORECAST_CAMPAIGN_ONE_PER_REVISION = os.getenv("FORECAST_CAMPAIGN_ONE_PER_REVISION", "TRUE").upper() == "TRUE"
 FORECAST_CAMPAIGN_HISTORY_MAX = max(20, int(os.getenv("FORECAST_CAMPAIGN_HISTORY_MAX", "120")))
+
+# v47.14.2: PRE-REVISION operativo, simmetrico BUY<->SELL.
+# Non sostituisce il Forecast e non abbassa la sua invalidazione: crea un trade anticipato
+# solo quando il prezzo esce dal range di lavoro e Thesis + M1 + live-score confermano l'opposto.
+FORECAST_PRE_REVISION_ENABLED = os.getenv("FORECAST_PRE_REVISION_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_PRE_REVISION_ALERT_ENABLED = os.getenv("FORECAST_PRE_REVISION_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+FORECAST_PRE_REVISION_MIN_M1_SCORE = max(FORECAST_CAMPAIGN_MIN_M1_SCORE, int(os.getenv("FORECAST_PRE_REVISION_MIN_M1_SCORE", "6")))
+FORECAST_PRE_REVISION_MIN_LIVE_SCORE = max(2, int(os.getenv("FORECAST_PRE_REVISION_MIN_LIVE_SCORE", "3")))
+FORECAST_PRE_REVISION_BREAK_BUFFER_FACTOR = max(0.0, float(os.getenv("FORECAST_PRE_REVISION_BREAK_BUFFER_FACTOR", "0.03")))
+FORECAST_PRE_REVISION_BREAK_BUFFER_MIN = max(0.10, float(os.getenv("FORECAST_PRE_REVISION_BREAK_BUFFER_MIN", "0.60")))
+FORECAST_PRE_REVISION_BREAK_BUFFER_MAX = max(FORECAST_PRE_REVISION_BREAK_BUFFER_MIN, float(os.getenv("FORECAST_PRE_REVISION_BREAK_BUFFER_MAX", "2.50")))
+FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR = max(0.0, float(os.getenv("FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR", "0.04")))
+FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN = max(0.20, float(os.getenv("FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN", "1.00")))
+FORECAST_PRE_REVISION_RECOVERY_BUFFER_MAX = max(FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN, float(os.getenv("FORECAST_PRE_REVISION_RECOVERY_BUFFER_MAX", "3.00")))
+FORECAST_PRE_REVISION_WATCH_COOLDOWN_SECONDS = max(60, int(os.getenv("FORECAST_PRE_REVISION_WATCH_COOLDOWN_SECONDS", "300")))
+FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE = os.getenv("FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE", "TRUE").upper() == "TRUE"
+FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE = os.getenv("FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE", "TRUE").upper() == "TRUE"
 
 # v47.13 Forecast Trend SHADOW resta disponibile come diagnostica legacy,
 # ma default OFF: il nuovo Forecast Campaign ne prende il posto operativo.
@@ -2646,6 +2666,9 @@ def health():
         "forecast_campaign_enabled": FORECAST_CAMPAIGN_ENABLED,
         "forecast_campaign_sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
         "forecast_campaign_min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
+        "forecast_pre_revision_enabled": FORECAST_PRE_REVISION_ENABLED,
+        "forecast_pre_revision_min_m1_score": FORECAST_PRE_REVISION_MIN_M1_SCORE,
+        "forecast_pre_revision_min_live_score": FORECAST_PRE_REVISION_MIN_LIVE_SCORE,
         "main_operational_enabled": MAIN_OPERATIONAL_ENABLED,
         "thesis_trade_operational_enabled": THESIS_TRADE_OPERATIONAL_ENABLED,
         "shadow_execution": shadow_status_payload(),
@@ -11922,7 +11945,7 @@ def forecast_trend_shadow_status():
     })
 
 # =========================
-# v47.14 FORECAST CAMPAIGN — OFFICIAL 3-LEG ENGINE
+# v47.14.2 FORECAST CAMPAIGN — OFFICIAL 3-LEG + BIDIRECTIONAL PRE-REVISION
 # =========================
 
 def _forecast_campaigns(symbol):
@@ -11938,7 +11961,218 @@ def _forecast_campaigns(symbol):
 
 
 def _forecast_campaign_key(session, forecast, bias):
+    # Compatibilita' con v47.14/v47.14.1: la chiave delle campaign ufficiali resta IDENTICA.
     return f"{_thesis_day_key()}|{session}|R{int((forecast or {}).get('revision_count', 0))}|{bias}"
+
+
+def _forecast_pre_revision_key(session, forecast, bias):
+    return f"{_forecast_campaign_key(session, forecast, bias)}|PRE"
+
+
+def _forecast_active_map_levels(forecast):
+    """Restituisce i livelli della mappa LIVE corrente senza modificare la matematica Forecast."""
+    if not isinstance(forecast, dict):
+        return {"working_low": 0, "working_high": 0, "invalidation": 0, "revision": 0}
+    rev = int(forecast.get("revision_count", 0))
+    if rev > 0:
+        wl = to_float(forecast.get("live_working_low"), to_float(forecast.get("working_low"), 0))
+        wh = to_float(forecast.get("live_working_high"), to_float(forecast.get("working_high"), 0))
+        inv = to_float(forecast.get("live_invalidation"), to_float(forecast.get("invalidation"), 0))
+    else:
+        wl = to_float(forecast.get("working_low"), 0)
+        wh = to_float(forecast.get("working_high"), 0)
+        inv = to_float(forecast.get("invalidation"), 0)
+    return {"working_low": wl, "working_high": wh, "invalidation": inv, "revision": rev}
+
+
+def _bounded_dynamic_buffer(ref, factor, minimum, maximum):
+    return max(minimum, min(maximum, max(0.0, to_float(ref, 0)) * max(0.0, to_float(factor, 0))))
+
+
+def _forecast_pre_revision_context(symbol, data, thesis, forecast, session, m1_ctx=None):
+    """
+    PRE-REVISION = anticipo operativo, NON revisione del Forecast.
+    BUY map -> SELL PRE solo sotto working_low; SELL map -> BUY PRE solo sopra working_high.
+    Richiede Thesis stabile opposta + M1 opposto >= soglia + live-score dinamico opposto.
+    """
+    out = {
+        "enabled": FORECAST_PRE_REVISION_ENABLED,
+        "qualifies": False,
+        "watch_ready": False,
+        "reason": "",
+        "map_bias": None,
+        "counter_bias": None,
+        "price": get_price_from_data(data),
+        "boundary": 0,
+        "invalidation": 0,
+        "working_low": 0,
+        "working_high": 0,
+        "boundary_crossed": False,
+        "break_confirmed": False,
+        "formally_valid": False,
+        "stable_thesis": None,
+        "m1_score": 0,
+        "m1_confirmed": False,
+        "live_score": 0,
+        "live_score_bias": "RANGE",
+        "break_buffer": 0,
+        "recovery_buffer": 0,
+    }
+    if not FORECAST_PRE_REVISION_ENABLED:
+        out["reason"] = "pre-revision disabilitata"
+        return out
+    if session not in FORECAST_CAMPAIGN_SESSIONS or not isinstance(forecast, dict):
+        out["reason"] = "sessione/forecast non disponibile"
+        return out
+    live_status = str(forecast.get("live_status") or forecast.get("status") or "VALID").upper()
+    if live_status in ["INVALIDATED", "REASSESSING", "ARCHIVED"]:
+        out["reason"] = f"forecast {live_status}: attendo vera revision"
+        return out
+
+    map_bias = _forecast_live_bias(forecast)
+    if map_bias not in ["BUY", "SELL"]:
+        out["reason"] = "forecast RANGE"
+        return out
+    counter = "SELL" if map_bias == "BUY" else "BUY"
+    price = get_price_from_data(data)
+    if not price:
+        out["reason"] = "prezzo non disponibile"
+        return out
+
+    levels = _forecast_active_map_levels(forecast)
+    wl = to_float(levels.get("working_low"), 0)
+    wh = to_float(levels.get("working_high"), 0)
+    invalid = to_float(levels.get("invalidation"), 0)
+    if not wl or not wh:
+        out["reason"] = "limiti mappa non disponibili"
+        return out
+
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    break_buffer = _bounded_dynamic_buffer(
+        ref, FORECAST_PRE_REVISION_BREAK_BUFFER_FACTOR,
+        FORECAST_PRE_REVISION_BREAK_BUFFER_MIN, FORECAST_PRE_REVISION_BREAK_BUFFER_MAX,
+    )
+    recovery_buffer = _bounded_dynamic_buffer(
+        ref, FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR,
+        FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN, FORECAST_PRE_REVISION_RECOVERY_BUFFER_MAX,
+    )
+
+    if map_bias == "BUY":
+        boundary = wl
+        boundary_crossed = price < boundary
+        break_confirmed = price <= boundary - break_buffer
+        formally_valid = not invalid or price > invalid
+    else:
+        boundary = wh
+        boundary_crossed = price > boundary
+        break_confirmed = price >= boundary + break_buffer
+        formally_valid = not invalid or price < invalid
+
+    fast_state = _thesis_fast_state(symbol)
+    stable_pref = str(fast_state.get("stable_preferred") or "").upper()
+    stable_session = str(fast_state.get("stable_session") or "").upper()
+    candidate_count = int(fast_state.get("candidate_count", 0))
+    stable_counter = (
+        stable_pref == counter and stable_session == session
+        and candidate_count >= THESIS_FAST_THESIS_CONFIRM_BARS
+    )
+
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    m1_score = int(m1.get("score", 0))
+    m1_ok = bool(
+        m1.get("confirmed") and m1.get("direction") == counter
+        and m1_score >= FORECAST_PRE_REVISION_MIN_M1_SCORE
+    )
+
+    live_score, live_score_bias, live_reasons, _ = _dynamic_forecast_live_score(
+        session, data, forecast, thesis_ctx=thesis
+    )
+    live_score_ok = (
+        live_score_bias == counter
+        and abs(int(live_score)) >= FORECAST_PRE_REVISION_MIN_LIVE_SCORE
+    )
+
+    out.update({
+        "map_bias": map_bias,
+        "counter_bias": counter,
+        "price": price,
+        "boundary": round(boundary, 3),
+        "invalidation": round(invalid, 3) if invalid else 0,
+        "working_low": round(wl, 3),
+        "working_high": round(wh, 3),
+        "boundary_crossed": bool(boundary_crossed),
+        "break_confirmed": bool(break_confirmed),
+        "formally_valid": bool(formally_valid),
+        "stable_thesis": stable_pref if stable_counter else None,
+        "stable_thesis_ok": bool(stable_counter),
+        "candidate_count": candidate_count,
+        "m1_score": m1_score,
+        "m1_confirmed": bool(m1_ok),
+        "live_score": int(live_score),
+        "live_score_bias": live_score_bias,
+        "live_reasons": list(live_reasons or []),
+        "live_score_ok": bool(live_score_ok),
+        "break_buffer": round(break_buffer, 3),
+        "recovery_buffer": round(recovery_buffer, 3),
+        "forecast_revision": int(forecast.get("revision_count", 0)),
+        "forecast_live_status": live_status,
+    })
+    out["watch_ready"] = bool(formally_valid and boundary_crossed and stable_counter)
+    out["qualifies"] = bool(
+        formally_valid and break_confirmed and stable_counter and m1_ok and live_score_ok
+    )
+    if out["qualifies"]:
+        out["reason"] = f"{counter} PRE-REVISION confermata"
+    elif not formally_valid:
+        out["reason"] = "invalidazione formale gia' rotta: attendo revisione Forecast"
+    elif not boundary_crossed:
+        out["reason"] = "prezzo ancora dentro la mappa di lavoro"
+    elif not stable_counter:
+        out["reason"] = f"serve Session Thesis stabile {counter} 2/2"
+    elif not break_confirmed:
+        out["reason"] = f"rottura bordo non ancora profonda di {round(break_buffer,2)} pt"
+    elif not m1_ok:
+        out["reason"] = f"serve M1 {counter} >= {FORECAST_PRE_REVISION_MIN_M1_SCORE}"
+    elif not live_score_ok:
+        out["reason"] = f"live-score dinamico non ancora {counter} >= {FORECAST_PRE_REVISION_MIN_LIVE_SCORE}"
+    return out
+
+
+def _forecast_pre_revision_watch_message(symbol, session, ctx):
+    return f"""🟠 FORECAST PRE-REVISION WATCH — NON È ANCORA ENTRY
+
+{symbol} | Sessione {session}
+Forecast LIVE ancora: {ctx.get('map_bias')}
+Possibile lato opposto: {ctx.get('counter_bias')}
+Prezzo: {round(to_float(ctx.get('price')),3)}
+Bordo mappa superato: {ctx.get('boundary')}
+Invalidazione formale Forecast: {ctx.get('invalidation')}
+
+Conferme presenti:
+- Session Thesis stabile {ctx.get('counter_bias')} 2/2
+- Prezzo fuori dal range di lavoro
+
+Mancante/da confermare:
+- rottura con buffer: {ctx.get('break_buffer')} pt
+- M1 {ctx.get('counter_bias')} >= {FORECAST_PRE_REVISION_MIN_M1_SCORE} (ora {ctx.get('m1_score')})
+- live-score opposto >= {FORECAST_PRE_REVISION_MIN_LIVE_SCORE} (ora {ctx.get('live_score')})
+
+Il Forecast NON e' ancora revisionato. Se tutte le conferme arrivano puo' partire una PRE-REVISION operativa."""
+
+
+def _maybe_forecast_pre_revision_watch(symbol, session, forecast, ctx):
+    if not FORECAST_PRE_REVISION_ALERT_ENABLED or not ctx.get("watch_ready") or ctx.get("qualifies"):
+        return None
+    mem = forecast.setdefault("pre_revision_watch", {}) if isinstance(forecast, dict) else {}
+    signature = f"{_thesis_day_key()}|{session}|R{ctx.get('forecast_revision')}|{ctx.get('counter_bias')}"
+    if mem.get("signature") == signature and now_ts() - to_float(mem.get("ts"), 0) < FORECAST_PRE_REVISION_WATCH_COOLDOWN_SECONDS:
+        return None
+    mem["signature"] = signature
+    mem["ts"] = now_ts()
+    mem["last_price"] = ctx.get("price")
+    save_runtime_state(force=False)
+    return _forecast_pre_revision_watch_message(symbol, session, ctx)
 
 
 def _forecast_campaign_map_exhausted(forecast, bias, price):
@@ -11981,6 +12215,10 @@ def _forecast_campaign_all_closed(campaign):
     return bool(legs) and all(x.get("status") == "CLOSED" for x in legs)
 
 
+def _forecast_campaign_label(campaign):
+    return "FORECAST PRE-REVISION" if campaign.get("pre_revision") else "FORECAST CAMPAIGN"
+
+
 def _forecast_campaign_request_mt4_close(campaign, reason="FORECAST_FLIP"):
     if not campaign or campaign.get("mt4_close_queued"):
         return None
@@ -11992,13 +12230,14 @@ def _forecast_campaign_request_mt4_close(campaign, reason="FORECAST_FLIP"):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.14.2] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
 def _close_forecast_campaign_sim(campaign, price, reason):
     if not campaign or campaign.get("status") not in ["OPEN", "OPENED", "PENDING"]:
         return None
+    label = _forecast_campaign_label(campaign)
     for leg in campaign.get("legs", []):
         if leg.get("status") != "CLOSED":
             _forecast_campaign_close_leg(campaign, leg.get("name"), price, reason)
@@ -12008,35 +12247,104 @@ def _close_forecast_campaign_sim(campaign, price, reason):
     campaign["close_reason"] = reason
     campaign["result_points_total"] = _forecast_campaign_result_points(campaign)
     save_runtime_state(force=True)
-    return f"🔄 FORECAST CAMPAIGN CHIUSA | {campaign.get('direction')} | {reason} | uscita {round(to_float(price),3)} | totale simulato {campaign.get('result_points_total'):+.2f} pt"
+    return f"🔄 {label} CHIUSA | {campaign.get('direction')} | {reason} | uscita {round(to_float(price),3)} | totale simulato {campaign.get('result_points_total'):+.2f} pt"
 
 
-def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_session=None):
+def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_session=None, thesis_ctx=None, m1_ctx=None):
     messages = []
     symbol = str(symbol or "XAUUSD").upper()
     high = to_float(data.get("high"), get_price_from_data(data))
     low = to_float(data.get("low"), get_price_from_data(data))
     price = get_price_from_data(data)
     live_bias = _forecast_live_bias(active_forecast) if active_forecast else "RANGE"
+    current_revision = int((active_forecast or {}).get("revision_count", 0))
+
+    fast_state = _thesis_fast_state(symbol)
+    stable_pref = str(fast_state.get("stable_preferred") or "").upper()
+    stable_session = str(fast_state.get("stable_session") or "").upper()
+    stable_count = int(fast_state.get("candidate_count", 0))
+    current_m1 = m1_ctx
+    if current_m1 is None and active_session in FORECAST_CAMPAIGN_SESSIONS:
+        try:
+            current_m1 = m1_timing_context(data, thesis_ctx=thesis_ctx)
+        except Exception:
+            current_m1 = {}
+    current_m1 = current_m1 or {}
 
     for c in _forecast_campaigns(symbol):
         if c.get("status") not in ["OPEN", "OPENED", "PENDING"]:
             continue
         direction = str(c.get("direction") or "").upper()
 
+        # Se una PRE-REVISION viene poi confermata da una vera Forecast Revision nello stesso lato,
+        # la campagna resta aperta e viene promossa: niente chiusura/riapertura inutile.
+        if (c.get("pre_revision") and active_session == c.get("session") and active_forecast
+                and current_revision > int(c.get("forecast_revision", 0)) and live_bias == direction):
+            c["pre_revision"] = False
+            c["pre_revision_confirmed"] = True
+            c["pre_revision_confirmed_at"] = now_ts()
+            c["pre_revision_confirmed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+            c["forecast_revision"] = current_revision
+            c["forecast_bias"] = live_bias
+            c["campaign_key"] = _forecast_campaign_key(c.get("session"), active_forecast, direction)
+            c["mt4_close_queued"] = False
+            messages.append(
+                f"✅ PRE-REVISION {direction} CONFERMATA DAL FORECAST REVISION #{current_revision} | "
+                f"campagna mantenuta aperta, nessun doppio ingresso"
+            )
+
         # A confirmed live forecast flip owns the direction: old campaign exits before a new one.
         if (FORECAST_CAMPAIGN_CLOSE_ON_FORECAST_FLIP and active_session == c.get("session")
                 and live_bias in ["BUY", "SELL"] and live_bias != direction
-                and int((active_forecast or {}).get("revision_count", 0)) > int(c.get("forecast_revision", 0))):
+                and current_revision > int(c.get("forecast_revision", 0))):
             _forecast_campaign_request_mt4_close(c, reason="FORECAST_REVISION_FLIP")
             msg = _close_forecast_campaign_sim(c, price, "FORECAST_REVISION_FLIP")
-            if msg: messages.append(msg)
+            if msg:
+                messages.append(msg)
             continue
+
+        # Recovery della PRE-REVISION prima della vera invalidazione: se il prezzo rientra bene
+        # nella vecchia mappa e Thesis/M1 recuperano il bias originario, chiudo l'anticipo.
+        if c.get("pre_revision") and active_session == c.get("session"):
+            origin = str(c.get("pre_revision_origin_bias") or "").upper()
+            boundary = to_float(c.get("pre_revision_boundary"), 0)
+            rec_buf = to_float(c.get("pre_revision_recovery_buffer"), FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN)
+            if direction == "SELL" and origin == "BUY" and boundary:
+                reentered = price >= boundary
+                hard_recovery = price >= boundary + rec_buf
+            elif direction == "BUY" and origin == "SELL" and boundary:
+                reentered = price <= boundary
+                hard_recovery = price <= boundary - rec_buf
+            else:
+                reentered = hard_recovery = False
+
+            if reentered and not c.get("pre_revision_recovery_watch_notified"):
+                c["pre_revision_recovery_watch_notified"] = True
+                messages.append(
+                    f"↩️ PRE-REVISION {direction} — RECOVERY WATCH | prezzo {round(to_float(price),3)} "
+                    f"rientrato oltre bordo {round(boundary,3)}; attendo conferma {origin} per chiudere"
+                )
+
+            stable_origin = (
+                stable_pref == origin and stable_session == active_session
+                and stable_count >= THESIS_FAST_THESIS_CONFIRM_BARS
+            )
+            m1_origin = bool(
+                current_m1.get("confirmed") and current_m1.get("direction") == origin
+                and int(current_m1.get("score", 0)) >= FORECAST_PRE_REVISION_MIN_M1_SCORE
+            )
+            if hard_recovery and (stable_origin or m1_origin):
+                _forecast_campaign_request_mt4_close(c, reason="PRE_REVISION_RECOVERY_CONFIRMED")
+                msg = _close_forecast_campaign_sim(c, price, "PRE_REVISION_RECOVERY_CONFIRMED")
+                if msg:
+                    messages.append(msg)
+                continue
 
         # Session ownership: Europe campaign may continue to be managed, but no new Europe logic is generated in NY.
         sl = to_float(c.get("runner_sl"), to_float(c.get("sl"), 0))
         sl_hit = (direction == "BUY" and low <= sl) or (direction == "SELL" and high >= sl)
         if sl_hit:
+            label = _forecast_campaign_label(c)
             for leg in c.get("legs", []):
                 if leg.get("status") != "CLOSED":
                     _forecast_campaign_close_leg(c, leg.get("name"), sl, "SL/TRAIL")
@@ -12045,7 +12353,7 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
             c["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
             c["close_reason"] = "SL/TRAIL"
             c["result_points_total"] = _forecast_campaign_result_points(c)
-            messages.append(f"🛡 FORECAST CAMPAIGN CHIUSA | {direction} | SL/TRAIL {round(sl,3)} | totale simulato {c.get('result_points_total'):+.2f} pt")
+            messages.append(f"🛡 {label} CHIUSA | {direction} | SL/TRAIL {round(sl,3)} | totale simulato {c.get('result_points_total'):+.2f} pt")
             continue
 
         tp1 = to_float(c.get("tp1"), 0)
@@ -12054,21 +12362,21 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
         leg_a = next((x for x in c.get("legs", []) if x.get("name") == "A"), {})
         leg_b = next((x for x in c.get("legs", []) if x.get("name") == "B"), {})
         leg_c = next((x for x in c.get("legs", []) if x.get("name") == "C"), {})
+        label = _forecast_campaign_label(c)
 
         hit1 = (direction == "BUY" and high >= tp1) or (direction == "SELL" and low <= tp1)
         if hit1 and leg_a.get("status") != "CLOSED":
             _forecast_campaign_close_leg(c, "A", tp1, "TP1")
             c["runner_sl"] = entry  # B + C to BE in the simulator; EA does the same locally.
             c["tp1_hit"] = True
-            messages.append(f"✅ FORECAST CAMPAIGN {direction} TP1 | A chiusa {round(tp1,3)} | B+C -> BE {round(entry,3)}")
+            messages.append(f"✅ {label} {direction} TP1 | A chiusa {round(tp1,3)} | B+C -> BE {round(entry,3)}")
 
         hit2 = (direction == "BUY" and high >= tp2) or (direction == "SELL" and low <= tp2)
         if hit2 and leg_b.get("status") != "CLOSED":
             _forecast_campaign_close_leg(c, "B", tp2, "TP2")
             c["tp2_hit"] = True
-            # Runner C protects at least TP1 after TP2.
             c["runner_sl"] = tp1
-            messages.append(f"✅ FORECAST CAMPAIGN {direction} TP2 | B chiusa {round(tp2,3)} | C RUNNER protetta a TP1 {round(tp1,3)}")
+            messages.append(f"✅ {label} {direction} TP2 | B chiusa {round(tp2,3)} | C RUNNER protetta a TP1 {round(tp1,3)}")
 
         if leg_c.get("status") != "CLOSED" and c.get("tp2_hit"):
             if direction == "BUY":
@@ -12100,6 +12408,7 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
 def _forecast_campaign_mt4_source(campaign):
     entry = to_float(campaign.get("entry"), 0)
     tol = FORECAST_CAMPAIGN_ENTRY_TOLERANCE
+    setup_prefix = "FORECAST_PRE_REVISION" if campaign.get("pre_revision") else "FORECAST_CAMPAIGN"
     return {
         "engine": "FORECAST",
         "source_trade_id": str(campaign.get("id")),
@@ -12109,7 +12418,7 @@ def _forecast_campaign_mt4_source(campaign):
         "entry_zone": [entry - tol, entry + tol],
         "initial_sl": to_float(campaign.get("sl"), 0),
         "tp_levels": [to_float(campaign.get("tp1"), 0), to_float(campaign.get("tp2"), 0)],
-        "setup": f"FORECAST_CAMPAIGN_{campaign.get('session')}_R{campaign.get('forecast_revision',0)}",
+        "setup": f"{setup_prefix}_{campaign.get('session')}_R{campaign.get('forecast_revision',0)}",
         "day_key": campaign.get("day_key") or _thesis_day_key(),
         "mt4_legs": 3,
         "requested_lot": FORECAST_CAMPAIGN_LEG_LOT,
@@ -12126,11 +12435,109 @@ def _queue_forecast_campaign_mt4(campaign):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.14.2] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
+def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None):
+    campaigns = _forecast_campaigns(symbol)
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    sl_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
+    entry = round(price, 3)
+    if bias == "BUY":
+        sl = round(entry - sl_dist, 3)
+        tp1 = round(entry + FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry + FORECAST_CAMPAIGN_TP2_POINTS, 3)
+    else:
+        sl = round(entry + sl_dist, 3)
+        tp1 = round(entry - FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
+
+    is_pre = bool(pre_ctx and pre_ctx.get("qualifies"))
+    key = _forecast_pre_revision_key(session, forecast, bias) if is_pre else _forecast_campaign_key(session, forecast, bias)
+    tid = str(int(now_ts() * 1000))
+    c = {
+        "id": tid,
+        "campaign_key": key,
+        "day_key": _thesis_day_key(),
+        "symbol": symbol,
+        "session": session,
+        "direction": bias,
+        "entry": entry,
+        "sl": sl,
+        "runner_sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "best_price": entry,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "status": "OPEN",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "forecast_revision": int(forecast.get("revision_count", 0)),
+        "forecast_bias": _forecast_live_bias(forecast),
+        "forecast_strength": forecast.get("live_strength_score", forecast.get("strength_score")),
+        "m1_score": int(m1.get("score", 0)),
+        "pre_revision": is_pre,
+        "pre_revision_confirmed": False,
+        "legs": [
+            {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
+            {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
+            {"name": "C", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "RUNNER", "status": "OPEN"},
+        ],
+    }
+    if is_pre:
+        c.update({
+            "pre_revision_origin_bias": pre_ctx.get("map_bias"),
+            "pre_revision_boundary": pre_ctx.get("boundary"),
+            "pre_revision_invalidation": pre_ctx.get("invalidation"),
+            "pre_revision_break_buffer": pre_ctx.get("break_buffer"),
+            "pre_revision_recovery_buffer": pre_ctx.get("recovery_buffer"),
+            "pre_revision_live_score": pre_ctx.get("live_score"),
+            "pre_revision_live_score_bias": pre_ctx.get("live_score_bias"),
+            "pre_revision_reason": pre_ctx.get("reason"),
+        })
+    campaigns.append(c)
+    save_runtime_state(force=True)
+    _queue_forecast_campaign_mt4(c)
+    return c
+
+
 def forecast_campaign_message(c):
+    if c.get("pre_revision"):
+        return f"""🚀🟠 FORECAST PRE-REVISION CAMPAIGN — OPERAZIONE UFFICIALE
+
+{c.get('symbol')} {c.get('direction')} | Sessione {c.get('session')}
+Forecast LIVE ancora: {c.get('forecast_bias')} | Revision #{c.get('forecast_revision')}
+M1 trigger score: {c.get('m1_score')}
+Live-score opposto: {c.get('pre_revision_live_score')}
+
+Perché scatta PRIMA della vera Forecast Revision:
+- prezzo oltre bordo mappa {c.get('pre_revision_boundary')}
+- Session Thesis stabile {c.get('direction')} 2/2
+- M1 {c.get('direction')} >= {FORECAST_PRE_REVISION_MIN_M1_SCORE}
+- live-score dinamico conferma {c.get('direction')}
+- invalidazione formale della vecchia mappa NON ancora rotta: {c.get('pre_revision_invalidation')}
+
+3 posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
+A -> TP1 {c.get('tp1')}
+B -> TP2 {c.get('tp2')}
+C -> RUNNER dinamico (nessun TP fisso)
+
+Entry: {c.get('entry')}
+SL iniziale: {c.get('sl')}
+
+GESTIONE:
+- TP1: chiude A; B + C -> BE
+- TP2: chiude B; C resta RUNNER e protegge almeno TP1
+- RUNNER: da +{FORECAST_CAMPAIGN_RUNNER_ARM_POINTS:g} pt segue il best price a {FORECAST_CAMPAIGN_RUNNER_TRAIL_POINTS:g} pt
+- se il mercato rientra nella vecchia mappa di almeno {c.get('pre_revision_recovery_buffer')} pt e Thesis/M1 recuperano {c.get('pre_revision_origin_bias')}, la PRE-REVISION viene chiusa
+- se arriva una vera Forecast Revision {c.get('direction')}, la campagna viene PROMOSSA e resta aperta senza doppio ingresso
+
+⚠️ PRE-REVISION = anticipo operativo piu' aggressivo della Forecast Campaign normale.
+La vecchia mappa Forecast resta formalmente valida finche' non rompe la sua invalidazione."""
+
     return f"""🚀📈 FORECAST CAMPAIGN — OPERAZIONE UFFICIALE
 
 {c.get('symbol')} {c.get('direction')} | Sessione {c.get('session')}
@@ -12171,8 +12578,11 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     session = str((thesis or {}).get("session") or "").upper()
     forecast, _, _ = _forecast_for_active_session(symbol, session)
 
-    # First manage all existing campaigns, including a confirmed forecast flip.
-    messages = _manage_forecast_campaigns(symbol, data, active_forecast=forecast, active_session=session)
+    # Prima gestisce campagne esistenti: TP/SL, Forecast flip e recovery delle PRE-REVISION.
+    messages = _manage_forecast_campaigns(
+        symbol, data, active_forecast=forecast, active_session=session,
+        thesis_ctx=thesis, m1_ctx=m1_ctx,
+    )
     result["messages"] = messages
     for msg in messages:
         if FORECAST_CAMPAIGN_ALERT_ENABLED:
@@ -12188,6 +12598,61 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         result["reason"] = "forecast non operativo"
         return result
 
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    price = get_price_from_data(data)
+    campaigns = _forecast_campaigns(symbol)
+
+    # =========================
+    # v47.14.2 PRE-REVISION BIDIREZIONALE
+    # =========================
+    pre = _forecast_pre_revision_context(symbol, data, thesis, forecast, session, m1_ctx=m1)
+    watch_msg = _maybe_forecast_pre_revision_watch(symbol, session, forecast, pre)
+    if watch_msg:
+        result["messages"].append(watch_msg)
+        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+            send_telegram(watch_msg)
+
+    if pre.get("qualifies"):
+        counter = pre.get("counter_bias")
+        active = [c for c in campaigns if c.get("status") in ["OPEN", "OPENED", "PENDING"]]
+        same_side = next((c for c in active if str(c.get("direction") or "").upper() == counter), None)
+        if same_side:
+            result["reason"] = f"campagna {counter} gia' attiva"
+            return result
+
+        opposite = next((c for c in active if str(c.get("direction") or "").upper() != counter), None)
+        if opposite:
+            if FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE:
+                _forecast_campaign_request_mt4_close(opposite, reason="PRE_REVISION_OPPOSITE_CONFIRMED")
+                msg = _close_forecast_campaign_sim(opposite, price, "PRE_REVISION_OPPOSITE_CONFIRMED")
+                if msg:
+                    result["messages"].append(msg)
+                    if FORECAST_CAMPAIGN_ALERT_ENABLED:
+                        send_telegram(msg)
+                result["reason"] = "campagna opposta chiusa; attendo prossimo update prima della PRE-REVISION"
+                return result
+            result["reason"] = "campagna opposta ancora attiva"
+            return result
+
+        pre_key = _forecast_pre_revision_key(session, forecast, counter)
+        if FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE and any(c.get("campaign_key") == pre_key for c in campaigns):
+            result["reason"] = "PRE-REVISION gia' usata per questa mappa/lato"
+            return result
+
+        c = _create_forecast_campaign(symbol, session, forecast, counter, price, m1, pre_ctx=pre)
+        result.update({
+            "triggered": True,
+            "trade_id": c.get("id"),
+            "reason": f"PRE-REVISION {counter}: bordo+Thesis+M1+live-score",
+            "pre_revision": True,
+        })
+        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+            send_telegram(forecast_campaign_message(c))
+        return result
+
+    # =========================
+    # FORECAST CAMPAIGN STANDARD v47.14 (logica invariata)
+    # =========================
     bias = _forecast_live_bias(forecast)
     if bias not in ["BUY", "SELL"]:
         result["reason"] = "forecast RANGE"
@@ -12200,17 +12665,14 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         result["reason"] = "forecast e Session Thesis stabile non allineati"
         return result
 
-    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
     if not m1.get("confirmed") or m1.get("direction") != bias or int(m1.get("score", 0)) < FORECAST_CAMPAIGN_MIN_M1_SCORE:
         result["reason"] = f"serve M1 trigger {bias} score >= {FORECAST_CAMPAIGN_MIN_M1_SCORE}"
         return result
 
-    price = get_price_from_data(data)
     if _forecast_campaign_map_exhausted(forecast, bias, price):
         result["reason"] = "mappa gia' arrivata oltre estensione: non inseguo"
         return result
 
-    campaigns = _forecast_campaigns(symbol)
     if any(c.get("status") in ["OPEN", "OPENED", "PENDING"] for c in campaigns):
         result["reason"] = "Forecast Campaign gia' attiva"
         return result
@@ -12220,52 +12682,8 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         result["reason"] = "campaign gia' usata per questa mappa/revision"
         return result
 
-    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
-    ref = _forecast_reference_range(forecast, sessions.get(session))
-    sl_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
-    entry = round(price, 3)
-    if bias == "BUY":
-        sl = round(entry - sl_dist, 3)
-        tp1 = round(entry + FORECAST_CAMPAIGN_TP1_POINTS, 3)
-        tp2 = round(entry + FORECAST_CAMPAIGN_TP2_POINTS, 3)
-    else:
-        sl = round(entry + sl_dist, 3)
-        tp1 = round(entry - FORECAST_CAMPAIGN_TP1_POINTS, 3)
-        tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
-
-    tid = str(int(now_ts() * 1000))
-    c = {
-        "id": tid,
-        "campaign_key": key,
-        "day_key": _thesis_day_key(),
-        "symbol": symbol,
-        "session": session,
-        "direction": bias,
-        "entry": entry,
-        "sl": sl,
-        "runner_sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "best_price": entry,
-        "tp1_hit": False,
-        "tp2_hit": False,
-        "status": "OPEN",
-        "created": now_ts(),
-        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
-        "forecast_revision": int(forecast.get("revision_count", 0)),
-        "forecast_bias": bias,
-        "forecast_strength": forecast.get("live_strength_score", forecast.get("strength_score")),
-        "m1_score": int(m1.get("score", 0)),
-        "legs": [
-            {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
-            {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
-            {"name": "C", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "RUNNER", "status": "OPEN"},
-        ],
-    }
-    campaigns.append(c)
-    save_runtime_state(force=True)
-    _queue_forecast_campaign_mt4(c)
-    result.update({"triggered": True, "trade_id": tid, "reason": "Forecast+Thesis+M1 ufficiali"})
+    c = _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None)
+    result.update({"triggered": True, "trade_id": c.get("id"), "reason": "Forecast+Thesis+M1 ufficiali"})
     if FORECAST_CAMPAIGN_ALERT_ENABLED:
         send_telegram(forecast_campaign_message(c))
     return result
@@ -12279,6 +12697,12 @@ def forecast_campaign_status():
         "enabled": FORECAST_CAMPAIGN_ENABLED,
         "sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
         "min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
+        "pre_revision_enabled": FORECAST_PRE_REVISION_ENABLED,
+        "pre_revision_min_m1_score": FORECAST_PRE_REVISION_MIN_M1_SCORE,
+        "pre_revision_min_live_score": FORECAST_PRE_REVISION_MIN_LIVE_SCORE,
+        "pre_revision_break_buffer_factor": FORECAST_PRE_REVISION_BREAK_BUFFER_FACTOR,
+        "pre_revision_recovery_buffer_factor": FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR,
+        "pre_revision_one_per_map_side": FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE,
         "leg_lot": FORECAST_CAMPAIGN_LEG_LOT,
         "legs": FORECAST_CAMPAIGN_LEGS,
         "tp1_points": FORECAST_CAMPAIGN_TP1_POINTS,
@@ -12288,7 +12712,6 @@ def forecast_campaign_status():
         "symbol": symbol,
         "campaigns": _forecast_campaigns(symbol)[-30:],
     })
-
 
 def _newyork_forecast_review_result(forecast, newyork):
     bias = str(forecast.get("bias", "RANGE")).upper()
@@ -20073,12 +20496,12 @@ def webhook():
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
 
-        # v47.14: motore principale FORECAST CAMPAIGN (3 x 0.01).
-        # Forecast v47.13 decide la mappa, Session Thesis conferma la direzione, M1 >=6 da' il timing.
+        # v47.14.2: FORECAST CAMPAIGN + PRE-REVISION bidirezionale (3 x 0.01).
+        # Forecast v47.13 resta la mappa; PRE-REVISION anticipa solo se bordo+Thesis+M1+live-score concordano.
         try:
             forecast_campaign_result = process_forecast_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.14] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.14.2] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
             forecast_campaign_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
         # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
