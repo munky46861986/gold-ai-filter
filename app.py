@@ -14,11 +14,14 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.14.2 Forecast First + Always-On History + Bidirectional Pre-Revision"
+VERSION = "v47.14.3 Forecast First + Operational Live + NY Invalidation Guard + Pre-Revision Re-Arm"
+# v47.14.3: rende esplicita la DIREZIONE OPERATIVA LIVE, avvicina in modo controllato
+# l'invalidazione iniziale NEW YORK al bordo della mappa, abilita un secondo PRE-REVISION
+# controllato e rende M1 WATCH/TRIGGER leggibili con direzione, prezzo, micro-range e break.
+# Lo score direzionale Forecast Europe/NY resta invariato; cambia solo il livello di invalidazione
+# iniziale NY, che non puo' piu' essere trascinato troppo lontano dal midpoint Europa.
 # v47.14.2: PRE-REVISION bidirezionale BUY<->SELL per anticipare un cambio operativo
 # quando il prezzo esce dalla mappa di lavoro, Thesis stabile e M1 confermano il lato opposto.
-# NON cambia la matematica del Forecast v47.13/v47.14.1, Dynamic Revision o M1.
-# La vera FORECAST REVISION resta legata alla logica strutturale/invalidation originale.
 # v47.14.1: HOTFIX raccolta dati. Forecast/M1 restano IDENTICI alla v47.13/v47.14;
 # FIX: ogni PRICE_UPDATE alimenta PRICE_HISTORY SEMPRE, anche con MAIN operativo in pausa.
 # v47.14: FORECAST FIRST. Base Forecast/M1 derivata IDENTICA dalla v47.13;
@@ -239,6 +242,11 @@ NEWYORK_FORECAST_TARGET1_FACTOR = max(0.10, float(os.getenv("NEWYORK_FORECAST_TA
 NEWYORK_FORECAST_TARGET2_FACTOR = max(NEWYORK_FORECAST_TARGET1_FACTOR, float(os.getenv("NEWYORK_FORECAST_TARGET2_FACTOR", "0.55")))
 NEWYORK_FORECAST_EXTENSION_FACTOR = max(NEWYORK_FORECAST_TARGET2_FACTOR, float(os.getenv("NEWYORK_FORECAST_EXTENSION_FACTOR", "0.85")))
 NEWYORK_FORECAST_INVALIDATION_FACTOR = max(0.15, float(os.getenv("NEWYORK_FORECAST_INVALIDATION_FACTOR", "0.35")))
+# v47.14.3: guardia sull'invalidazione NY. Il midpoint Europa resta un riferimento strutturale,
+# ma l'invalidazione OPERATIVA deve restare oltre il bordo mappa e non decine di punti lontano.
+NEWYORK_FORECAST_INVALIDATION_MIN_GAP_FACTOR = max(0.0, float(os.getenv("NEWYORK_FORECAST_INVALIDATION_MIN_GAP_FACTOR", "0.04")))
+NEWYORK_FORECAST_INVALIDATION_MIN_GAP = max(0.20, float(os.getenv("NEWYORK_FORECAST_INVALIDATION_MIN_GAP", "1.00")))
+NEWYORK_FORECAST_INVALIDATION_MAX_GAP = max(NEWYORK_FORECAST_INVALIDATION_MIN_GAP, float(os.getenv("NEWYORK_FORECAST_INVALIDATION_MAX_GAP", "4.00")))
 NEWYORK_FORECAST_RANGE_FACTOR = max(0.15, float(os.getenv("NEWYORK_FORECAST_RANGE_FACTOR", "0.45")))
 NEWYORK_FORECAST_SEND_TARGET2_UPDATE = os.getenv("NEWYORK_FORECAST_SEND_TARGET2_UPDATE", "TRUE").upper() == "TRUE"
 NEWYORK_FORECAST_SEND_EXTENSION_UPDATE = os.getenv("NEWYORK_FORECAST_SEND_EXTENSION_UPDATE", "TRUE").upper() == "TRUE"
@@ -323,7 +331,14 @@ FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR = max(0.0, float(os.getenv("FORECAS
 FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN = max(0.20, float(os.getenv("FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN", "1.00")))
 FORECAST_PRE_REVISION_RECOVERY_BUFFER_MAX = max(FORECAST_PRE_REVISION_RECOVERY_BUFFER_MIN, float(os.getenv("FORECAST_PRE_REVISION_RECOVERY_BUFFER_MAX", "3.00")))
 FORECAST_PRE_REVISION_WATCH_COOLDOWN_SECONDS = max(60, int(os.getenv("FORECAST_PRE_REVISION_WATCH_COOLDOWN_SECONDS", "300")))
-FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE = os.getenv("FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE", "TRUE").upper() == "TRUE"
+# v47.14.3: massimo 2 tentativi per mappa/lato. Il secondo richiede un nuovo micro-BOS
+# e un cooldown, cosi' non rientra subito dopo un TP1->BE. Variabile legacy mantenuta.
+FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE = os.getenv("FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE", "FALSE").upper() == "TRUE"
+FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE = max(1, int(os.getenv("FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE", "2")))
+if FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE:
+    FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE = 1
+FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS = max(60, int(os.getenv("FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS", "180")))
+FORECAST_PRE_REVISION_REARM_REQUIRE_BOS = os.getenv("FORECAST_PRE_REVISION_REARM_REQUIRE_BOS", "TRUE").upper() == "TRUE"
 FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE = os.getenv("FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE", "TRUE").upper() == "TRUE"
 
 # v47.13 Forecast Trend SHADOW resta disponibile come diagnostica legacy,
@@ -2669,6 +2684,9 @@ def health():
         "forecast_pre_revision_enabled": FORECAST_PRE_REVISION_ENABLED,
         "forecast_pre_revision_min_m1_score": FORECAST_PRE_REVISION_MIN_M1_SCORE,
         "forecast_pre_revision_min_live_score": FORECAST_PRE_REVISION_MIN_LIVE_SCORE,
+        "forecast_pre_revision_max_per_map_side": FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE,
+        "forecast_pre_revision_rearm_cooldown_seconds": FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS,
+        "newyork_invalidation_guard": True,
         "main_operational_enabled": MAIN_OPERATIONAL_ENABLED,
         "thesis_trade_operational_enabled": THESIS_TRADE_OPERATIONAL_ENABLED,
         "shadow_execution": shadow_status_payload(),
@@ -10976,16 +10994,27 @@ def build_newyork_session_forecast(symbol, data, thesis_ctx=None, force=False):
 
     strength = int(max(50, min(90, 50 + abs(score) * 5 + (4 if euro_range >= SESSION_STRONG_TREND_POINTS else 0))))
 
+    # v47.14.3: il riferimento strutturale Europa viene conservato a parte, ma non puo'
+    # trascinare l'invalidazione NY decine di punti oltre il bordo della mappa.
+    ny_inv_gap = max(
+        NEWYORK_FORECAST_INVALIDATION_MIN_GAP,
+        min(NEWYORK_FORECAST_INVALIDATION_MAX_GAP, ref_range * NEWYORK_FORECAST_INVALIDATION_MIN_GAP_FACTOR),
+    )
+    local_invalidation = 0
+    structural_invalidation = 0
+
     if bias == "BUY":
         working_low = ny_open - ref_range * NEWYORK_FORECAST_WORK_LOW_FACTOR
         target1 = ny_open + ref_range * NEWYORK_FORECAST_TARGET1_FACTOR
         target2 = ny_open + ref_range * NEWYORK_FORECAST_TARGET2_FACTOR
         extension = ny_open + ref_range * NEWYORK_FORECAST_EXTENSION_FACTOR
         working_high = extension
-        invalidation = min(
-            ny_open - ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR,
-            euro_mid - ref_range * 0.03 if euro_mid else ny_open - ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR,
+        local_invalidation = ny_open - ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR
+        structural_invalidation = (
+            euro_mid - ref_range * 0.03 if euro_mid else local_invalidation
         )
+        nearest_adverse = max(local_invalidation, structural_invalidation)
+        invalidation = min(nearest_adverse, working_low - ny_inv_gap)
         preferred_zone_low = ny_open - ref_range * 0.14
         preferred_zone_high = ny_open + ref_range * 0.04
         alternative = f"Sotto {round(invalidation, 3)} la previsione NY BUY perde validita': rivaluto RANGE/SELL."
@@ -10995,10 +11024,12 @@ def build_newyork_session_forecast(symbol, data, thesis_ctx=None, force=False):
         target2 = ny_open - ref_range * NEWYORK_FORECAST_TARGET2_FACTOR
         extension = ny_open - ref_range * NEWYORK_FORECAST_EXTENSION_FACTOR
         working_low = extension
-        invalidation = max(
-            ny_open + ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR,
-            euro_mid + ref_range * 0.03 if euro_mid else ny_open + ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR,
+        local_invalidation = ny_open + ref_range * NEWYORK_FORECAST_INVALIDATION_FACTOR
+        structural_invalidation = (
+            euro_mid + ref_range * 0.03 if euro_mid else local_invalidation
         )
+        nearest_adverse = min(local_invalidation, structural_invalidation)
+        invalidation = max(nearest_adverse, working_high + ny_inv_gap)
         preferred_zone_low = ny_open - ref_range * 0.04
         preferred_zone_high = ny_open + ref_range * 0.14
         alternative = f"Sopra {round(invalidation, 3)} la previsione NY SELL perde validita': rivaluto RANGE/BUY."
@@ -11058,6 +11089,12 @@ def build_newyork_session_forecast(symbol, data, thesis_ctx=None, force=False):
         "target2": _forecast_round(target2),
         "extension": _forecast_round(extension),
         "invalidation": _forecast_round(invalidation),
+        "local_invalidation": _forecast_round(local_invalidation),
+        "structural_invalidation": _forecast_round(structural_invalidation),
+        "invalidation_gap_from_work": _forecast_round(
+            (working_low - invalidation) if bias == "BUY" else
+            (invalidation - working_high) if bias == "SELL" else 0
+        ),
         "alternative": alternative,
         "status": "ACTIVE",
         "initial_bias": bias,
@@ -11092,14 +11129,16 @@ def newyork_session_forecast_text(forecast):
             f"Target NY 1: {forecast.get('target1')}\n"
             f"Target NY 2: {forecast.get('target2')}\n"
             f"Estensione NY: {forecast.get('extension')}\n"
-            f"Invalidazione BUY: sotto {forecast.get('invalidation')}"
+            f"Invalidazione BUY operativa: sotto {forecast.get('invalidation')}\n"
+            f"Riferimento strutturale ampio: {forecast.get('structural_invalidation')}"
         )
     elif bias == "SELL":
         targets = (
             f"Target NY 1: {forecast.get('target1')}\n"
             f"Target NY 2: {forecast.get('target2')}\n"
             f"Estensione NY: {forecast.get('extension')}\n"
-            f"Invalidazione SELL: sopra {forecast.get('invalidation')}"
+            f"Invalidazione SELL operativa: sopra {forecast.get('invalidation')}\n"
+            f"Riferimento strutturale ampio: {forecast.get('structural_invalidation')}"
         )
     else:
         targets = (
@@ -11161,6 +11200,7 @@ IMPORTANTE:
 - Forecast NON apre ordini e NON blocca direttamente il MAIN.
 - MAIN e THESIS MAIN continuano a seguire l'accordo con la Session Thesis stabile.
 - THESIS MAIN New York entra solo con 2 conferme + trigger e mantiene il suo re-arm controllato.
+- L'invalidazione mostrata e' OPERATIVA e resta fuori dal bordo della mappa; il riferimento strutturale Europa resta visibile ma non ritarda il cambio di mappa.
 - Se la mappa NY viene invalidata, il LIVE Forecast puo' ricalcolare bias/range/target senza cancellare la previsione originale."""
 
 
@@ -11251,6 +11291,13 @@ def m1_timing_context(data, thesis_ctx=None):
         "bos": False,
         "strong_candle": False,
         "forecast_bias": None,
+        "price": 0,
+        "prior_high": 0,
+        "prior_low": 0,
+        "break_level": 0,
+        "operational_bias": "WAIT",
+        "operational_status": "N/D",
+        "map_boundary": 0,
     }
     if not M1_TIMING_ENABLED or session not in ["EUROPE", "NEWYORK"]:
         return out
@@ -11288,6 +11335,39 @@ def m1_timing_context(data, thesis_ctx=None):
     forecast_bias = _forecast_live_bias(forecast) if forecast else "RANGE"
     out["forecast_bias"] = forecast_bias
     out["direction"] = preferred
+    out["price"] = _forecast_round(c or price)
+
+    # v47.14.3: separa la mappa strutturale dalla lettura operativa corrente.
+    # NON crea entry: serve solo a rendere leggibile il conflitto Forecast vs Thesis/M1.
+    operational_bias = "WAIT"
+    operational_status = "CONFLICT"
+    map_boundary = 0
+    if forecast:
+        levels = _forecast_active_map_levels(forecast)
+        wl = to_float(levels.get("working_low"), 0)
+        wh = to_float(levels.get("working_high"), 0)
+        if forecast_bias == preferred:
+            operational_bias = preferred
+            operational_status = "FORECAST_ALIGNED"
+        elif forecast_bias == "RANGE":
+            operational_bias = preferred
+            operational_status = "THESIS_M1_ON_RANGE_MAP"
+        elif preferred == "SELL" and forecast_bias == "BUY":
+            map_boundary = wl
+            if wl and (c or price) < wl:
+                operational_bias = "SELL"
+                operational_status = "PRE_REVISION_ZONE"
+        elif preferred == "BUY" and forecast_bias == "SELL":
+            map_boundary = wh
+            if wh and (c or price) > wh:
+                operational_bias = "BUY"
+                operational_status = "PRE_REVISION_ZONE"
+    else:
+        operational_bias = preferred
+        operational_status = "THESIS_M1_NO_FORECAST"
+    out["operational_bias"] = operational_bias
+    out["operational_status"] = operational_status
+    out["map_boundary"] = _forecast_round(map_boundary)
     score = 0
     reasons = []
 
@@ -11323,6 +11403,10 @@ def m1_timing_context(data, thesis_ctx=None):
         "close_position": round(close_pos, 3),
         "prior_high": _forecast_round(prior.get("high")),
         "prior_low": _forecast_round(prior.get("low")),
+        "break_level": _forecast_round(
+            (to_float(prior.get("high"), 0) + M1_TIMING_BOS_BUFFER) if preferred == "BUY" else
+            (to_float(prior.get("low"), 0) - M1_TIMING_BOS_BUFFER) if preferred == "SELL" else 0
+        ),
         "candidate_count": candidate_count,
     })
     return out
@@ -11344,26 +11428,59 @@ def maybe_m1_timing_alert(symbol, data, thesis_ctx=None):
     mem["ts"] = now_ts()
     mem["last"] = dict(ctx)
     save_runtime_state(force=False)
+
+    direction = str(ctx.get("direction") or "WAIT").upper()
+    score = int(ctx.get("score", 0))
     emoji = "🚀" if level == "CONFIRMED" else "👀"
-    title = "M1 TRIGGER CONFERMATO" if level == "CONFIRMED" else "M1 WATCH"
+    title = f"M1 TRIGGER {direction} — SCORE {score}" if level == "CONFIRMED" else f"M1 WATCH {direction} — SCORE {score}"
     reasons = "\n".join(f"- {x}" for x in (ctx.get("reasons") or [])[:7]) or "- microstruttura in osservazione"
-    return f"""{emoji} {title} — NON È UNA DIREZIONE AUTONOMA
+    price = _forecast_round(ctx.get("price"))
+    prior_high = _forecast_round(ctx.get("prior_high"))
+    prior_low = _forecast_round(ctx.get("prior_low"))
+    break_level = _forecast_round(ctx.get("break_level"))
+    if direction == "BUY":
+        break_text = f"BUY sopra {break_level}" if break_level else "BUY break N/D"
+    elif direction == "SELL":
+        break_text = f"SELL sotto {break_level}" if break_level else "SELL break N/D"
+    else:
+        break_text = "N/D"
+
+    op_bias = str(ctx.get("operational_bias") or "WAIT").upper()
+    op_status = str(ctx.get("operational_status") or "N/D").upper()
+    if op_status == "PRE_REVISION_ZONE":
+        op_line = f"{op_bias} — PRE-REVISION ZONE"
+    elif op_status == "FORECAST_ALIGNED":
+        op_line = f"{op_bias} — ALLINEATO"
+    elif op_status == "THESIS_M1_ON_RANGE_MAP":
+        op_line = f"{op_bias} — Forecast RANGE"
+    elif op_status == "CONFLICT":
+        op_line = "WAIT — conflitto ancora dentro la mappa"
+    else:
+        op_line = f"{op_bias} — {op_status}"
+
+    return f"""{emoji} {title} — NON È ENTRY AUTONOMA
 
 {symbol} | Sessione {ctx.get('session')}
-Direzione Session Thesis: {ctx.get('direction')}
-Score timing M1: {ctx.get('score')}
+Prezzo attuale: {price}
+Range M1: {prior_high} - {prior_low}
+Livello break: {break_text}
+
+Direzione trigger: {direction}
+Direzione operativa LIVE: {op_line}
+Forecast strutturale LIVE: {ctx.get('forecast_bias')}
+Score timing M1: {score}
 Micro-BOS: {ctx.get('bos')}
 Candela M1 forte: {ctx.get('strong_candle')}
-Forecast LIVE: {ctx.get('forecast_bias')}
 
 Perché:
 {reasons}
 
 Regola:
-- Forecast = mappa
+- Forecast strutturale = mappa
+- Direzione operativa LIVE = lettura corrente Forecast/Thesis/M1
 - Thesis = direzione
 - M1 = timing/accelerazione
-- Il messaggio M1 da solo NON crea una direzione BUY/SELL.""", ctx
+- Il messaggio M1 da solo NON apre una posizione.""", ctx
 
 
 def _dynamic_forecast_live_score(session, data, forecast, thesis_ctx=None):
@@ -11969,6 +12086,18 @@ def _forecast_pre_revision_key(session, forecast, bias):
     return f"{_forecast_campaign_key(session, forecast, bias)}|PRE"
 
 
+def _forecast_pre_revision_attempt_rows(campaigns, base_key):
+    rows = []
+    for c in campaigns or []:
+        if not c.get("pre_revision") and not c.get("pre_revision_confirmed"):
+            continue
+        key = str(c.get("pre_revision_map_key") or c.get("campaign_key") or "")
+        if key == base_key or key.startswith(base_key + "|A"):
+            rows.append(c)
+    rows.sort(key=lambda x: to_float(x.get("created"), 0))
+    return rows
+
+
 def _forecast_active_map_levels(forecast):
     """Restituisce i livelli della mappa LIVE corrente senza modificare la matematica Forecast."""
     if not isinstance(forecast, dict):
@@ -12143,8 +12272,8 @@ def _forecast_pre_revision_watch_message(symbol, session, ctx):
     return f"""🟠 FORECAST PRE-REVISION WATCH — NON È ANCORA ENTRY
 
 {symbol} | Sessione {session}
-Forecast LIVE ancora: {ctx.get('map_bias')}
-Possibile lato opposto: {ctx.get('counter_bias')}
+Forecast strutturale ancora: {ctx.get('map_bias')}
+Direzione operativa LIVE: {ctx.get('counter_bias')} — PRE-REVISION WATCH
 Prezzo: {round(to_float(ctx.get('price')),3)}
 Bordo mappa superato: {ctx.get('boundary')}
 Invalidazione formale Forecast: {ctx.get('invalidation')}
@@ -12230,7 +12359,7 @@ def _forecast_campaign_request_mt4_close(campaign, reason="FORECAST_FLIP"):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14.2] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.14.3] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -12435,7 +12564,7 @@ def _queue_forecast_campaign_mt4(campaign):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14.2] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.14.3] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -12455,7 +12584,9 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
         tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
 
     is_pre = bool(pre_ctx and pre_ctx.get("qualifies"))
-    key = _forecast_pre_revision_key(session, forecast, bias) if is_pre else _forecast_campaign_key(session, forecast, bias)
+    pre_base_key = _forecast_pre_revision_key(session, forecast, bias) if is_pre else None
+    pre_attempt = int((pre_ctx or {}).get("attempt", 1)) if is_pre else 0
+    key = f"{pre_base_key}|A{pre_attempt}" if is_pre else _forecast_campaign_key(session, forecast, bias)
     tid = str(int(now_ts() * 1000))
     c = {
         "id": tid,
@@ -12489,6 +12620,8 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
     }
     if is_pre:
         c.update({
+            "pre_revision_map_key": pre_base_key,
+            "pre_revision_attempt": pre_attempt,
             "pre_revision_origin_bias": pre_ctx.get("map_bias"),
             "pre_revision_boundary": pre_ctx.get("boundary"),
             "pre_revision_invalidation": pre_ctx.get("invalidation"),
@@ -12509,7 +12642,9 @@ def forecast_campaign_message(c):
         return f"""🚀🟠 FORECAST PRE-REVISION CAMPAIGN — OPERAZIONE UFFICIALE
 
 {c.get('symbol')} {c.get('direction')} | Sessione {c.get('session')}
-Forecast LIVE ancora: {c.get('forecast_bias')} | Revision #{c.get('forecast_revision')}
+Forecast strutturale ancora: {c.get('forecast_bias')} | Revision #{c.get('forecast_revision')}
+Direzione operativa LIVE: {c.get('direction')} — PRE-REVISION
+Tentativo PRE-REVISION: #{c.get('pre_revision_attempt', 1)}/{FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE}
 M1 trigger score: {c.get('m1_score')}
 Live-score opposto: {c.get('pre_revision_live_score')}
 
@@ -12606,6 +12741,25 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     # v47.14.2 PRE-REVISION BIDIREZIONALE
     # =========================
     pre = _forecast_pre_revision_context(symbol, data, thesis, forecast, session, m1_ctx=m1)
+
+    # v47.14.3: salva una lettura separata tra Forecast strutturale e direzione operativa LIVE.
+    map_bias = str(pre.get("map_bias") or _forecast_live_bias(forecast)).upper()
+    op_bias = map_bias
+    op_status = "FORECAST"
+    if pre.get("qualifies"):
+        op_bias = str(pre.get("counter_bias") or map_bias).upper()
+        op_status = "PRE_REVISION_CONFIRMED"
+    elif pre.get("watch_ready") and pre.get("live_score_ok"):
+        op_bias = str(pre.get("counter_bias") or map_bias).upper()
+        op_status = "PRE_REVISION_WATCH"
+    if (forecast.get("operational_live_bias") != op_bias or
+            forecast.get("operational_live_status") != op_status):
+        forecast["operational_live_bias"] = op_bias
+        forecast["operational_live_status"] = op_status
+        forecast["operational_live_price"] = _forecast_round(price)
+        forecast["operational_live_updated"] = now_ts()
+        save_runtime_state(force=False)
+
     watch_msg = _maybe_forecast_pre_revision_watch(symbol, session, forecast, pre)
     if watch_msg:
         result["messages"].append(watch_msg)
@@ -12635,10 +12789,29 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
             return result
 
         pre_key = _forecast_pre_revision_key(session, forecast, counter)
-        if FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE and any(c.get("campaign_key") == pre_key for c in campaigns):
-            result["reason"] = "PRE-REVISION gia' usata per questa mappa/lato"
+        used = _forecast_pre_revision_attempt_rows(campaigns, pre_key)
+        used_count = len(used)
+        if used_count >= FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE:
+            result["reason"] = f"PRE-REVISION gia' usata {used_count}/{FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE} per questa mappa/lato"
             return result
 
+        attempt = used_count + 1
+        if attempt > 1:
+            last = used[-1] if used else None
+            if last and last.get("status") in ["OPEN", "OPENED", "PENDING"]:
+                result["reason"] = "PRE-REVISION precedente ancora attiva"
+                return result
+            last_closed = to_float((last or {}).get("closed"), to_float((last or {}).get("created"), 0))
+            elapsed = now_ts() - last_closed if last_closed else 999999
+            if elapsed < FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS:
+                result["reason"] = f"PRE-REVISION re-arm in cooldown: {int(FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS - elapsed)}s"
+                return result
+            if FORECAST_PRE_REVISION_REARM_REQUIRE_BOS and not m1.get("bos"):
+                result["reason"] = "secondo PRE-REVISION richiede nuovo micro-BOS"
+                return result
+
+        pre["attempt"] = attempt
+        pre["rearm"] = attempt > 1
         c = _create_forecast_campaign(symbol, session, forecast, counter, price, m1, pre_ctx=pre)
         result.update({
             "triggered": True,
@@ -12702,7 +12875,12 @@ def forecast_campaign_status():
         "pre_revision_min_live_score": FORECAST_PRE_REVISION_MIN_LIVE_SCORE,
         "pre_revision_break_buffer_factor": FORECAST_PRE_REVISION_BREAK_BUFFER_FACTOR,
         "pre_revision_recovery_buffer_factor": FORECAST_PRE_REVISION_RECOVERY_BUFFER_FACTOR,
-        "pre_revision_one_per_map_side": FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE,
+        "pre_revision_one_per_map_side_legacy": FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE,
+        "pre_revision_max_per_map_side": FORECAST_PRE_REVISION_MAX_PER_MAP_SIDE,
+        "pre_revision_rearm_cooldown_seconds": FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS,
+        "pre_revision_rearm_require_bos": FORECAST_PRE_REVISION_REARM_REQUIRE_BOS,
+        "operational_live_bias": (get_session_thesis_state(symbol).get("newyork_forecast") or {}).get("operational_live_bias") or (get_session_thesis_state(symbol).get("morning_forecast") or {}).get("operational_live_bias"),
+        "operational_live_status": (get_session_thesis_state(symbol).get("newyork_forecast") or {}).get("operational_live_status") or (get_session_thesis_state(symbol).get("morning_forecast") or {}).get("operational_live_status"),
         "leg_lot": FORECAST_CAMPAIGN_LEG_LOT,
         "legs": FORECAST_CAMPAIGN_LEGS,
         "tp1_points": FORECAST_CAMPAIGN_TP1_POINTS,
