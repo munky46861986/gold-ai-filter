@@ -14,7 +14,10 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.14.3 Forecast First + Operational Live + NY Invalidation Guard + Pre-Revision Re-Arm"
+VERSION = "v47.15.1 Forecast First + LIVE DIRECTOR + EVENT SHOCK"
+# v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
+# GOLD MASTER LIVE DIRECTOR: entry quality, gestione LIVE stile Max, milestone,
+# protezione dinamica, chiusura intelligente e Telegram operativo pulito.
 # v47.14.3: rende esplicita la DIREZIONE OPERATIVA LIVE, avvicina in modo controllato
 # l'invalidazione iniziale NEW YORK al bordo della mappa, abilita un secondo PRE-REVISION
 # controllato e rende M1 WATCH/TRIGGER leggibili con direzione, prezzo, micro-range e break.
@@ -340,6 +343,60 @@ if FORECAST_PRE_REVISION_ONE_PER_MAP_SIDE:
 FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS = max(60, int(os.getenv("FORECAST_PRE_REVISION_REARM_COOLDOWN_SECONDS", "180")))
 FORECAST_PRE_REVISION_REARM_REQUIRE_BOS = os.getenv("FORECAST_PRE_REVISION_REARM_REQUIRE_BOS", "TRUE").upper() == "TRUE"
 FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE = os.getenv("FORECAST_PRE_REVISION_CLOSE_OPPOSITE_ACTIVE", "TRUE").upper() == "TRUE"
+
+# v47.15 GOLD MASTER LIVE DIRECTOR
+# Il Forecast resta il cervello quantitativo; il Director trasforma Forecast+Thesis+M1
+# in una sola istruzione operativa per volta: ENTRA / TIENI / PROTEGGI / CHIUDI / ASPETTA.
+LIVE_DIRECTOR_ENABLED = os.getenv("LIVE_DIRECTOR_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_ALERT_ENABLED = os.getenv("LIVE_DIRECTOR_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_CLEAN_TELEGRAM = os.getenv("LIVE_DIRECTOR_CLEAN_TELEGRAM", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_HIDE_RAW_M1 = os.getenv("LIVE_DIRECTOR_HIDE_RAW_M1", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_HIDE_RAW_THESIS = os.getenv("LIVE_DIRECTOR_HIDE_RAW_THESIS", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_HIDE_HEARTBEAT = os.getenv("LIVE_DIRECTOR_HIDE_HEARTBEAT", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_PIPS_PER_POINT = max(1.0, float(os.getenv("LIVE_DIRECTOR_PIPS_PER_POINT", "10.0")))
+LIVE_DIRECTOR_MILESTONES_RAW = os.getenv("LIVE_DIRECTOR_MILESTONES", "2,5,8,10,15,20")
+try:
+    LIVE_DIRECTOR_MILESTONES = sorted({float(x.strip()) for x in LIVE_DIRECTOR_MILESTONES_RAW.split(",") if x.strip() and float(x.strip()) > 0})
+except Exception:
+    LIVE_DIRECTOR_MILESTONES = [2.0, 5.0, 8.0, 10.0, 15.0, 20.0]
+LIVE_DIRECTOR_MILESTONE_COOLDOWN_SECONDS = max(15, int(os.getenv("LIVE_DIRECTOR_MILESTONE_COOLDOWN_SECONDS", "30")))
+LIVE_DIRECTOR_M1_MESSAGE_COOLDOWN_SECONDS = max(30, int(os.getenv("LIVE_DIRECTOR_M1_MESSAGE_COOLDOWN_SECONDS", "120")))
+LIVE_DIRECTOR_OPPOSITE_M1_WARN_SCORE = max(4, int(os.getenv("LIVE_DIRECTOR_OPPOSITE_M1_WARN_SCORE", "6")))
+LIVE_DIRECTOR_OPPOSITE_M1_STRONG_SCORE = max(LIVE_DIRECTOR_OPPOSITE_M1_WARN_SCORE, int(os.getenv("LIVE_DIRECTOR_OPPOSITE_M1_STRONG_SCORE", "8")))
+LIVE_DIRECTOR_ENTRY_QUALITY_FILTER = os.getenv("LIVE_DIRECTOR_ENTRY_QUALITY_FILTER", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_ENTRY_CHASE_FACTOR = max(0.0, float(os.getenv("LIVE_DIRECTOR_ENTRY_CHASE_FACTOR", "0.07")))
+LIVE_DIRECTOR_ENTRY_CHASE_MIN = max(0.5, float(os.getenv("LIVE_DIRECTOR_ENTRY_CHASE_MIN", "2.50")))
+LIVE_DIRECTOR_ENTRY_CHASE_MAX = max(LIVE_DIRECTOR_ENTRY_CHASE_MIN, float(os.getenv("LIVE_DIRECTOR_ENTRY_CHASE_MAX", "5.00")))
+LIVE_DIRECTOR_PROTECT_ENABLED = os.getenv("LIVE_DIRECTOR_PROTECT_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_PROFIT_LOCK_MIN_MFE = max(FORECAST_CAMPAIGN_TP1_POINTS, float(os.getenv("LIVE_DIRECTOR_PROFIT_LOCK_MIN_MFE", "5.0")))
+LIVE_DIRECTOR_PROFIT_LOCK_POINTS = max(0.25, float(os.getenv("LIVE_DIRECTOR_PROFIT_LOCK_POINTS", "1.0")))
+LIVE_DIRECTOR_TIGHTEN_MIN_MFE = max(LIVE_DIRECTOR_PROFIT_LOCK_MIN_MFE, float(os.getenv("LIVE_DIRECTOR_TIGHTEN_MIN_MFE", "8.0")))
+LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS = max(1.0, float(os.getenv("LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS", "3.0")))
+LIVE_DIRECTOR_EARLY_EXIT_ENABLED = os.getenv("LIVE_DIRECTOR_EARLY_EXIT_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT = max(0.0, float(os.getenv("LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT", "0.50")))
+LIVE_DIRECTOR_REENTRY_WAIT_SECONDS = max(60, int(os.getenv("LIVE_DIRECTOR_REENTRY_WAIT_SECONDS", "180")))
+LIVE_DIRECTOR_BOOT_TS = time.time()
+
+# v47.15.1 EVENT SHOCK MODE
+# Scopo: nelle finestre CPI/NFP/FOMC o in uno shock equivalente non aspetta obbligatoriamente
+# i 3 minuti del Forecast New York. Entra SOLO se la rottura strutturale e' gia' reale,
+# Session Thesis + M1 confermano e il prezzo NON ha ancora corso troppo oltre il livello rotto.
+EVENT_SHOCK_DIRECTOR_ENABLED = os.getenv("EVENT_SHOCK_DIRECTOR_ENABLED", "TRUE").upper() == "TRUE"
+EVENT_SHOCK_ALERT_ENABLED = os.getenv("EVENT_SHOCK_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+EVENT_SHOCK_SESSIONS_RAW = os.getenv("EVENT_SHOCK_SESSIONS", "NEWYORK")
+EVENT_SHOCK_SESSIONS = {x.strip().upper() for x in EVENT_SHOCK_SESSIONS_RAW.split(",") if x.strip()}.intersection({"EUROPE", "NEWYORK"}) or {"NEWYORK"}
+EVENT_SHOCK_MIN_M1_SCORE = max(4, int(os.getenv("EVENT_SHOCK_MIN_M1_SCORE", "5")))
+EVENT_SHOCK_MIN_SESSION_MOVE_POINTS = max(2.0, float(os.getenv("EVENT_SHOCK_MIN_SESSION_MOVE_POINTS", "8.0")))
+EVENT_SHOCK_VOLATILITY_ONLY_MOVE_POINTS = max(EVENT_SHOCK_MIN_SESSION_MOVE_POINTS, float(os.getenv("EVENT_SHOCK_VOLATILITY_ONLY_MOVE_POINTS", "12.0")))
+EVENT_SHOCK_VOLATILITY_ONLY_MAX_OPEN_MINUTES = max(1, int(os.getenv("EVENT_SHOCK_VOLATILITY_ONLY_MAX_OPEN_MINUTES", "8")))
+EVENT_SHOCK_BREAK_BUFFER_FACTOR = max(0.0, float(os.getenv("EVENT_SHOCK_BREAK_BUFFER_FACTOR", "0.04")))
+EVENT_SHOCK_BREAK_BUFFER_MIN = max(0.20, float(os.getenv("EVENT_SHOCK_BREAK_BUFFER_MIN", "1.00")))
+EVENT_SHOCK_BREAK_BUFFER_MAX = max(EVENT_SHOCK_BREAK_BUFFER_MIN, float(os.getenv("EVENT_SHOCK_BREAK_BUFFER_MAX", "3.00")))
+EVENT_SHOCK_MAX_OVERSHOOT_POINTS = max(2.0, float(os.getenv("EVENT_SHOCK_MAX_OVERSHOOT_POINTS", "11.0")))
+EVENT_SHOCK_SL_POINTS = min(12.0, max(6.0, float(os.getenv("EVENT_SHOCK_SL_POINTS", "10.0"))))
+EVENT_SHOCK_MAX_PER_SESSION_SIDE = max(1, int(os.getenv("EVENT_SHOCK_MAX_PER_SESSION_SIDE", "1")))
+EVENT_SHOCK_REARM_COOLDOWN_SECONDS = max(60, int(os.getenv("EVENT_SHOCK_REARM_COOLDOWN_SECONDS", "300")))
+EVENT_SHOCK_WATCH_COOLDOWN_SECONDS = max(30, int(os.getenv("EVENT_SHOCK_WATCH_COOLDOWN_SECONDS", "90")))
 
 # v47.13 Forecast Trend SHADOW resta disponibile come diagnostica legacy,
 # ma default OFF: il nuovo Forecast Campaign ne prende il posto operativo.
@@ -2679,6 +2736,14 @@ def health():
         "forecast_trend_shadow_enabled": FORECAST_TREND_SHADOW_ENABLED,
         "forecast_trend_shadow_sessions": sorted(FORECAST_TREND_SHADOW_SESSIONS),
         "forecast_campaign_enabled": FORECAST_CAMPAIGN_ENABLED,
+        "live_director_enabled": LIVE_DIRECTOR_ENABLED,
+        "live_director_clean_telegram": LIVE_DIRECTOR_CLEAN_TELEGRAM,
+        "event_shock_director_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
+        "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
+        "event_shock_min_m1_score": EVENT_SHOCK_MIN_M1_SCORE,
+        "event_shock_min_session_move_points": EVENT_SHOCK_MIN_SESSION_MOVE_POINTS,
+        "event_shock_max_overshoot_points": EVENT_SHOCK_MAX_OVERSHOOT_POINTS,
+        "event_shock_sl_points": EVENT_SHOCK_SL_POINTS,
         "forecast_campaign_sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
         "forecast_campaign_min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
         "forecast_pre_revision_enabled": FORECAST_PRE_REVISION_ENABLED,
@@ -3428,6 +3493,16 @@ def detect_auto_event_from_data(data):
         return False, []
 
     reasons = []
+
+    # v47.15.1: se Pine/webhook porta un nome evento/news, usa le stesse keyword macro
+    # senza richiedere nuove variabili Render. Se i campi non esistono non cambia nulla.
+    if AUTO_EVENT_KEYWORDS_ENABLED:
+        event_text = " ".join(str(data.get(k) or "") for k in [
+            "event_name", "macro_event", "news_event", "news_title", "event_label"
+        ])
+        hits = event_keyword_hits(event_text)
+        if hits:
+            reasons.append("Macro event webhook: " + ", ".join(hits[:6]))
 
     # Se l'utente attiva manualmente Event Mode nel Pine, lo trasformo in cache temporanea.
     if to_bool(data.get("event_mode", "false")):
@@ -12062,7 +12137,7 @@ def forecast_trend_shadow_status():
     })
 
 # =========================
-# v47.14.2 FORECAST CAMPAIGN — OFFICIAL 3-LEG + BIDIRECTIONAL PRE-REVISION
+# v47.15 FORECAST CAMPAIGN + GOLD MASTER LIVE DIRECTOR
 # =========================
 
 def _forecast_campaigns(symbol):
@@ -12345,6 +12420,8 @@ def _forecast_campaign_all_closed(campaign):
 
 
 def _forecast_campaign_label(campaign):
+    if campaign.get("event_shock"):
+        return "EVENT SHOCK CAMPAIGN"
     return "FORECAST PRE-REVISION" if campaign.get("pre_revision") else "FORECAST CAMPAIGN"
 
 
@@ -12359,7 +12436,7 @@ def _forecast_campaign_request_mt4_close(campaign, reason="FORECAST_FLIP"):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14.3] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.15] Forecast campaign MT4 close queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -12404,6 +12481,20 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
         if c.get("status") not in ["OPEN", "OPENED", "PENDING"]:
             continue
         direction = str(c.get("direction") or "").upper()
+
+        # v47.15.1: un EVENT SHOCK puo' nascere prima del Forecast NY. Quando la mappa arriva
+        # nello stesso lato lo confermo senza chiudere/riaprire e senza doppio ingresso.
+        if (c.get("event_shock") and active_session == c.get("session") and active_forecast
+                and live_bias == direction and not c.get("event_shock_confirmed_by_forecast")):
+            c["event_shock_confirmed_by_forecast"] = True
+            c["event_shock_confirmed_at"] = now_ts()
+            c["forecast_bias"] = live_bias
+            c["forecast_strength"] = active_forecast.get("live_strength_score", active_forecast.get("strength_score"))
+            c["forecast_revision"] = int(active_forecast.get("revision_count", 0))
+            messages.append(
+                f"✅ EVENT SHOCK {direction} CONFERMATO DAL FORECAST {active_session} | "
+                f"mantengo la stessa posizione, nessun doppio ingresso"
+            )
 
         # Se una PRE-REVISION viene poi confermata da una vera Forecast Revision nello stesso lato,
         # la campagna resta aperta e viene promossa: niente chiusura/riapertura inutile.
@@ -12537,7 +12628,10 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
 def _forecast_campaign_mt4_source(campaign):
     entry = to_float(campaign.get("entry"), 0)
     tol = FORECAST_CAMPAIGN_ENTRY_TOLERANCE
-    setup_prefix = "FORECAST_PRE_REVISION" if campaign.get("pre_revision") else "FORECAST_CAMPAIGN"
+    if campaign.get("event_shock"):
+        setup_prefix = "FORECAST_EVENT_SHOCK"
+    else:
+        setup_prefix = "FORECAST_PRE_REVISION" if campaign.get("pre_revision") else "FORECAST_CAMPAIGN"
     return {
         "engine": "FORECAST",
         "source_trade_id": str(campaign.get("id")),
@@ -12564,7 +12658,7 @@ def _queue_forecast_campaign_mt4(campaign):
             save_runtime_state(force=True)
         return cmd
     except Exception as e:
-        print(f"[v47.14.3] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
+        print(f"[v47.15] Forecast campaign MT4 queue error: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -12702,6 +12796,725 @@ Conferme:
 I target della MAPPA Forecast restano separati e NON vengono usati come TP broker se sono gia' stati superati."""
 
 
+
+# =========================
+# v47.15.1 EVENT SHOCK MODE
+# =========================
+
+def _event_shock_minutes_into_session(session):
+    try:
+        minute_now = _minute_of_day_from_ts()
+        if session == "NEWYORK":
+            return minute_now - _ny_start_minutes()
+        if session == "EUROPE":
+            return minute_now - _europe_start_minutes()
+    except Exception:
+        pass
+    return 999
+
+
+def _event_shock_reference(symbol, session):
+    """Reference to break: EUROPE high/low for NY, ASIA high/low for Europe."""
+    state = get_session_thesis_state(symbol)
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    if session == "NEWYORK":
+        ref = sessions.get("EUROPE") or {}
+        label = "EUROPE"
+    elif session == "EUROPE":
+        ref = sessions.get("ASIA") or {}
+        label = "ASIA"
+    else:
+        return None
+    if not _valid_session_snapshot(ref):
+        return None
+    high = to_float(ref.get("high"), 0)
+    low = to_float(ref.get("low"), 0)
+    if not high or not low or high <= low:
+        return None
+    return {
+        "label": label,
+        "high": high,
+        "low": low,
+        "range": high - low,
+    }
+
+
+def _event_shock_key(session, direction):
+    return f"{_thesis_day_key()}|EVENT_SHOCK|{session}|{direction}"
+
+
+def _event_shock_existing_rows(symbol, key):
+    return [c for c in _forecast_campaigns(symbol) if c.get("event_shock_key") == key]
+
+
+def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
+    out = {
+        "eligible": False,
+        "watch": False,
+        "reason": "",
+        "direction": None,
+        "session": None,
+        "price": 0,
+        "reference_label": None,
+        "reference_level": 0,
+        "break_buffer": 0,
+        "break_points": 0,
+        "overshoot_points": 0,
+        "session_move": 0,
+        "event_active": False,
+        "event_reasons": [],
+        "m1_score": 0,
+        "m1_ok": False,
+        "thesis_ok": False,
+        "not_late": False,
+    }
+    if not EVENT_SHOCK_DIRECTOR_ENABLED:
+        out["reason"] = "EVENT SHOCK disabled"
+        return out
+
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session = str((thesis or {}).get("session") or "").upper()
+    out["session"] = session
+    if session not in EVENT_SHOCK_SESSIONS:
+        out["reason"] = f"session {session} non abilitata EVENT SHOCK"
+        return out
+
+    preferred = str((thesis or {}).get("preferred") or "").upper()
+    if preferred not in ["BUY", "SELL"]:
+        out["reason"] = "Session Thesis senza direzione"
+        return out
+
+    price = get_price_from_data(data)
+    out["price"] = round(price, 3)
+    ref = _event_shock_reference(symbol, session)
+    if not ref:
+        out["reason"] = "reference session non disponibile"
+        return out
+
+    state = get_session_thesis_state(symbol)
+    sessions = state.get("sessions", {}) if isinstance(state, dict) else {}
+    active_snap = sessions.get(session) or {}
+    session_open = to_float(active_snap.get("open"), price)
+    session_move = (price - session_open) if preferred == "BUY" else (session_open - price)
+    session_move = max(0.0, session_move)
+
+    buffer = min(
+        EVENT_SHOCK_BREAK_BUFFER_MAX,
+        max(EVENT_SHOCK_BREAK_BUFFER_MIN, to_float(ref.get("range"), 0) * EVENT_SHOCK_BREAK_BUFFER_FACTOR),
+    )
+    if preferred == "BUY":
+        reference_level = to_float(ref.get("high"), 0)
+        break_points = price - reference_level
+        broke = price >= reference_level + buffer
+        overshoot = max(0.0, price - reference_level)
+    else:
+        reference_level = to_float(ref.get("low"), 0)
+        break_points = reference_level - price
+        broke = price <= reference_level - buffer
+        overshoot = max(0.0, reference_level - price)
+
+    active_event, event_reasons = auto_event_cache_active()
+    minutes_into = _event_shock_minutes_into_session(session)
+    volatility_only = bool(
+        0 <= minutes_into <= EVENT_SHOCK_VOLATILITY_ONLY_MAX_OPEN_MINUTES
+        and session_move >= EVENT_SHOCK_VOLATILITY_ONLY_MOVE_POINTS
+    )
+    event_ok = bool(active_event or volatility_only or to_bool((data or {}).get("event_mode", "false")))
+    if volatility_only and not active_event:
+        event_reasons = list(event_reasons or []) + [
+            f"Shock apertura {session}: move {round(session_move,2)} pt in {minutes_into} min"
+        ]
+
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    m1_dir = str(m1.get("direction") or "").upper()
+    m1_score = int(m1.get("score", 0))
+    # m1_timing_context ritorna confirmed solo dopo Thesis stabile 2/2.
+    thesis_ok = bool(m1_dir == preferred and (m1.get("confirmed") or m1.get("watch")))
+    m1_ok = bool(
+        m1.get("confirmed")
+        and m1_dir == preferred
+        and m1_score >= EVENT_SHOCK_MIN_M1_SCORE
+        and (m1.get("bos") or m1.get("strong_candle"))
+    )
+    not_late = bool(overshoot <= EVENT_SHOCK_MAX_OVERSHOOT_POINTS)
+    move_ok = bool(session_move >= EVENT_SHOCK_MIN_SESSION_MOVE_POINTS)
+
+    out.update({
+        "direction": preferred,
+        "reference_label": ref.get("label"),
+        "reference_level": round(reference_level, 3),
+        "reference_high": round(to_float(ref.get("high"), 0), 3),
+        "reference_low": round(to_float(ref.get("low"), 0), 3),
+        "reference_range": round(to_float(ref.get("range"), 0), 3),
+        "break_buffer": round(buffer, 3),
+        "break_points": round(max(0.0, break_points), 3),
+        "overshoot_points": round(overshoot, 3),
+        "session_move": round(session_move, 3),
+        "minutes_into_session": minutes_into,
+        "event_active": event_ok,
+        "auto_event_active": active_event,
+        "volatility_only": volatility_only,
+        "event_reasons": list(event_reasons or []),
+        "m1_score": m1_score,
+        "m1_ok": m1_ok,
+        "thesis_ok": thesis_ok,
+        "broke_reference": broke,
+        "move_ok": move_ok,
+        "not_late": not_late,
+    })
+
+    # WATCH = shock vero + break vero + Thesis orientata, ma manca M1 finale.
+    out["watch"] = bool(event_ok and broke and move_ok and not_late and thesis_ok and not m1_ok)
+    out["eligible"] = bool(event_ok and broke and move_ok and not_late and m1_ok)
+
+    if not event_ok:
+        out["reason"] = "nessun evento/shock attivo"
+    elif not move_ok:
+        out["reason"] = f"move sessione {round(session_move,2)} < {EVENT_SHOCK_MIN_SESSION_MOVE_POINTS:g} pt"
+    elif not broke:
+        out["reason"] = f"reference {ref.get('label')} non rotta con buffer {round(buffer,2)}"
+    elif not not_late:
+        out["reason"] = f"movimento gia' troppo esteso: {round(overshoot,2)} > {EVENT_SHOCK_MAX_OVERSHOOT_POINTS:g} pt oltre reference"
+    elif not m1_ok:
+        out["reason"] = f"serve M1 {preferred} >= {EVENT_SHOCK_MIN_M1_SCORE} con BOS/candela forte"
+    else:
+        out["reason"] = f"EVENT SHOCK {preferred} confermato"
+    return out
+
+
+def _event_shock_watch_message(ctx):
+    direction = str(ctx.get("direction") or "WAIT").upper()
+    return f"""🚨 EVENT SHOCK {direction} — PREPARO ENTRY, NON ANCORA OPERAZIONE
+
+{ctx.get('session')} | Prezzo {ctx.get('price')}
+Reference {ctx.get('reference_label')}: {ctx.get('reference_level')}
+Rottura oltre reference: {ctx.get('break_points')} pt
+Move sessione: {ctx.get('session_move')} pt
+M1 {direction}: score {ctx.get('m1_score')} — manca conferma finale >= {EVENT_SHOCK_MIN_M1_SCORE}
+
+Evento/shock riconosciuto: SI
+Il Director NON insegue oltre {EVENT_SHOCK_MAX_OVERSHOOT_POINTS:g} pt dalla reference.
+Aspetto il trigger finale; se arriva apro e poi gestisco LIVE in stile Max."""
+
+
+def _create_event_shock_campaign(symbol, session, ctx, m1):
+    direction = str(ctx.get("direction") or "").upper()
+    entry = round(to_float(ctx.get("price"), 0), 3)
+    sl_dist = EVENT_SHOCK_SL_POINTS
+    if direction == "BUY":
+        sl = round(entry - sl_dist, 3)
+        tp1 = round(entry + FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry + FORECAST_CAMPAIGN_TP2_POINTS, 3)
+    else:
+        sl = round(entry + sl_dist, 3)
+        tp1 = round(entry - FORECAST_CAMPAIGN_TP1_POINTS, 3)
+        tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
+
+    key = _event_shock_key(session, direction)
+    tid = str(int(now_ts() * 1000))
+    c = {
+        "id": tid,
+        "campaign_key": key,
+        "event_shock_key": key,
+        "event_shock": True,
+        "event_shock_confirmed_by_forecast": False,
+        "day_key": _thesis_day_key(),
+        "symbol": symbol,
+        "session": session,
+        "direction": direction,
+        "entry": entry,
+        "sl": sl,
+        "runner_sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "best_price": entry,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "status": "OPEN",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "forecast_revision": -1,
+        "forecast_bias": "EVENT_SHOCK",
+        "forecast_strength": None,
+        "m1_score": int(m1.get("score", 0)),
+        "pre_revision": False,
+        "pre_revision_confirmed": False,
+        "event_reference_label": ctx.get("reference_label"),
+        "event_reference_level": ctx.get("reference_level"),
+        "event_break_points": ctx.get("break_points"),
+        "event_overshoot_points": ctx.get("overshoot_points"),
+        "event_session_move": ctx.get("session_move"),
+        "event_reasons": list(ctx.get("event_reasons") or []),
+        "legs": [
+            {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
+            {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
+            {"name": "C", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "RUNNER", "status": "OPEN"},
+        ],
+    }
+    _forecast_campaigns(symbol).append(c)
+    save_runtime_state(force=True)
+    _queue_forecast_campaign_mt4(c)
+    return c
+
+
+def process_event_shock_campaign(data, thesis_ctx=None, m1_ctx=None):
+    result = {"triggered": False, "trade_id": None, "reason": "", "watch": False, "context": {}}
+    if not EVENT_SHOCK_DIRECTOR_ENABLED:
+        result["reason"] = "disabled"
+        return result
+
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session = str((thesis or {}).get("session") or "").upper()
+    m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
+    ctx = _event_shock_context(data, thesis_ctx=thesis, m1_ctx=m1)
+    result["context"] = ctx
+    result["reason"] = ctx.get("reason")
+
+    if session not in EVENT_SHOCK_SESSIONS:
+        return result
+
+    # Qualsiasi campagna Forecast/Pre/Event gia' attiva ha precedenza: niente layering.
+    active = _live_director_active_campaigns(symbol)
+    if active:
+        result["reason"] = "campagna gia' attiva"
+        return result
+
+    direction = str(ctx.get("direction") or "").upper()
+    key = _event_shock_key(session, direction) if direction in ["BUY", "SELL"] else None
+    used = _event_shock_existing_rows(symbol, key) if key else []
+    if len(used) >= EVENT_SHOCK_MAX_PER_SESSION_SIDE:
+        result["reason"] = f"EVENT SHOCK {direction} gia' usato {len(used)}/{EVENT_SHOCK_MAX_PER_SESSION_SIDE}"
+        return result
+    if used:
+        last = used[-1]
+        last_ts = to_float(last.get("closed"), to_float(last.get("created"), 0))
+        if last_ts and now_ts() - last_ts < EVENT_SHOCK_REARM_COOLDOWN_SECONDS:
+            result["reason"] = "EVENT SHOCK re-arm in cooldown"
+            return result
+
+    if ctx.get("watch"):
+        result["watch"] = True
+        state = get_session_thesis_state(symbol)
+        mem = state.setdefault("event_shock_watch", {})
+        signature = f"{_thesis_day_key()}|{session}|{direction}|{ctx.get('reference_label')}"
+        if mem.get("signature") != signature or now_ts() - to_float(mem.get("ts"), 0) >= EVENT_SHOCK_WATCH_COOLDOWN_SECONDS:
+            mem["signature"] = signature
+            mem["ts"] = now_ts()
+            if EVENT_SHOCK_ALERT_ENABLED:
+                send_telegram(_event_shock_watch_message(ctx))
+            save_runtime_state(force=False)
+        return result
+
+    if not ctx.get("eligible"):
+        return result
+
+    c = _create_event_shock_campaign(symbol, session, ctx, m1)
+    result.update({
+        "triggered": True,
+        "trade_id": c.get("id"),
+        "reason": f"EVENT SHOCK {direction}: evento + break {ctx.get('reference_label')} + Thesis/M1",
+    })
+    return result
+
+
+# =========================
+# v47.15 GOLD MASTER LIVE DIRECTOR
+# =========================
+
+def _live_director_active_campaigns(symbol):
+    return [c for c in _forecast_campaigns(symbol) if c.get("status") in ["OPEN", "OPENED", "PENDING"]]
+
+
+def _live_director_forecast_zone(forecast):
+    if not isinstance(forecast, dict):
+        return 0.0, 0.0
+    rev = int(forecast.get("revision_count", 0))
+    if rev > 0:
+        lo = to_float(forecast.get("live_preferred_zone_low"), to_float(forecast.get("preferred_zone_low"), 0))
+        hi = to_float(forecast.get("live_preferred_zone_high"), to_float(forecast.get("preferred_zone_high"), 0))
+    else:
+        lo = to_float(forecast.get("preferred_zone_low"), 0)
+        hi = to_float(forecast.get("preferred_zone_high"), 0)
+    return min(lo, hi), max(lo, hi)
+
+
+def _live_director_entry_quality(forecast, bias, price, session_ctx=None):
+    """Misura se una direzione e' valida ma l'entry sta inseguendo troppo il prezzo."""
+    bias = str(bias or "").upper()
+    price = to_float(price, 0)
+    lo, hi = _live_director_forecast_zone(forecast)
+    ref = _forecast_reference_range(forecast, session_ctx)
+    max_chase = min(LIVE_DIRECTOR_ENTRY_CHASE_MAX, max(LIVE_DIRECTOR_ENTRY_CHASE_MIN, ref * LIVE_DIRECTOR_ENTRY_CHASE_FACTOR))
+    chase = 0.0
+    relation = "IN_ZONE"
+    if lo and hi:
+        if bias == "BUY" and price > hi:
+            chase = price - hi
+            relation = "ABOVE_BUY_ZONE"
+        elif bias == "SELL" and price < lo:
+            chase = lo - price
+            relation = "BELOW_SELL_ZONE"
+        elif price < lo:
+            relation = "BELOW_ZONE"
+        elif price > hi:
+            relation = "ABOVE_ZONE"
+    blocked = bool(LIVE_DIRECTOR_ENTRY_QUALITY_FILTER and chase > max_chase)
+    return {
+        "blocked": blocked,
+        "bias": bias,
+        "price": round(price, 3),
+        "zone_low": round(lo, 3) if lo else None,
+        "zone_high": round(hi, 3) if hi else None,
+        "chase_points": round(chase, 3),
+        "max_chase_points": round(max_chase, 3),
+        "relation": relation,
+    }
+
+
+def _live_director_directional_move(direction, price, entry):
+    return (price - entry) if direction == "BUY" else (entry - price)
+
+
+def _live_director_pips(points):
+    return int(round(max(0.0, to_float(points, 0)) * LIVE_DIRECTOR_PIPS_PER_POINT))
+
+
+def _live_director_tighten_sl_value(campaign, desired, current_price=None):
+    direction = str(campaign.get("direction") or "").upper()
+    current = to_float(campaign.get("runner_sl"), to_float(campaign.get("sl"), 0))
+    desired = to_float(desired, current)
+    px = to_float(current_price, 0)
+    # Never loosen and never put the requested stop beyond the current market price.
+    if direction == "BUY":
+        desired = max(current, desired)
+        if px:
+            desired = min(desired, px - 0.50)
+        return round(max(current, desired), 3)
+    desired = min(current, desired)
+    if px:
+        desired = max(desired, px + 0.50)
+    return round(min(current, desired), 3)
+
+
+def mt4_bridge_queue_modify_forecast_sl(campaign, new_sl, reason="LIVE_DIRECTOR"):
+    if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN or not campaign or not MT4_ALLOW_FORECAST:
+        return None
+    trade_id = str(campaign.get("id") or "")
+    if not trade_id:
+        return None
+    new_sl = round(to_float(new_sl, 0), 5)
+    if not new_sl:
+        return None
+    stamp = int(round(new_sl * 1000))
+    cmd_id = f"MODIFY_SL:FORECAST:{trade_id}:{stamp}"
+    existing = _mt4_find_command(cmd_id)
+    if existing:
+        return existing
+    cmd = {
+        "cmd_id": cmd_id,
+        "type": "MODIFY_SL",
+        "status": "QUEUED",
+        "created": now_ts(),
+        "created_local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": now_ts() + 120,
+        "last_delivered": 0,
+        "deliveries": 0,
+        "acked_at": None,
+        "account": None,
+        "payload": {
+            "trade_id": trade_id,
+            "engine": "FORECAST",
+            "new_sl": new_sl,
+            "reason": str(reason or "LIVE_DIRECTOR"),
+            "source_symbol": str(campaign.get("symbol") or "XAUUSD").upper(),
+        },
+    }
+    MT4_STATE.setdefault("commands", []).append(cmd)
+    save_mt4_bridge_state(force=True)
+    return cmd
+
+
+def _live_director_set_protection(campaign, desired_sl, price, reason):
+    if not campaign or campaign.get("status") not in ["OPEN", "OPENED", "PENDING"]:
+        return False, None
+    direction = str(campaign.get("direction") or "").upper()
+    current = to_float(campaign.get("runner_sl"), to_float(campaign.get("sl"), 0))
+    new_sl = _live_director_tighten_sl_value(campaign, desired_sl, current_price=price)
+    improved = (direction == "BUY" and new_sl > current + 0.05) or (direction == "SELL" and new_sl < current - 0.05)
+    if not improved:
+        return False, current
+    campaign["runner_sl"] = new_sl
+    campaign["director_last_sl"] = new_sl
+    campaign["director_last_sl_reason"] = reason
+    campaign["director_last_sl_at"] = now_ts()
+    try:
+        mt4_bridge_queue_modify_forecast_sl(campaign, new_sl, reason=reason)
+    except Exception as e:
+        print(f"[v47.15] Director MT4 SL modify queue error: {type(e).__name__}: {e}", flush=True)
+    save_runtime_state(force=True)
+    return True, new_sl
+
+
+def _live_director_entry_message(campaign):
+    direction = str(campaign.get("direction") or "").upper()
+    pre = bool(campaign.get("pre_revision"))
+    event_shock = bool(campaign.get("event_shock"))
+    mode = "EVENT SHOCK" if event_shock else ("PRE-REVISION" if pre else "FORECAST")
+    if event_shock:
+        forecast_line = (
+            f"Evento: SHOCK CONFERMATO | Reference {campaign.get('event_reference_label')} "
+            f"{campaign.get('event_reference_level')} | break {campaign.get('event_break_points')} pt\n"
+            f"Move sessione: {campaign.get('event_session_move')} pt | M1: {direction} score {campaign.get('m1_score')}"
+        )
+        headline = f"🚨🚀 GOLD MASTER LIVE — EVENT SHOCK {direction} ATTIVO"
+    else:
+        forecast_line = (
+            f"Forecast LIVE: {campaign.get('forecast_bias')} | forza {campaign.get('forecast_strength')}\n"
+            f"M1: {direction} score {campaign.get('m1_score')}"
+        )
+        headline = f"🚀 GOLD MASTER LIVE — {direction} ATTIVO"
+    return f"""{headline}
+
+{campaign.get('symbol')} | {campaign.get('session')} | Modalita': {mode}
+Entry: {campaign.get('entry')}
+SL: {campaign.get('sl')}
+TP1: {campaign.get('tp1')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} pips formato Max)
+TP2: {campaign.get('tp2')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} pips formato Max)
+Runner: APERTO
+
+{forecast_line}
+
+🧭 DA ORA TI SEGUO IO:
+- ti avviso sui progressi +20 / +50 / +80 / +100 pips
+- TP1 -> porto la protezione a BE
+- TP2 -> proteggo il runner in profitto
+- se M1/Thesis girano contro, stringo la protezione
+- se il quadro si deteriora davvero, chiudo e ti dico ASPETTIAMO
+
+⚠️ Gestione pensata per demo/validazione: nessuna garanzia di risultato."""
+
+
+def _live_director_close_message(c):
+    direction = str(c.get("direction") or "").upper()
+    result = to_float(c.get("result_points_total"), 0)
+    mfe = to_float(c.get("director_mfe"), 0)
+    reason = str(c.get("close_reason") or "CHIUSURA")
+    emoji = "✅" if result > 0 else ("❌" if result < 0 else "➖")
+    return f"""{emoji} GOLD MASTER LIVE — TRADE {direction} CHIUSO
+
+Motivo: {reason}
+Risultato simulatore 3 gambe: {result:+.2f} pt
+Massima escursione favorevole: +{mfe:.2f} pt / +{_live_director_pips(mfe)} pips formato Max
+
+⏸ ADESSO ASPETTIAMO.
+Nessuna nuova entrata finche' Forecast + Thesis + M1 non costruiscono un nuovo setup valido."""
+
+
+def _live_director_forecast_pressure(forecast, opposite_direction):
+    if not isinstance(forecast, dict):
+        return False
+    status = str(forecast.get("live_status") or "VALID").upper()
+    op_bias = str(forecast.get("operational_live_bias") or _forecast_live_bias(forecast)).upper()
+    live_bias = _forecast_live_bias(forecast)
+    return bool(status in ["WEAKENING", "REASSESSING", "INVALIDATED"] or op_bias == opposite_direction or live_bias == opposite_direction)
+
+
+def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=None):
+    result = {"messages": [], "active_trade_id": None, "action": "WAIT"}
+    if not LIVE_DIRECTOR_ENABLED:
+        return result
+    symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
+    price = get_price_from_data(data)
+    high = to_float((data or {}).get("high"), price)
+    low = to_float((data or {}).get("low"), price)
+    thesis = thesis_ctx or update_session_intelligence(data)
+    session = str((thesis or {}).get("session") or "").upper()
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    m1 = m1_ctx or {}
+    now = now_ts()
+    messages = []
+
+    campaigns = _forecast_campaigns(symbol)
+    active = [c for c in campaigns if c.get("status") in ["OPEN", "OPENED", "PENDING"]]
+    active.sort(key=lambda x: to_float(x.get("created"), 0), reverse=True)
+    c = active[0] if active else None
+
+    # First report newly closed campaigns, exactly once.
+    closed_candidates = [
+        x for x in campaigns
+        if x.get("status") == "CLOSED"
+        and not x.get("director_close_notified")
+        and (x.get("director_entry_notified") or to_float(x.get("created"), 0) >= LIVE_DIRECTOR_BOOT_TS - 10)
+    ]
+    for closed in sorted(closed_candidates, key=lambda x: to_float(x.get("closed"), 0)):
+        closed["director_close_notified"] = True
+        messages.append(_live_director_close_message(closed))
+
+    if c:
+        result["active_trade_id"] = c.get("id")
+        result["action"] = "MANAGE"
+        direction = str(c.get("direction") or "").upper()
+        opposite = "SELL" if direction == "BUY" else "BUY"
+        entry = to_float(c.get("entry"), price)
+        current_move = _live_director_directional_move(direction, price, entry)
+        favorable_now = (high - entry) if direction == "BUY" else (entry - low)
+        old_mfe = to_float(c.get("director_mfe"), 0)
+        mfe = max(old_mfe, favorable_now)
+        c["director_mfe"] = round(mfe, 3)
+        c["director_current_move"] = round(current_move, 3)
+        c["director_last_price"] = round(price, 3)
+
+        if not c.get("director_entry_notified"):
+            c["director_entry_notified"] = True
+            c["director_started_at"] = now
+            messages.append(_live_director_entry_message(c))
+
+        if c.get("pre_revision_confirmed") and not c.get("director_promotion_notified"):
+            c["director_promotion_notified"] = True
+            messages.append(f"✅ PRE-REVISION {direction} CONFERMATA — la vera Forecast Revision ora e' {direction}. Mantengo la stessa posizione, nessun doppio ingresso.")
+        if c.get("event_shock_confirmed_by_forecast") and not c.get("director_event_forecast_confirm_notified"):
+            c["director_event_forecast_confirm_notified"] = True
+            messages.append(f"✅ EVENT SHOCK {direction} CONFERMATO ANCHE DAL FORECAST — mantengo la posizione, nessun nuovo ingresso.")
+
+        # Max-style progress milestones: emit only the highest new threshold crossed in this update.
+        done = set(float(x) for x in (c.get("director_milestones_done") or []))
+        crossed = [x for x in LIVE_DIRECTOR_MILESTONES if mfe >= x and x not in done]
+        if crossed:
+            for x in crossed:
+                done.add(float(x))
+            c["director_milestones_done"] = sorted(done)
+            x = max(crossed)
+            protection = to_float(c.get("runner_sl"), to_float(c.get("sl"), 0))
+            state = "mantengo"
+            if c.get("tp2_hit"):
+                state = f"runner protetto | SL {round(protection,3)}"
+            elif c.get("tp1_hit"):
+                state = f"B+C protette | SL {round(protection,3)}"
+            messages.append(f"📈 {direction} +{_live_director_pips(x)} PIPS | max +{x:g} pt dal trade | {state.upper()}")
+
+        if c.get("tp1_hit") and not c.get("director_tp1_notified"):
+            c["director_tp1_notified"] = True
+            messages.append(f"✅ TP1 {direction} — +{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} PIPS | A chiusa | B+C -> BREAK EVEN {round(entry,3)} | mantengo")
+        if c.get("tp2_hit") and not c.get("director_tp2_notified"):
+            c["director_tp2_notified"] = True
+            messages.append(f"✅ TP2 {direction} — +{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} PIPS | B chiusa | RUNNER C protetto a {round(to_float(c.get('runner_sl'), entry),3)}")
+
+        fast_state = _thesis_fast_state(symbol)
+        stable_pref = str(fast_state.get("stable_preferred") or "").upper()
+        stable_session = str(fast_state.get("stable_session") or "").upper()
+        stable_count = int(fast_state.get("candidate_count", 0))
+        opposite_thesis = bool(stable_pref == opposite and stable_session == session and stable_count >= THESIS_FAST_THESIS_CONFIRM_BARS)
+        opposite_m1 = bool(m1.get("confirmed") and str(m1.get("direction") or "").upper() == opposite and int(m1.get("score", 0)) >= LIVE_DIRECTOR_OPPOSITE_M1_WARN_SCORE)
+        opposite_m1_strong = bool(opposite_m1 and int(m1.get("score", 0)) >= LIVE_DIRECTOR_OPPOSITE_M1_STRONG_SCORE)
+        forecast_pressure = _live_director_forecast_pressure(forecast, opposite)
+
+        # Same-side score 8 means acceleration, not a new entry.
+        same_m1_strong = bool(m1.get("confirmed") and str(m1.get("direction") or "").upper() == direction and int(m1.get("score", 0)) >= LIVE_DIRECTOR_OPPOSITE_M1_STRONG_SCORE)
+        if same_m1_strong and now - to_float(c.get("director_last_accel_alert"), 0) >= LIVE_DIRECTOR_M1_MESSAGE_COOLDOWN_SECONDS:
+            c["director_last_accel_alert"] = now
+            messages.append(f"🔥 {direction} ACCELERA — M1 score {int(m1.get('score',0))} allineato. Non apro un altro trade: MANTENGO quello attivo.")
+
+        if opposite_m1 and now - to_float(c.get("director_last_opposite_alert"), 0) >= LIVE_DIRECTOR_M1_MESSAGE_COOLDOWN_SECONDS:
+            c["director_last_opposite_alert"] = now
+            action_txt = "osservo"
+            if opposite_m1_strong and (opposite_thesis or forecast_pressure):
+                action_txt = "pressione contraria seria: proteggo il profitto"
+            messages.append(
+                f"⚠️ OCCHIO M1 {opposite} — score {int(m1.get('score',0))} contro il nostro {direction}. "
+                f"Thesis opposta: {'SI' if opposite_thesis else 'NO'} | Forecast in rischio: {'SI' if forecast_pressure else 'NO'} | {action_txt.upper()}"
+            )
+
+        # Dynamic protection: only tighten, never loosen.
+        if LIVE_DIRECTOR_PROTECT_ENABLED and opposite_m1_strong and (opposite_thesis or forecast_pressure):
+            desired = None
+            reason = None
+            if mfe >= LIVE_DIRECTOR_TIGHTEN_MIN_MFE:
+                best = entry + mfe if direction == "BUY" else entry - mfe
+                desired = (best - LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS) if direction == "BUY" else (best + LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS)
+                # At least lock a little profit.
+                floor = entry + LIVE_DIRECTOR_PROFIT_LOCK_POINTS if direction == "BUY" else entry - LIVE_DIRECTOR_PROFIT_LOCK_POINTS
+                desired = max(desired, floor) if direction == "BUY" else min(desired, floor)
+                reason = "DIRECTOR_STRONG_OPPOSITE_M1_TIGHTEN"
+            elif mfe >= LIVE_DIRECTOR_PROFIT_LOCK_MIN_MFE:
+                desired = entry + LIVE_DIRECTOR_PROFIT_LOCK_POINTS if direction == "BUY" else entry - LIVE_DIRECTOR_PROFIT_LOCK_POINTS
+                reason = "DIRECTOR_PROFIT_LOCK"
+            if desired is not None:
+                changed, new_sl = _live_director_set_protection(c, desired, price, reason)
+                if changed:
+                    messages.append(f"🛡 PROTEZIONE {direction}: SL -> {new_sl} | profitto protetto per pressione {opposite} M1/Thesis")
+
+        # Early intelligent exit only to protect an already-positive trade; no automatic instant reversal.
+        severe_reversal = bool(opposite_m1_strong and opposite_thesis and forecast_pressure)
+        if (LIVE_DIRECTOR_EARLY_EXIT_ENABLED and severe_reversal and current_move >= LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT
+                and c.get("status") in ["OPEN", "OPENED", "PENDING"]):
+            _forecast_campaign_request_mt4_close(c, reason="LIVE_DIRECTOR_REVERSAL_PROFIT_PROTECT")
+            msg = _close_forecast_campaign_sim(c, price, "LIVE_DIRECTOR_REVERSAL_PROFIT_PROTECT")
+            if msg:
+                c["director_close_notified"] = True
+                messages.append(
+                    f"🛑 CHIUDO IL RESTO {direction} A {round(price,3)} — profitto protetto. "
+                    f"Motivo: M1 {opposite} {int(m1.get('score',0))} + Thesis {opposite} stabile + Forecast in deterioramento.\n\n⏸ ASPETTIAMO nuova struttura."
+                )
+            result["action"] = "CLOSE_AND_WAIT"
+
+        save_runtime_state(force=False)
+    else:
+        # No trade open: convert strong raw M1 into one concise action line.
+        m1_dir = str(m1.get("direction") or "").upper()
+        m1_score = int(m1.get("score", 0))
+        if m1.get("confirmed") and m1_score >= FORECAST_CAMPAIGN_MIN_M1_SCORE:
+            op_desc = str((forecast or {}).get("operational_live_status") or "FORECAST").upper()
+            map_bias = _forecast_live_bias(forecast) if forecast else "RANGE"
+            if campaign_result and campaign_result.get("entry_quality_blocked"):
+                q = campaign_result.get("entry_quality") or {}
+                messages.append(
+                    f"⏳ {m1_dir} CONFERMATO MA NON INSEGUO — prezzo troppo esteso dalla zona {m1_dir}. "
+                    f"Distanza {q.get('chase_points')} pt > limite {q.get('max_chase_points')} pt. ASPETTO RETEST."
+                )
+                result["action"] = "WAIT_RETEST"
+            elif op_desc.startswith("PRE_REVISION"):
+                messages.append(f"🟠 {m1_dir} IN PRE-REVISION — M1 score {m1_score}. Sto aspettando tutte le conferme prima dell'entry ufficiale.")
+                result["action"] = "WAIT_PRE_REVISION"
+            elif map_bias == m1_dir:
+                # If process_forecast_campaign did not trigger, one of the remaining filters is not ready.
+                messages.append(f"🔥 M1 {m1_dir} score {m1_score} ALLINEATO — direzione buona, ma NON c'e' ancora una nuova operazione ufficiale. ASPETTO entry valida senza inseguire.")
+                result["action"] = "WAIT_ENTRY"
+            else:
+                messages.append(f"⚠️ M1 {m1_dir} score {m1_score} CONTRO Forecast {map_bias} — possibile cambio, ma NON entro finche' il Director non conferma PRE-REVISION/REVISION.")
+                result["action"] = "WAIT_CONFLICT"
+
+    if LIVE_DIRECTOR_ALERT_ENABLED:
+        for msg in messages:
+            send_telegram(msg)
+    result["messages"] = messages
+    return result
+
+
+@app.route("/live_director", methods=["GET"])
+def live_director_status():
+    symbol = str(request.args.get("symbol", "XAUUSD")).upper()
+    campaigns = _forecast_campaigns(symbol)
+    active = [c for c in campaigns if c.get("status") in ["OPEN", "OPENED", "PENDING"]]
+    return jsonify({
+        "version": VERSION,
+        "enabled": LIVE_DIRECTOR_ENABLED,
+        "clean_telegram": LIVE_DIRECTOR_CLEAN_TELEGRAM,
+        "hide_raw_m1": LIVE_DIRECTOR_HIDE_RAW_M1,
+        "hide_raw_thesis": LIVE_DIRECTOR_HIDE_RAW_THESIS,
+        "entry_quality_filter": LIVE_DIRECTOR_ENTRY_QUALITY_FILTER,
+        "event_shock_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
+        "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
+        "event_shock_min_m1_score": EVENT_SHOCK_MIN_M1_SCORE,
+        "event_shock_max_overshoot_points": EVENT_SHOCK_MAX_OVERSHOOT_POINTS,
+        "milestones_points": LIVE_DIRECTOR_MILESTONES,
+        "pips_per_point_display": LIVE_DIRECTOR_PIPS_PER_POINT,
+        "active_campaigns": active[-5:],
+        "recent_campaigns": campaigns[-10:],
+    })
+
+
 def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
     result = {"triggered": False, "trade_id": None, "reason": "", "messages": []}
@@ -12720,7 +13533,7 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     )
     result["messages"] = messages
     for msg in messages:
-        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+        if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
             send_telegram(msg)
 
     if session not in FORECAST_CAMPAIGN_SESSIONS:
@@ -12763,7 +13576,7 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     watch_msg = _maybe_forecast_pre_revision_watch(symbol, session, forecast, pre)
     if watch_msg:
         result["messages"].append(watch_msg)
-        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+        if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
             send_telegram(watch_msg)
 
     if pre.get("qualifies"):
@@ -12781,7 +13594,7 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
                 msg = _close_forecast_campaign_sim(opposite, price, "PRE_REVISION_OPPOSITE_CONFIRMED")
                 if msg:
                     result["messages"].append(msg)
-                    if FORECAST_CAMPAIGN_ALERT_ENABLED:
+                    if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
                         send_telegram(msg)
                 result["reason"] = "campagna opposta chiusa; attendo prossimo update prima della PRE-REVISION"
                 return result
@@ -12819,7 +13632,7 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
             "reason": f"PRE-REVISION {counter}: bordo+Thesis+M1+live-score",
             "pre_revision": True,
         })
-        if FORECAST_CAMPAIGN_ALERT_ENABLED:
+        if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
             send_telegram(forecast_campaign_message(c))
         return result
 
@@ -12842,6 +13655,16 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         result["reason"] = f"serve M1 trigger {bias} score >= {FORECAST_CAMPAIGN_MIN_M1_SCORE}"
         return result
 
+    # v47.15 Entry Quality: una direzione puo' essere corretta ma l'entry troppo estesa.
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    entry_quality = _live_director_entry_quality(forecast, bias, price, sessions.get(session))
+    result["entry_quality"] = entry_quality
+    if entry_quality.get("blocked"):
+        result["entry_quality_blocked"] = True
+        result["reason"] = (f"direzione {bias} valida ma prezzo troppo esteso dalla zona preferita: "
+                            f"{entry_quality.get('chase_points')} pt > {entry_quality.get('max_chase_points')} pt; aspetto retest")
+        return result
+
     if _forecast_campaign_map_exhausted(forecast, bias, price):
         result["reason"] = "mappa gia' arrivata oltre estensione: non inseguo"
         return result
@@ -12857,7 +13680,7 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
 
     c = _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None)
     result.update({"triggered": True, "trade_id": c.get("id"), "reason": "Forecast+Thesis+M1 ufficiali"})
-    if FORECAST_CAMPAIGN_ALERT_ENABLED:
+    if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
         send_telegram(forecast_campaign_message(c))
     return result
 
@@ -12867,6 +13690,14 @@ def forecast_campaign_status():
     symbol = str(request.args.get("symbol", "XAUUSD")).upper()
     return jsonify({
         "version": VERSION,
+        "live_director_enabled": LIVE_DIRECTOR_ENABLED,
+        "live_director_clean_telegram": LIVE_DIRECTOR_CLEAN_TELEGRAM,
+        "live_director_entry_quality_filter": LIVE_DIRECTOR_ENTRY_QUALITY_FILTER,
+        "event_shock_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
+        "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
+        "event_shock_min_m1_score": EVENT_SHOCK_MIN_M1_SCORE,
+        "event_shock_min_session_move_points": EVENT_SHOCK_MIN_SESSION_MOVE_POINTS,
+        "event_shock_max_overshoot_points": EVENT_SHOCK_MAX_OVERSHOOT_POINTS,
         "enabled": FORECAST_CAMPAIGN_ENABLED,
         "sessions": sorted(FORECAST_CAMPAIGN_SESSIONS),
         "min_m1_score": FORECAST_CAMPAIGN_MIN_M1_SCORE,
@@ -13704,6 +14535,8 @@ def daily_thesis_block_context(signal, symbol, setup_type, score, data, is_fast=
 
 
 def maybe_system_heartbeat(symbol, data=None):
+    if LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM and LIVE_DIRECTOR_HIDE_HEARTBEAT:
+        return False
     global LAST_HEARTBEAT_TS
     if not TELEGRAM_HEARTBEAT_ENABLED:
         return False
@@ -19683,6 +20516,11 @@ def _mt4_next_command(account):
         c["last_delivered"] = now
         c["deliveries"] = int(c.get("deliveries", 0)) + 1
         c["account"] = account
+        # MODIFY_SL is idempotent and sent synchronously in the poll response: mark as ACKED
+        # after first delivery so it cannot block later CLOSE/OPEN commands.
+        if str(c.get("type") or "").upper() == "MODIFY_SL":
+            c["status"] = "ACKED"
+            c["acked_at"] = now
         save_mt4_bridge_state(force=True)
         return c
     return None
@@ -19692,12 +20530,23 @@ def _mt4_wire_command(c):
     if not c:
         return "NONE"
     p = c.get("payload") or {}
-    if str(c.get("type") or "OPEN").upper() == "CLOSE":
+    ctype = str(c.get("type") or "OPEN").upper()
+    if ctype == "CLOSE":
         return ";".join([
             "CLOSE",
             f"cmd_id={_mt4_clean(c.get('cmd_id'))}",
             f"trade_id={_mt4_clean(p.get('trade_id'))}",
             f"engine={_mt4_clean(p.get('engine'))}",
+            f"reason={_mt4_clean(p.get('reason'))}",
+            f"expires_at={int(to_float(c.get('expires_at')))}",
+        ])
+    if ctype == "MODIFY_SL":
+        return ";".join([
+            "MODIFY_SL",
+            f"cmd_id={_mt4_clean(c.get('cmd_id'))}",
+            f"trade_id={_mt4_clean(p.get('trade_id'))}",
+            f"engine={_mt4_clean(p.get('engine'))}",
+            f"new_sl={to_float(p.get('new_sl')):.5f}",
             f"reason={_mt4_clean(p.get('reason'))}",
             f"expires_at={int(to_float(c.get('expires_at')))}",
         ])
@@ -20607,7 +21456,7 @@ def webhook():
             if asia_memory_alert:
                 send_telegram(asia_memory_alert)
             daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
-            if daily_thesis_alert:
+            if daily_thesis_alert and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM and LIVE_DIRECTOR_HIDE_RAW_THESIS):
                 send_telegram(daily_thesis_alert)
             forecast_alert = maybe_morning_session_forecast_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
             if forecast_alert:
@@ -20652,7 +21501,7 @@ def webhook():
         if asia_memory_alert:
             send_telegram(asia_memory_alert)
         daily_thesis_alert = maybe_daily_thesis_alert(data.get("symbol", "XAUUSD"), data)
-        if daily_thesis_alert:
+        if daily_thesis_alert and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM and LIVE_DIRECTOR_HIDE_RAW_THESIS):
             send_telegram(daily_thesis_alert)
 
         # v47.13: Forecast EUROPE + Forecast NEW YORK, ora anche LIVE/DINAMICI.
@@ -20668,19 +21517,36 @@ def webhook():
         # v47.13: M1 timing. Thesis decide la direzione, M1 osserva l'accelerazione.
         try:
             m1_alert, m1_ctx = maybe_m1_timing_alert(data.get("symbol", "XAUUSD"), data, thesis_ctx=daily_thesis_ctx)
-            if m1_alert:
+            if m1_alert and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM and LIVE_DIRECTOR_HIDE_RAW_M1):
                 send_telegram(m1_alert)
         except Exception as e:
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
+
+        # v47.15.1: EVENT SHOCK puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
+        # Richiede break strutturale reale + Thesis/M1 + no-chase; non bypassa la gestione LIVE.
+        try:
+            event_shock_result = process_event_shock_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
+        except Exception as e:
+            print(f"[v47.15.1] EVENT SHOCK error: {type(e).__name__}: {e}", flush=True)
+            event_shock_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
         # v47.14.2: FORECAST CAMPAIGN + PRE-REVISION bidirezionale (3 x 0.01).
         # Forecast v47.13 resta la mappa; PRE-REVISION anticipa solo se bordo+Thesis+M1+live-score concordano.
         try:
             forecast_campaign_result = process_forecast_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.14.2] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.1] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
             forecast_campaign_result = {"triggered": False, "trade_id": None, "reason": str(e)}
+
+        # v47.15.1: unico strato Telegram/gestione live sopra Forecast + Thesis + M1 + EVENT SHOCK.
+        try:
+            live_director_result = process_live_director(
+                data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx, campaign_result=forecast_campaign_result
+            )
+        except Exception as e:
+            print(f"[v47.15.1] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
+            live_director_result = {"messages": [], "active_trade_id": None, "action": "ERROR", "reason": str(e)}
 
         # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
         try:
@@ -20769,9 +21635,15 @@ def webhook():
             "thesis_fast_triggered": thesis_fast_result.get("triggered"),
             "thesis_fast_trade_id": thesis_fast_result.get("trade_id"),
             "thesis_fast_reason": thesis_fast_result.get("reason"),
+            "event_shock_triggered": event_shock_result.get("triggered"),
+            "event_shock_trade_id": event_shock_result.get("trade_id"),
+            "event_shock_reason": event_shock_result.get("reason"),
             "forecast_campaign_triggered": forecast_campaign_result.get("triggered"),
             "forecast_campaign_trade_id": forecast_campaign_result.get("trade_id"),
             "forecast_campaign_reason": forecast_campaign_result.get("reason"),
+            "live_director_action": live_director_result.get("action"),
+            "live_director_active_trade_id": live_director_result.get("active_trade_id"),
+            "live_director_messages": len(live_director_result.get("messages") or []),
             "m1_timing_confirmed": m1_ctx.get("confirmed"),
             "m1_timing_direction": m1_ctx.get("direction"),
             "m1_timing_score": m1_ctx.get("score"),
