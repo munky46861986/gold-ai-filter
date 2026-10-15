@@ -4,7 +4,7 @@ import json
 import math
 import html
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
 
@@ -14,7 +14,9 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.15.1 Forecast First + LIVE DIRECTOR + EVENT SHOCK"
+VERSION = "v47.15.2 Forecast First + LIVE DIRECTOR + CONTROLLED REENTRY + PRE-EVENT"
+# v47.15.2: aggiunge CONTROLLED RE-ENTRY, LIVE RETEST ZONE, PRE-EVENT AWARENESS e GHOST TRADE FIX.
+# La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
 # GOLD MASTER LIVE DIRECTOR: entry quality, gestione LIVE stile Max, milestone,
 # protezione dinamica, chiusura intelligente e Telegram operativo pulito.
@@ -375,7 +377,38 @@ LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS = max(1.0, float(os.getenv("LIVE_DIRECTOR_TIG
 LIVE_DIRECTOR_EARLY_EXIT_ENABLED = os.getenv("LIVE_DIRECTOR_EARLY_EXIT_ENABLED", "TRUE").upper() == "TRUE"
 LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT = max(0.0, float(os.getenv("LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT", "0.50")))
 LIVE_DIRECTOR_REENTRY_WAIT_SECONDS = max(60, int(os.getenv("LIVE_DIRECTOR_REENTRY_WAIT_SECONDS", "180")))
+# v47.15.2: re-entry controllato sulla stessa mappa/revisione. Il primo trade resta quello standard;
+# dopo la chiusura sono ammessi al massimo 2 nuovi tentativi, solo su nuovo pullback + nuovo micro-BOS.
+LIVE_DIRECTOR_REENTRY_ENABLED = os.getenv("LIVE_DIRECTOR_REENTRY_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION = max(1, int(os.getenv("LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION", "3")))
+LIVE_DIRECTOR_REENTRY_REQUIRE_BOS = os.getenv("LIVE_DIRECTOR_REENTRY_REQUIRE_BOS", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_REENTRY_MIN_M1_SCORE = max(FORECAST_CAMPAIGN_MIN_M1_SCORE, int(os.getenv("LIVE_DIRECTOR_REENTRY_MIN_M1_SCORE", "6")))
+LIVE_DIRECTOR_REENTRY_AFTER_LOSS_MIN_M1_SCORE = max(LIVE_DIRECTOR_REENTRY_MIN_M1_SCORE, int(os.getenv("LIVE_DIRECTOR_REENTRY_AFTER_LOSS_MIN_M1_SCORE", "7")))
+LIVE_DIRECTOR_REENTRY_AFTER_LOSS_WAIT_SECONDS = max(LIVE_DIRECTOR_REENTRY_WAIT_SECONDS, int(os.getenv("LIVE_DIRECTOR_REENTRY_AFTER_LOSS_WAIT_SECONDS", "300")))
+LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS = max(0.5, float(os.getenv("LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS", "1.50")))
+LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT = max(0.5, float(os.getenv("LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT", "3.00")))
+LIVE_DIRECTOR_REENTRY_LOOKBACK_SECONDS = max(180, int(os.getenv("LIVE_DIRECTOR_REENTRY_LOOKBACK_SECONDS", "1800")))
 LIVE_DIRECTOR_BOOT_TS = time.time()
+
+# v47.15.2 PRE-EVENT AWARENESS.
+# Se NewsAPI o il webhook indicano PPI/CPI/NFP/FOMC ecc., il Director arma la finestra evento prima del dato.
+# Per gli eventi USA con orario standard usa America/New_York e converte automaticamente in USER_TIMEZONE.
+PRE_EVENT_AWARENESS_ENABLED = os.getenv("PRE_EVENT_AWARENESS_ENABLED", "TRUE").upper() == "TRUE"
+PRE_EVENT_ALERT_ENABLED = os.getenv("PRE_EVENT_ALERT_ENABLED", "TRUE").upper() == "TRUE"
+PRE_EVENT_LOOKAHEAD_MINUTES = max(15, int(os.getenv("PRE_EVENT_LOOKAHEAD_MINUTES", "120")))
+PRE_EVENT_ARM_MINUTES = max(3, int(os.getenv("PRE_EVENT_ARM_MINUTES", "20")))
+PRE_EVENT_POST_RELEASE_MINUTES = max(5, int(os.getenv("PRE_EVENT_POST_RELEASE_MINUTES", "20")))
+PRE_EVENT_NEWS_MAX_AGE_HOURS = max(1, int(os.getenv("PRE_EVENT_NEWS_MAX_AGE_HOURS", "18")))
+PRE_EVENT_RELEASE_MIN_IMPULSE_POINTS = max(1.0, float(os.getenv("PRE_EVENT_RELEASE_MIN_IMPULSE_POINTS", "3.50")))
+PRE_EVENT_RELEASE_MAX_ENTRY_IMPULSE_POINTS = max(PRE_EVENT_RELEASE_MIN_IMPULSE_POINTS + 1.0, float(os.getenv("PRE_EVENT_RELEASE_MAX_ENTRY_IMPULSE_POINTS", "10.00")))
+PRE_EVENT_RELEASE_MIN_BODY_RATIO = min(0.95, max(0.40, float(os.getenv("PRE_EVENT_RELEASE_MIN_BODY_RATIO", "0.55"))))
+PRE_EVENT_RELEASE_BREAK_BUFFER = max(0.20, float(os.getenv("PRE_EVENT_RELEASE_BREAK_BUFFER", "0.80")))
+PRE_EVENT_US_TZ = os.getenv("PRE_EVENT_US_TZ", "America/New_York")
+ECON_CALENDAR_ENABLED = os.getenv("ECON_CALENDAR_ENABLED", "TRUE").upper() == "TRUE"
+ECON_CALENDAR_URL = os.getenv("ECON_CALENDAR_URL", "https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+ECON_CALENDAR_REFRESH_SECONDS = max(900, int(os.getenv("ECON_CALENDAR_REFRESH_SECONDS", "3600")))
+ECON_CALENDAR_TIMEOUT_SECONDS = max(3, int(os.getenv("ECON_CALENDAR_TIMEOUT_SECONDS", "8")))
+ECON_CALENDAR_US_HIGH_ONLY = os.getenv("ECON_CALENDAR_US_HIGH_ONLY", "TRUE").upper() == "TRUE"
 
 # v47.15.1 EVENT SHOCK MODE
 # Scopo: nelle finestre CPI/NFP/FOMC o in uno shock equivalente non aspetta obbligatoriamente
@@ -685,7 +718,9 @@ AUTO_EVENT_KEYWORDS = [
     "pmi"
 ]
 
-NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": []}
+NEWS_CACHE = {"time": 0, "bias": "NEUTRAL", "reasons": [], "macro_candidates": []}
+PRE_EVENT_STATE = {}
+ECON_CALENDAR_CACHE = {"time": 0, "events": [], "error": ""}
 AUTO_EVENT_CACHE = {
     "until": 0,
     "reasons": [],
@@ -2401,6 +2436,7 @@ def runtime_state_payload():
         "version": VERSION,
         "saved_at": now_ts(),
         "auto_event_cache": AUTO_EVENT_CACHE,
+        "pre_event_state": PRE_EVENT_STATE,
         "event_state_machine": EVENT_STATE_MACHINE,
         "bear_continuation_state": BEAR_CONTINUATION_STATE,
         "price_history": PRICE_HISTORY,
@@ -2491,6 +2527,7 @@ def load_runtime_state():
         saved_auto_event = payload.get("auto_event_cache")
         if isinstance(saved_auto_event, dict):
             AUTO_EVENT_CACHE.update(saved_auto_event)
+        _restore_dict(PRE_EVENT_STATE, payload.get("pre_event_state"))
 
         _restore_dict(
             EVENT_STATE_MACHINE,
@@ -3576,6 +3613,306 @@ def auto_event_status_text(active, reasons):
 
 
 
+
+# =========================
+# v47.15.2 PRE-EVENT AWARENESS
+# =========================
+
+def _pre_event_state(symbol="XAUUSD"):
+    symbol = str(symbol or "XAUUSD").upper()
+    state = PRE_EVENT_STATE.get(symbol)
+    if not isinstance(state, dict):
+        state = {}
+        PRE_EVENT_STATE[symbol] = state
+    return state
+
+
+def _macro_event_type_from_hits(hits):
+    h = " ".join(str(x or "").lower() for x in (hits or []))
+    if any(x in h for x in ["nfp", "nonfarm", "payroll", "jobs report"]): return "NFP"
+    if "cpi" in h: return "CPI"
+    if "ppi" in h: return "PPI"
+    if "jobless" in h: return "JOBLESS"
+    if "unemployment" in h: return "UNEMPLOYMENT"
+    if "gdp" in h: return "GDP"
+    if any(x in h for x in ["fomc", "fed decision", "rate decision", "interest rate"]): return "FOMC"
+    if "ism" in h: return "ISM"
+    if "pmi" in h: return "PMI"
+    return None
+
+
+def _parse_event_datetime_value(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    tz = ZoneInfo(USER_TIMEZONE)
+    try:
+        # ISO 8601, including trailing Z.
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        return dt.astimezone(tz)
+    except Exception:
+        pass
+    try:
+        hh, mm = [int(x) for x in raw.split(":")[:2]]
+        now_local = datetime.now(tz)
+        return now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except Exception:
+        return None
+
+
+def _default_macro_release_local(event_type, now_local=None):
+    """Default US macro release clock converted from New York time; used only when news says event is upcoming."""
+    event_type = str(event_type or "").upper()
+    now_local = now_local or datetime.now(ZoneInfo(USER_TIMEZONE))
+    us_tz = ZoneInfo(PRE_EVENT_US_TZ)
+    us_now = now_local.astimezone(us_tz)
+    # Most major labor/inflation/GDP releases: 08:30 ET; ISM/PMI: 10:00 ET; FOMC statement: 14:00 ET.
+    if event_type in {"NFP", "CPI", "PPI", "JOBLESS", "UNEMPLOYMENT", "GDP"}:
+        hh, mm = 8, 30
+    elif event_type in {"ISM", "PMI"}:
+        hh, mm = 10, 0
+    elif event_type == "FOMC":
+        hh, mm = 14, 0
+    else:
+        return None
+    release_us = us_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return release_us.astimezone(ZoneInfo(USER_TIMEZONE))
+
+
+
+def _calendar_event_type(title):
+    t = str(title or "").lower()
+    if "ppi" in t or "producer price" in t: return "PPI"
+    if "cpi" in t or "consumer price" in t: return "CPI"
+    if "non-farm" in t or "nonfarm" in t or "payroll" in t: return "NFP"
+    if "unemployment claims" in t or "jobless claims" in t: return "JOBLESS"
+    if "unemployment rate" in t: return "UNEMPLOYMENT"
+    if "gdp" in t: return "GDP"
+    if "fomc" in t or "federal funds rate" in t or "rate statement" in t: return "FOMC"
+    if "ism" in t: return "ISM"
+    if "pmi" in t: return "PMI"
+    return None
+
+
+def _fetch_economic_calendar():
+    now = now_ts()
+    if not ECON_CALENDAR_ENABLED:
+        return []
+    if ECON_CALENDAR_CACHE.get("time") and now - to_float(ECON_CALENDAR_CACHE.get("time"), 0) < ECON_CALENDAR_REFRESH_SECONDS:
+        return list(ECON_CALENDAR_CACHE.get("events") or [])
+    # Stamp before request too: even on failure we do not hammer the public feed.
+    ECON_CALENDAR_CACHE["time"] = now
+    try:
+        r = requests.get(
+            ECON_CALENDAR_URL,
+            timeout=ECON_CALENDAR_TIMEOUT_SECONDS,
+            headers={"User-Agent": "GoldMasterBot/47.15.2"},
+        )
+        r.raise_for_status()
+        raw = r.json()
+        rows = raw if isinstance(raw, list) else []
+        events = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            country = str(row.get("country") or "").upper()
+            impact = str(row.get("impact") or "").upper()
+            title = str(row.get("title") or "")
+            event_type = _calendar_event_type(title)
+            if country != "USD" or not event_type:
+                continue
+            if ECON_CALENDAR_US_HIGH_ONLY and impact != "HIGH":
+                continue
+            dt = _parse_event_datetime_value(row.get("date"))
+            if not dt:
+                continue
+            events.append({
+                "event_type": event_type,
+                "title": title,
+                "impact": impact,
+                "release_ts": dt.timestamp(),
+                "release_local": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "forecast": row.get("forecast"),
+                "previous": row.get("previous"),
+                "source": "FOREX_FACTORY_WEEKLY_JSON",
+            })
+        ECON_CALENDAR_CACHE["events"] = events
+        ECON_CALENDAR_CACHE["error"] = ""
+        return list(events)
+    except Exception as e:
+        ECON_CALENDAR_CACHE["error"] = f"{type(e).__name__}: {e}"
+        return list(ECON_CALENDAR_CACHE.get("events") or [])
+
+
+def _upcoming_calendar_macro(now_local=None):
+    now_local = now_local or datetime.now(ZoneInfo(USER_TIMEZONE))
+    now_ts_local = now_local.timestamp()
+    best = None
+    best_abs = 10**18
+    for row in _fetch_economic_calendar():
+        release_ts = to_float(row.get("release_ts"), 0)
+        if not release_ts:
+            continue
+        delta_min = (release_ts - now_ts_local) / 60.0
+        if -PRE_EVENT_POST_RELEASE_MINUTES <= delta_min <= PRE_EVENT_LOOKAHEAD_MINUTES:
+            # Prefer the nearest upcoming event; immediately-post-release remains eligible for shock management.
+            rank = abs(delta_min) + (1000 if delta_min < 0 else 0)
+            if rank < best_abs:
+                best_abs = rank
+                best = dict(row)
+    if best:
+        best["release_local"] = datetime.fromtimestamp(best["release_ts"], ZoneInfo(USER_TIMEZONE))
+        best["headline"] = best.get("title")
+    return best
+
+
+def _recent_macro_candidate(now_local=None):
+    now_local = now_local or datetime.now(ZoneInfo(USER_TIMEZONE))
+    candidates = list(NEWS_CACHE.get("macro_candidates") or [])
+    for row in reversed(candidates):
+        event_type = _macro_event_type_from_hits(row.get("hits"))
+        if not event_type:
+            continue
+        published = _parse_event_datetime_value(row.get("published_at"))
+        if published and abs((now_local - published).total_seconds()) > PRE_EVENT_NEWS_MAX_AGE_HOURS * 3600:
+            continue
+        release = _default_macro_release_local(event_type, now_local=now_local)
+        if not release:
+            continue
+        delta_min = (release - now_local).total_seconds() / 60.0
+        if -PRE_EVENT_POST_RELEASE_MINUTES <= delta_min <= PRE_EVENT_LOOKAHEAD_MINUTES:
+            return {
+                "event_type": event_type,
+                "release_local": release,
+                "source": "NEWS_API_UPCOMING",
+                "headline": row.get("title"),
+            }
+    return None
+
+
+def _webhook_macro_candidate(data):
+    data = data or {}
+    text = " ".join(str(data.get(k) or "") for k in ["event_name", "macro_event", "news_event", "news_title", "event_label"])
+    hits = event_keyword_hits(text)
+    event_type = _macro_event_type_from_hits(hits)
+    if not event_type:
+        return None
+    dt = None
+    for k in ["event_datetime", "macro_event_datetime", "news_datetime", "event_time", "macro_event_time", "news_time"]:
+        dt = _parse_event_datetime_value(data.get(k))
+        if dt:
+            break
+    if dt is None:
+        dt = _default_macro_release_local(event_type)
+    return {
+        "event_type": event_type,
+        "release_local": dt,
+        "source": "WEBHOOK_MACRO",
+        "headline": text[:240],
+    }
+
+
+def process_pre_event_awareness(data):
+    if not PRE_EVENT_AWARENESS_ENABLED:
+        return {"active": False, "reason": "disabled"}
+    data = data or {}
+    symbol = str(data.get("symbol", "XAUUSD")).upper()
+    now_local = datetime.now(ZoneInfo(USER_TIMEZONE))
+    state = _pre_event_state(symbol)
+
+    # Refresh NewsAPI through the existing cache; no extra Render variable is needed.
+    try:
+        get_auto_news_bias()
+    except Exception:
+        pass
+
+    candidate = _webhook_macro_candidate(data) or _upcoming_calendar_macro(now_local=now_local) or _recent_macro_candidate(now_local=now_local)
+    if candidate and candidate.get("release_local"):
+        release = candidate["release_local"]
+        signature = f"{release.strftime('%Y-%m-%dT%H:%M')}|{candidate.get('event_type')}"
+        if state.get("signature") != signature:
+            state.clear()
+            state.update({
+                "signature": signature,
+                "event_type": candidate.get("event_type"),
+                "release_ts": release.timestamp(),
+                "release_local": release.strftime("%Y-%m-%d %H:%M:%S"),
+                "source": candidate.get("source"),
+                "headline": candidate.get("headline"),
+                "alerted": False,
+                "released": False,
+                "anchor_price": 0,
+                "anchor_ts": 0,
+            })
+
+    release_ts = to_float(state.get("release_ts"), 0)
+    if not release_ts:
+        return {"active": False, "reason": "nessun macro evento imminente riconosciuto"}
+
+    now = now_ts()
+    minutes_to = (release_ts - now) / 60.0
+    px = get_price_from_data(data)
+    # Keep the latest pre-release market price as anchor.
+    if px and now < release_ts:
+        state["anchor_price"] = round(px, 5)
+        state["anchor_ts"] = now
+
+    if -PRE_EVENT_POST_RELEASE_MINUTES <= minutes_to <= PRE_EVENT_LOOKAHEAD_MINUTES:
+        state["active"] = True
+    else:
+        state["active"] = False
+
+    if state.get("active") and 0 <= minutes_to <= PRE_EVENT_ARM_MINUTES and not state.get("alerted"):
+        state["alerted"] = True
+        if PRE_EVENT_ALERT_ENABLED:
+            send_telegram(
+                f"🚨 PRE-EVENT {state.get('event_type')} — EVENT MODE ARMATO\n\n"
+                f"Orario previsto: {datetime.fromtimestamp(release_ts, ZoneInfo(USER_TIMEZONE)).strftime('%H:%M')}\n"
+                f"Prezzo pre-news: {round(to_float(state.get('anchor_price'), px),3) if (state.get('anchor_price') or px) else 'N/D'}\n"
+                f"Fonte evento: {state.get('source')}\n\n"
+                "Non anticipo la direzione prima del dato. Alla release seguo la prima espansione M1 e il Director entra solo se il movimento e' reale e non gia' esteso."
+            )
+
+    if state.get("active") and now >= release_ts - 10:
+        if px and not state.get("anchor_price"):
+            state["anchor_price"] = round(px, 5)
+            state["anchor_ts"] = now
+        if not state.get("released"):
+            state["released"] = True
+            activate_auto_event_mode([f"PRE-EVENT {state.get('event_type')} release window"], data)
+
+    state["minutes_to_release"] = round(minutes_to, 2)
+    save_runtime_state(force=False)
+    return dict(state)
+
+
+def _pre_event_release_context(symbol, data):
+    state = _pre_event_state(symbol)
+    if not state.get("active") or not state.get("released"):
+        return {"active": False}
+    release_ts = to_float(state.get("release_ts"), 0)
+    now = now_ts()
+    if not release_ts or now > release_ts + PRE_EVENT_POST_RELEASE_MINUTES * 60:
+        return {"active": False}
+    anchor = to_float(state.get("anchor_price"), 0)
+    price = get_price_from_data(data)
+    if not anchor or not price:
+        return {"active": False}
+    delta = price - anchor
+    impulse = abs(delta)
+    direction = "BUY" if delta > 0 else "SELL" if delta < 0 else None
+    return {
+        "active": bool(direction),
+        "event_type": state.get("event_type"),
+        "anchor": anchor,
+        "price": price,
+        "direction": direction,
+        "impulse": impulse,
+        "source": state.get("source"),
+    }
+
 # =========================
 # NEWS BIAS
 # =========================
@@ -3590,8 +3927,9 @@ def get_auto_news_bias():
         return NEWS_CACHE["bias"], NEWS_CACHE["reasons"]
 
     query = (
-        "gold OR XAUUSD OR dollar OR Federal Reserve OR Fed OR inflation OR CPI "
-        "OR NFP OR Iran OR Israel OR Hormuz OR geopolitical"
+        "gold OR XAUUSD OR dollar OR Federal Reserve OR Fed OR inflation OR CPI OR PPI "
+        "OR NFP OR payrolls OR unemployment OR jobless claims OR GDP OR FOMC OR ISM OR PMI "
+        "OR Iran OR Israel OR Hormuz OR geopolitical"
     )
 
     try:
@@ -3627,6 +3965,12 @@ def get_auto_news_bias():
     bullish_score = 0
     bearish_score = 0
     auto_event_keyword_hits = []
+    macro_candidates = []
+    future_markers = [
+        "await", "awaits", "awaiting", "ahead of", "due", "later today", "today's",
+        "today", "scheduled", "release", "report due", "before the data", "before data",
+        "investors wait", "markets wait", "market waits", "focus on"
+    ]
 
     for article in articles:
         text = (
@@ -3639,6 +3983,13 @@ def get_auto_news_bias():
             for hit in hits:
                 if hit not in auto_event_keyword_hits:
                     auto_event_keyword_hits.append(hit)
+            if hits and any(marker in text for marker in future_markers):
+                published = str(article.get("publishedAt") or "")
+                macro_candidates.append({
+                    "hits": list(dict.fromkeys(hits))[:6],
+                    "title": str(article.get("title") or "")[:240],
+                    "published_at": published,
+                })
 
         for word in bullish_words:
             if word in text:
@@ -3667,6 +4018,7 @@ def get_auto_news_bias():
     NEWS_CACHE["time"] = now
     NEWS_CACHE["bias"] = bias
     NEWS_CACHE["reasons"] = reasons
+    NEWS_CACHE["macro_candidates"] = macro_candidates[-12:]
 
     return bias, reasons
 
@@ -12662,7 +13014,7 @@ def _queue_forecast_campaign_mt4(campaign):
         return None
 
 
-def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None):
+def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None, reentry_ctx=None):
     campaigns = _forecast_campaigns(symbol)
     sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
     ref = _forecast_reference_range(forecast, sessions.get(session))
@@ -12678,9 +13030,12 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
         tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
 
     is_pre = bool(pre_ctx and pre_ctx.get("qualifies"))
+    is_reentry = bool(reentry_ctx and reentry_ctx.get("is_reentry")) and not is_pre
     pre_base_key = _forecast_pre_revision_key(session, forecast, bias) if is_pre else None
     pre_attempt = int((pre_ctx or {}).get("attempt", 1)) if is_pre else 0
-    key = f"{pre_base_key}|A{pre_attempt}" if is_pre else _forecast_campaign_key(session, forecast, bias)
+    standard_base_key = _forecast_campaign_key(session, forecast, bias)
+    reentry_attempt = int((reentry_ctx or {}).get("attempt", 1)) if is_reentry else 1
+    key = f"{pre_base_key}|A{pre_attempt}" if is_pre else (f"{standard_base_key}|RE{reentry_attempt}" if is_reentry else standard_base_key)
     tid = str(int(now_ts() * 1000))
     c = {
         "id": tid,
@@ -12706,6 +13061,12 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
         "m1_score": int(m1.get("score", 0)),
         "pre_revision": is_pre,
         "pre_revision_confirmed": False,
+        "standard_map_key": standard_base_key,
+        "reentry": is_reentry,
+        "entry_attempt": reentry_attempt,
+        "reentry_reason": (reentry_ctx or {}).get("reason") if is_reentry else None,
+        "reentry_pullback_points": (reentry_ctx or {}).get("pullback_points") if is_reentry else None,
+        "reentry_break_level": (reentry_ctx or {}).get("break_level") if is_reentry else None,
         "legs": [
             {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
             {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
@@ -12726,8 +13087,13 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
             "pre_revision_reason": pre_ctx.get("reason"),
         })
     campaigns.append(c)
+    # v47.15.2 ghost-trade fix: con Live Director attivo la coda MT4 parte nello stesso webhook,
+    # ma solo quando il Director ha effettivamente accettato/notificato l'entry.
+    if LIVE_DIRECTOR_ENABLED:
+        c["mt4_queue_pending"] = True
+    else:
+        _queue_forecast_campaign_mt4(c)
     save_runtime_state(force=True)
-    _queue_forecast_campaign_mt4(c)
     return c
 
 
@@ -12847,6 +13213,32 @@ def _event_shock_existing_rows(symbol, key):
     return [c for c in _forecast_campaigns(symbol) if c.get("event_shock_key") == key]
 
 
+
+def _event_release_raw_confirmation(data, direction, m1_ctx=None):
+    data = data or {}
+    direction = str(direction or "").upper()
+    price = get_price_from_data(data)
+    o = to_float(data.get("open"), price)
+    h = to_float(data.get("high"), price)
+    l = to_float(data.get("low"), price)
+    c = to_float(data.get("close"), price)
+    rng = max(0.0, h - l)
+    body_ratio = abs(c - o) / rng if rng > 0 else 0
+    candle_ok = (direction == "BUY" and c > o) or (direction == "SELL" and c < o)
+    pine_bos = (
+        to_bool(data.get("micro_bos_bull")) or to_bool(data.get("micro_bos_buy")) or to_bool(data.get("breakout_up"))
+    ) if direction == "BUY" else (
+        to_bool(data.get("micro_bos_bear")) or to_bool(data.get("micro_bos_sell")) or to_bool(data.get("breakout_down"))
+    )
+    ema20 = str(data.get("ema20_slope", "")).upper()
+    ema50 = str(data.get("ema50_slope", "")).upper()
+    ema_ok = (direction == "BUY" and (ema20 == "UP" or ema50 == "UP")) or (direction == "SELL" and (ema20 == "DOWN" or ema50 == "DOWN"))
+    m1 = m1_ctx or {}
+    m1_ok = bool(m1.get("confirmed") and str(m1.get("direction") or "").upper() == direction and int(m1.get("score",0)) >= EVENT_SHOCK_MIN_M1_SCORE)
+    raw_ok = bool(candle_ok and body_ratio >= PRE_EVENT_RELEASE_MIN_BODY_RATIO and (pine_bos or ema_ok))
+    return {"ok": bool(m1_ok or raw_ok), "m1_ok": m1_ok, "raw_ok": raw_ok, "body_ratio": round(body_ratio,3), "pine_bos": bool(pine_bos), "ema_ok": bool(ema_ok)}
+
+
 def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
     out = {
         "eligible": False,
@@ -12881,13 +13273,20 @@ def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
         return out
 
     preferred = str((thesis or {}).get("preferred") or "").upper()
-    if preferred not in ["BUY", "SELL"]:
-        out["reason"] = "Session Thesis senza direzione"
-        return out
-
     price = get_price_from_data(data)
     out["price"] = round(price, 3)
+    release = _pre_event_release_context(symbol, data)
+    release_mode = bool(release.get("active") and release.get("impulse", 0) >= PRE_EVENT_RELEASE_MIN_IMPULSE_POINTS)
+    if release_mode:
+        preferred = str(release.get("direction") or "").upper()
+    if preferred not in ["BUY", "SELL"]:
+        out["reason"] = "Session Thesis/release senza direzione"
+        return out
+
     ref = _event_shock_reference(symbol, session)
+    if release_mode:
+        anchor = to_float(release.get("anchor"), 0)
+        ref = {"label": f"PRE_EVENT_{release.get('event_type')}", "high": anchor, "low": anchor, "range": max(1.0, PRE_EVENT_RELEASE_BREAK_BUFFER)}
     if not ref:
         out["reason"] = "reference session non disponibile"
         return out
@@ -12899,7 +13298,7 @@ def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
     session_move = (price - session_open) if preferred == "BUY" else (session_open - price)
     session_move = max(0.0, session_move)
 
-    buffer = min(
+    buffer = PRE_EVENT_RELEASE_BREAK_BUFFER if release_mode else min(
         EVENT_SHOCK_BREAK_BUFFER_MAX,
         max(EVENT_SHOCK_BREAK_BUFFER_MIN, to_float(ref.get("range"), 0) * EVENT_SHOCK_BREAK_BUFFER_FACTOR),
     )
@@ -12929,16 +13328,19 @@ def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
     m1 = m1_ctx or m1_timing_context(data, thesis_ctx=thesis)
     m1_dir = str(m1.get("direction") or "").upper()
     m1_score = int(m1.get("score", 0))
-    # m1_timing_context ritorna confirmed solo dopo Thesis stabile 2/2.
-    thesis_ok = bool(m1_dir == preferred and (m1.get("confirmed") or m1.get("watch")))
-    m1_ok = bool(
+    # Normal mode remains Thesis-owned. Release mode can react to the first real post-news impulse
+    # before Thesis stabilizes, using anchor + strong M1/raw microstructure.
+    release_confirm = _event_release_raw_confirmation(data, preferred, m1_ctx=m1) if release_mode else {"ok": False}
+    thesis_ok = bool(release_mode or (m1_dir == preferred and (m1.get("confirmed") or m1.get("watch"))))
+    m1_ok = bool(release_confirm.get("ok")) if release_mode else bool(
         m1.get("confirmed")
         and m1_dir == preferred
         and m1_score >= EVENT_SHOCK_MIN_M1_SCORE
         and (m1.get("bos") or m1.get("strong_candle"))
     )
-    not_late = bool(overshoot <= EVENT_SHOCK_MAX_OVERSHOOT_POINTS)
-    move_ok = bool(session_move >= EVENT_SHOCK_MIN_SESSION_MOVE_POINTS)
+    max_overshoot = PRE_EVENT_RELEASE_MAX_ENTRY_IMPULSE_POINTS if release_mode else EVENT_SHOCK_MAX_OVERSHOOT_POINTS
+    not_late = bool(overshoot <= max_overshoot)
+    move_ok = bool(overshoot >= PRE_EVENT_RELEASE_MIN_IMPULSE_POINTS) if release_mode else bool(session_move >= EVENT_SHOCK_MIN_SESSION_MOVE_POINTS)
 
     out.update({
         "direction": preferred,
@@ -12955,7 +13357,10 @@ def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
         "event_active": event_ok,
         "auto_event_active": active_event,
         "volatility_only": volatility_only,
-        "event_reasons": list(event_reasons or []),
+        "release_mode": release_mode,
+        "release_event_type": release.get("event_type") if release_mode else None,
+        "release_anchor": round(to_float(release.get("anchor"),0),3) if release_mode else None,
+        "event_reasons": list(event_reasons or []) + ([f"PRE-EVENT {release.get('event_type')} impulse {round(to_float(release.get('impulse'),0),2)} pt"] if release_mode else []),
         "m1_score": m1_score,
         "m1_ok": m1_ok,
         "thesis_ok": thesis_ok,
@@ -12975,9 +13380,9 @@ def _event_shock_context(data, thesis_ctx=None, m1_ctx=None):
     elif not broke:
         out["reason"] = f"reference {ref.get('label')} non rotta con buffer {round(buffer,2)}"
     elif not not_late:
-        out["reason"] = f"movimento gia' troppo esteso: {round(overshoot,2)} > {EVENT_SHOCK_MAX_OVERSHOOT_POINTS:g} pt oltre reference"
+        out["reason"] = f"movimento gia' troppo esteso: {round(overshoot,2)} > {max_overshoot:g} pt oltre reference"
     elif not m1_ok:
-        out["reason"] = f"serve M1 {preferred} >= {EVENT_SHOCK_MIN_M1_SCORE} con BOS/candela forte"
+        out["reason"] = (f"serve conferma M1/raw {preferred} post-news" if release_mode else f"serve M1 {preferred} >= {EVENT_SHOCK_MIN_M1_SCORE} con BOS/candela forte")
     else:
         out["reason"] = f"EVENT SHOCK {preferred} confermato"
     return out
@@ -13046,6 +13451,9 @@ def _create_event_shock_campaign(symbol, session, ctx, m1):
         "event_overshoot_points": ctx.get("overshoot_points"),
         "event_session_move": ctx.get("session_move"),
         "event_reasons": list(ctx.get("event_reasons") or []),
+        "event_release_mode": bool(ctx.get("release_mode")),
+        "event_release_type": ctx.get("release_event_type"),
+        "event_release_anchor": ctx.get("release_anchor"),
         "legs": [
             {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
             {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
@@ -13053,8 +13461,11 @@ def _create_event_shock_campaign(symbol, session, ctx, m1):
         ],
     }
     _forecast_campaigns(symbol).append(c)
+    if LIVE_DIRECTOR_ENABLED:
+        c["mt4_queue_pending"] = True
+    else:
+        _queue_forecast_campaign_mt4(c)
     save_runtime_state(force=True)
-    _queue_forecast_campaign_mt4(c)
     return c
 
 
@@ -13110,7 +13521,12 @@ def process_event_shock_campaign(data, thesis_ctx=None, m1_ctx=None):
     if not ctx.get("eligible"):
         return result
 
-    c = _create_event_shock_campaign(symbol, session, ctx, m1)
+    m1_for_campaign = dict(m1 or {})
+    if ctx.get("release_mode") and int(m1_for_campaign.get("score", 0)) < EVENT_SHOCK_MIN_M1_SCORE:
+        m1_for_campaign["score"] = EVENT_SHOCK_MIN_M1_SCORE
+        m1_for_campaign["direction"] = direction
+        m1_for_campaign["confirmed"] = True
+    c = _create_event_shock_campaign(symbol, session, ctx, m1_for_campaign)
     result.update({
         "triggered": True,
         "trade_id": c.get("id"),
@@ -13171,6 +13587,87 @@ def _live_director_entry_quality(forecast, bias, price, session_ctx=None):
         "max_chase_points": round(max_chase, 3),
         "relation": relation,
     }
+
+
+
+def _forecast_standard_attempt_rows(campaigns, base_key):
+    rows = []
+    for c in campaigns or []:
+        if c.get("pre_revision") or c.get("event_shock"):
+            continue
+        key = str(c.get("standard_map_key") or c.get("campaign_key") or "")
+        if key == base_key or str(c.get("campaign_key") or "").startswith(base_key + "|RE"):
+            rows.append(c)
+    rows.sort(key=lambda x: to_float(x.get("created"), 0))
+    return rows
+
+
+def _price_history_since(symbol, since_ts, lookback_seconds=None):
+    now = now_ts()
+    floor = max(to_float(since_ts, 0), now - (lookback_seconds or LIVE_DIRECTOR_REENTRY_LOOKBACK_SECONDS))
+    rows = []
+    for x in (PRICE_HISTORY.get(str(symbol or "XAUUSD").upper(), []) or []):
+        if not isinstance(x, dict) or to_float(x.get("time"), 0) < floor:
+            continue
+        rows.append(x)
+    return rows
+
+
+def _live_director_reentry_structure(symbol, direction, last_campaign, m1, price):
+    """Dynamic retest zone: requires a completed pullback/rebound in recent history plus a fresh M1 BOS."""
+    direction = str(direction or "").upper()
+    closed_ts = to_float((last_campaign or {}).get("closed"), to_float((last_campaign or {}).get("created"), 0))
+    rows = _price_history_since(symbol, closed_ts)
+    out = {"ok": False, "reason": "history insufficiente", "pullback_points": 0.0, "break_level": to_float((m1 or {}).get("break_level"), 0)}
+    if len(rows) < 5:
+        return out
+    # The latest update is the breakout candidate itself; measure the completed retest before it.
+    hist = rows[:-1] if len(rows) > 5 else rows
+    highs = [to_float(x.get("high"), to_float(x.get("close"), 0)) for x in hist]
+    lows = [to_float(x.get("low"), to_float(x.get("close"), 0)) for x in hist]
+    if direction == "BUY":
+        running_high = highs[0]
+        pullback = 0.0
+        for hi, lo in zip(highs, lows):
+            running_high = max(running_high, hi)
+            pullback = max(pullback, running_high - lo)
+        break_level = to_float((m1 or {}).get("break_level"), max(highs))
+        overshoot = max(0.0, to_float(price, 0) - break_level)
+    else:
+        running_low = lows[0]
+        pullback = 0.0
+        for hi, lo in zip(highs, lows):
+            running_low = min(running_low, lo)
+            pullback = max(pullback, hi - running_low)
+        break_level = to_float((m1 or {}).get("break_level"), min(lows))
+        overshoot = max(0.0, break_level - to_float(price, 0))
+    out.update({
+        "pullback_points": round(max(0.0, pullback), 3),
+        "break_level": round(break_level, 3),
+        "break_overshoot": round(overshoot, 3),
+    })
+    if pullback < LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS:
+        out["reason"] = f"pullback {round(pullback,2)} < {LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS:g} pt"
+        return out
+    if LIVE_DIRECTOR_REENTRY_REQUIRE_BOS and not (m1 or {}).get("bos"):
+        out["reason"] = "serve nuovo micro-BOS"
+        return out
+    if overshoot > LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT:
+        out["reason"] = f"break gia' esteso {round(overshoot,2)} > {LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT:g} pt"
+        return out
+    out["ok"] = True
+    out["reason"] = f"nuovo retest {round(pullback,2)} pt + nuovo BOS"
+    return out
+
+
+def _forecast_campaign_entry_preflight(forecast, bias, price, data, session_ctx=None):
+    """Freshness guard. Reject only when the webhook explicitly tells us the signal is stale."""
+    data = data or {}
+    age = to_float(data.get("alert_age_seconds"), to_float(data.get("signal_age_seconds"), 0))
+    max_age = max(5.0, float(os.getenv("LIVE_DIRECTOR_MAX_ALERT_AGE_SECONDS", "25")))
+    stale = bool(age > max_age) if age else False
+    return {"ok": not stale, "age_seconds": round(age,2), "max_age_seconds": max_age,
+            "reason": f"alert vecchio {round(age,1)}s > {max_age:g}s" if stale else "ok"}
 
 
 def _live_director_directional_move(direction, price, entry):
@@ -13261,7 +13758,8 @@ def _live_director_entry_message(campaign):
     direction = str(campaign.get("direction") or "").upper()
     pre = bool(campaign.get("pre_revision"))
     event_shock = bool(campaign.get("event_shock"))
-    mode = "EVENT SHOCK" if event_shock else ("PRE-REVISION" if pre else "FORECAST")
+    reentry = bool(campaign.get("reentry"))
+    mode = "EVENT SHOCK" if event_shock else ("PRE-REVISION" if pre else (f"FORECAST RE-ENTRY #{campaign.get('entry_attempt')}" if reentry else "FORECAST"))
     if event_shock:
         forecast_line = (
             f"Evento: SHOCK CONFERMATO | Reference {campaign.get('event_reference_label')} "
@@ -13272,7 +13770,8 @@ def _live_director_entry_message(campaign):
     else:
         forecast_line = (
             f"Forecast LIVE: {campaign.get('forecast_bias')} | forza {campaign.get('forecast_strength')}\n"
-            f"M1: {direction} score {campaign.get('m1_score')}"
+            f"M1: {direction} score {campaign.get('m1_score')}" +
+            (f"\nRe-entry: tentativo #{campaign.get('entry_attempt')} | pullback {campaign.get('reentry_pullback_points')} pt" if reentry else "")
         )
         headline = f"🚀 GOLD MASTER LIVE — {direction} ATTIVO"
     return f"""{headline}
@@ -13350,7 +13849,14 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
     ]
     for closed in sorted(closed_candidates, key=lambda x: to_float(x.get("closed"), 0)):
         closed["director_close_notified"] = True
-        messages.append(_live_director_close_message(closed))
+        if not closed.get("director_entry_notified"):
+            closed["director_ghost_suppressed"] = True
+            messages.append(
+                f"⚠️ SETUP {str(closed.get('direction') or '').upper()} ANNULLATO PRIMA DELL'ENTRY — "
+                f"il quadro e' cambiato prima che il Director confermasse l'operazione. Nessun nuovo segnale manuale da eseguire."
+            )
+        else:
+            messages.append(_live_director_close_message(closed))
 
     if c:
         result["active_trade_id"] = c.get("id")
@@ -13370,6 +13876,9 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
             c["director_entry_notified"] = True
             c["director_started_at"] = now
             messages.append(_live_director_entry_message(c))
+            if c.get("mt4_queue_pending") and not c.get("mt4_cmd_id"):
+                c["mt4_queue_pending"] = False
+                _queue_forecast_campaign_mt4(c)
 
         if c.get("pre_revision_confirmed") and not c.get("director_promotion_notified"):
             c["director_promotion_notified"] = True
@@ -13478,9 +13987,16 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
                 messages.append(f"🟠 {m1_dir} IN PRE-REVISION — M1 score {m1_score}. Sto aspettando tutte le conferme prima dell'entry ufficiale.")
                 result["action"] = "WAIT_PRE_REVISION"
             elif map_bias == m1_dir:
-                # If process_forecast_campaign did not trigger, one of the remaining filters is not ready.
-                messages.append(f"🔥 M1 {m1_dir} score {m1_score} ALLINEATO — direzione buona, ma NON c'e' ancora una nuova operazione ufficiale. ASPETTO entry valida senza inseguire.")
-                result["action"] = "WAIT_ENTRY"
+                reason = str((campaign_result or {}).get("reason") or "")
+                if reason.startswith("re-entry") or "re-entry" in reason or "limite re-entry" in reason:
+                    messages.append(f"🔁 {m1_dir} ALLINEATO — sto cercando il NUOVO RETEST per il re-entry. {reason}. Non inseguo il prezzo.")
+                    result["action"] = "WAIT_REENTRY"
+                elif (campaign_result or {}).get("ghost_prevented"):
+                    messages.append(f"⚠️ SETUP {m1_dir} SCADUTO — la candela aveva gia' attraversato lo stop teorico. Nessuna entry tardiva.")
+                    result["action"] = "WAIT_FRESH_SETUP"
+                else:
+                    messages.append(f"🔥 M1 {m1_dir} score {m1_score} ALLINEATO — direzione buona, ma NON c'e' ancora una nuova operazione ufficiale. ASPETTO entry valida senza inseguire.")
+                    result["action"] = "WAIT_ENTRY"
             else:
                 messages.append(f"⚠️ M1 {m1_dir} score {m1_score} CONTRO Forecast {map_bias} — possibile cambio, ma NON entro finche' il Director non conferma PRE-REVISION/REVISION.")
                 result["action"] = "WAIT_CONFLICT"
@@ -13504,6 +14020,11 @@ def live_director_status():
         "hide_raw_m1": LIVE_DIRECTOR_HIDE_RAW_M1,
         "hide_raw_thesis": LIVE_DIRECTOR_HIDE_RAW_THESIS,
         "entry_quality_filter": LIVE_DIRECTOR_ENTRY_QUALITY_FILTER,
+        "reentry_enabled": LIVE_DIRECTOR_REENTRY_ENABLED,
+        "max_entries_per_revision": LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION,
+        "pre_event_awareness_enabled": PRE_EVENT_AWARENESS_ENABLED,
+        "economic_calendar_enabled": ECON_CALENDAR_ENABLED,
+        "economic_calendar_last_error": ECON_CALENDAR_CACHE.get("error"),
         "event_shock_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
         "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
         "event_shock_min_m1_score": EVENT_SHOCK_MIN_M1_SCORE,
@@ -13655,31 +14176,73 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         result["reason"] = f"serve M1 trigger {bias} score >= {FORECAST_CAMPAIGN_MIN_M1_SCORE}"
         return result
 
-    # v47.15 Entry Quality: una direzione puo' essere corretta ma l'entry troppo estesa.
     sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
-    entry_quality = _live_director_entry_quality(forecast, bias, price, sessions.get(session))
-    result["entry_quality"] = entry_quality
-    if entry_quality.get("blocked"):
-        result["entry_quality_blocked"] = True
-        result["reason"] = (f"direzione {bias} valida ma prezzo troppo esteso dalla zona preferita: "
-                            f"{entry_quality.get('chase_points')} pt > {entry_quality.get('max_chase_points')} pt; aspetto retest")
-        return result
-
-    if _forecast_campaign_map_exhausted(forecast, bias, price):
-        result["reason"] = "mappa gia' arrivata oltre estensione: non inseguo"
-        return result
-
     if any(c.get("status") in ["OPEN", "OPENED", "PENDING"] for c in campaigns):
         result["reason"] = "Forecast Campaign gia' attiva"
         return result
 
-    key = _forecast_campaign_key(session, forecast, bias)
-    if FORECAST_CAMPAIGN_ONE_PER_REVISION and any(c.get("campaign_key") == key for c in campaigns):
+    base_key = _forecast_campaign_key(session, forecast, bias)
+    standard_rows = _forecast_standard_attempt_rows(campaigns, base_key)
+    attempt = len(standard_rows) + 1
+    reentry_ctx = None
+
+    if not standard_rows:
+        # First entry uses the original Forecast preferred zone and NO-CHASE filter.
+        entry_quality = _live_director_entry_quality(forecast, bias, price, sessions.get(session))
+        result["entry_quality"] = entry_quality
+        if entry_quality.get("blocked"):
+            result["entry_quality_blocked"] = True
+            result["reason"] = (f"direzione {bias} valida ma prezzo troppo esteso dalla zona preferita: "
+                                f"{entry_quality.get('chase_points')} pt > {entry_quality.get('max_chase_points')} pt; aspetto retest")
+            return result
+    else:
+        if not LIVE_DIRECTOR_REENTRY_ENABLED:
+            result["reason"] = "re-entry Director disabilitato"
+            return result
+        if attempt > LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION:
+            result["reason"] = f"limite re-entry raggiunto {len(standard_rows)}/{LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION} per questa mappa/revision"
+            return result
+        last = standard_rows[-1]
+        if last.get("status") in ["OPEN", "OPENED", "PENDING"]:
+            result["reason"] = "tentativo precedente ancora attivo"
+            return result
+        last_closed = to_float(last.get("closed"), to_float(last.get("created"), 0))
+        last_result = to_float(last.get("result_points_total"), 0)
+        wait_required = LIVE_DIRECTOR_REENTRY_AFTER_LOSS_WAIT_SECONDS if last_result < 0 else LIVE_DIRECTOR_REENTRY_WAIT_SECONDS
+        elapsed = now_ts() - last_closed if last_closed else 999999
+        if elapsed < wait_required:
+            result["reason"] = f"re-entry cooldown {int(wait_required-elapsed)}s"
+            return result
+        min_score = LIVE_DIRECTOR_REENTRY_AFTER_LOSS_MIN_M1_SCORE if last_result < 0 else LIVE_DIRECTOR_REENTRY_MIN_M1_SCORE
+        if int(m1.get("score",0)) < min_score:
+            result["reason"] = f"re-entry richiede M1 {bias} >= {min_score}"
+            return result
+        structure = _live_director_reentry_structure(symbol, bias, last, m1, price)
+        result["reentry_structure"] = structure
+        if not structure.get("ok"):
+            result["reason"] = "re-entry: " + str(structure.get("reason"))
+            return result
+        reentry_ctx = {"is_reentry": True, "attempt": attempt, **structure}
+
+    # Still never chase beyond the whole Forecast map extension.
+    if _forecast_campaign_map_exhausted(forecast, bias, price):
+        result["reason"] = "mappa gia' arrivata oltre estensione: non inseguo"
+        return result
+
+    preflight = _forecast_campaign_entry_preflight(forecast, bias, price, data, sessions.get(session))
+    result["entry_preflight"] = preflight
+    if not preflight.get("ok"):
+        result["reason"] = "setup scaduto: " + preflight.get("reason", "preflight KO")
+        result["ghost_prevented"] = True
+        return result
+
+    # Legacy one-per-revision applies only to the first campaign; re-entry is controlled above.
+    if FORECAST_CAMPAIGN_ONE_PER_REVISION and attempt == 1 and any(c.get("campaign_key") == base_key for c in campaigns):
         result["reason"] = "campaign gia' usata per questa mappa/revision"
         return result
 
-    c = _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None)
-    result.update({"triggered": True, "trade_id": c.get("id"), "reason": "Forecast+Thesis+M1 ufficiali"})
+    c = _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None, reentry_ctx=reentry_ctx)
+    result.update({"triggered": True, "trade_id": c.get("id"), "reason": (f"Forecast+Thesis+M1 RE-ENTRY #{attempt}" if reentry_ctx else "Forecast+Thesis+M1 ufficiali")})
     if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
         send_telegram(forecast_campaign_message(c))
     return result
@@ -13693,6 +14256,10 @@ def forecast_campaign_status():
         "live_director_enabled": LIVE_DIRECTOR_ENABLED,
         "live_director_clean_telegram": LIVE_DIRECTOR_CLEAN_TELEGRAM,
         "live_director_entry_quality_filter": LIVE_DIRECTOR_ENTRY_QUALITY_FILTER,
+        "live_director_reentry_enabled": LIVE_DIRECTOR_REENTRY_ENABLED,
+        "live_director_max_entries_per_revision": LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION,
+        "live_director_reentry_min_pullback_points": LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS,
+        "pre_event_awareness_enabled": PRE_EVENT_AWARENESS_ENABLED,
         "event_shock_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
         "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
         "event_shock_min_m1_score": EVENT_SHOCK_MIN_M1_SCORE,
@@ -21426,6 +21993,11 @@ def webhook():
         # 3) fa avanzare la macchina a stati;
         # 4) se il failed retest è confermato, Python può creare un SELL autonomo.
         detect_auto_event_from_data(data)
+        try:
+            pre_event_ctx = process_pre_event_awareness(data)
+        except Exception as e:
+            print(f"[v47.15.2] PRE-EVENT error: {type(e).__name__}: {e}", flush=True)
+            pre_event_ctx = {"active": False, "reason": str(e)}
         updates = handle_price_update(data)
 
         # Motore parallelo FAST: usa gli stessi PRICE_UPDATE solo per gestire TP/SL fast.
@@ -21523,12 +22095,12 @@ def webhook():
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
 
-        # v47.15.1: EVENT SHOCK puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
+        # v47.15.2: EVENT SHOCK/PRE-EVENT puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
         # Richiede break strutturale reale + Thesis/M1 + no-chase; non bypassa la gestione LIVE.
         try:
             event_shock_result = process_event_shock_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.15.1] EVENT SHOCK error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.2] EVENT SHOCK error: {type(e).__name__}: {e}", flush=True)
             event_shock_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
         # v47.14.2: FORECAST CAMPAIGN + PRE-REVISION bidirezionale (3 x 0.01).
@@ -21536,16 +22108,16 @@ def webhook():
         try:
             forecast_campaign_result = process_forecast_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.15.1] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.2] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
             forecast_campaign_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
-        # v47.15.1: unico strato Telegram/gestione live sopra Forecast + Thesis + M1 + EVENT SHOCK.
+        # v47.15.2: unico strato Telegram/gestione live sopra Forecast + Thesis + M1 + EVENT SHOCK + RE-ENTRY.
         try:
             live_director_result = process_live_director(
                 data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx, campaign_result=forecast_campaign_result
             )
         except Exception as e:
-            print(f"[v47.15.1] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.2] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
             live_director_result = {"messages": [], "active_trade_id": None, "action": "ERROR", "reason": str(e)}
 
         # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
