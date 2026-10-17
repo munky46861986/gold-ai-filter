@@ -14,8 +14,8 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.15.2 Forecast First + LIVE DIRECTOR + CONTROLLED REENTRY + PRE-EVENT"
-# v47.15.2: aggiunge CONTROLLED RE-ENTRY, LIVE RETEST ZONE, PRE-EVENT AWARENESS e GHOST TRADE FIX.
+VERSION = "v47.15.3 Forecast First + LIVE DIRECTOR + BROKER SYNC + STRUCTURAL REENTRY"
+# v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
 # GOLD MASTER LIVE DIRECTOR: entry quality, gestione LIVE stile Max, milestone,
@@ -377,7 +377,7 @@ LIVE_DIRECTOR_TIGHTEN_TRAIL_POINTS = max(1.0, float(os.getenv("LIVE_DIRECTOR_TIG
 LIVE_DIRECTOR_EARLY_EXIT_ENABLED = os.getenv("LIVE_DIRECTOR_EARLY_EXIT_ENABLED", "TRUE").upper() == "TRUE"
 LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT = max(0.0, float(os.getenv("LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT", "0.50")))
 LIVE_DIRECTOR_REENTRY_WAIT_SECONDS = max(60, int(os.getenv("LIVE_DIRECTOR_REENTRY_WAIT_SECONDS", "180")))
-# v47.15.2: re-entry controllato sulla stessa mappa/revisione. Il primo trade resta quello standard;
+# v47.15.3: re-entry controllato sulla stessa mappa/revisione. Il primo trade resta quello standard;
 # dopo la chiusura sono ammessi al massimo 2 nuovi tentativi, solo su nuovo pullback + nuovo micro-BOS.
 LIVE_DIRECTOR_REENTRY_ENABLED = os.getenv("LIVE_DIRECTOR_REENTRY_ENABLED", "TRUE").upper() == "TRUE"
 LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION = max(1, int(os.getenv("LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION", "3")))
@@ -388,6 +388,17 @@ LIVE_DIRECTOR_REENTRY_AFTER_LOSS_WAIT_SECONDS = max(LIVE_DIRECTOR_REENTRY_WAIT_S
 LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS = max(0.5, float(os.getenv("LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS", "1.50")))
 LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT = max(0.5, float(os.getenv("LIVE_DIRECTOR_REENTRY_MAX_BREAK_OVERSHOOT", "3.00")))
 LIVE_DIRECTOR_REENTRY_LOOKBACK_SECONDS = max(180, int(os.getenv("LIVE_DIRECTOR_REENTRY_LOOKBACK_SECONDS", "1800")))
+# v47.15.3: il terzo ingresso nella stessa mappa e' piu selettivo.
+LIVE_DIRECTOR_REENTRY_THIRD_MIN_M1_SCORE = max(LIVE_DIRECTOR_REENTRY_AFTER_LOSS_MIN_M1_SCORE, int(os.getenv("LIVE_DIRECTOR_REENTRY_THIRD_MIN_M1_SCORE", "7")))
+LIVE_DIRECTOR_REENTRY_THIRD_MIN_PULLBACK_POINTS = max(LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS, float(os.getenv("LIVE_DIRECTOR_REENTRY_THIRD_MIN_PULLBACK_POINTS", "2.50")))
+# v47.15.3: SL dei re-entry ancorato alla struttura del retest. Non stringe rispetto allo SL legacy:
+# puo' solo dare piu spazio se il minimo/massimo del retest lo richiede. Se servirebbe troppo rischio, il re-entry viene scartato.
+LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_ENABLED = os.getenv("LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_ENABLED", "TRUE").upper() == "TRUE"
+LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_BUFFER_POINTS = max(0.20, float(os.getenv("LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_BUFFER_POINTS", "1.00")))
+LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS = max(FORECAST_CAMPAIGN_MAX_SL_POINTS, float(os.getenv("LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS", "14.00")))
+# Broker source of truth: se MT4 comunica CLOSED, il Director chiude subito anche lo stato server.
+MT4_FORECAST_BROKER_SOURCE_OF_TRUTH = os.getenv("MT4_FORECAST_BROKER_SOURCE_OF_TRUTH", "TRUE").upper() == "TRUE"
+MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED = os.getenv("MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED", "TRUE").upper() == "TRUE"
 LIVE_DIRECTOR_BOOT_TS = time.time()
 
 # v47.15.2 PRE-EVENT AWARENESS.
@@ -12808,6 +12819,73 @@ def _close_forecast_campaign_sim(campaign, price, reason):
     return f"🔄 {label} CHIUSA | {campaign.get('direction')} | {reason} | uscita {round(to_float(price),3)} | totale simulato {campaign.get('result_points_total'):+.2f} pt"
 
 
+def _sync_forecast_campaign_from_mt4_close(campaign, payload):
+    """MT4 is the source of truth for execution. Close server state immediately when broker reports CLOSED."""
+    if not campaign or not MT4_FORECAST_BROKER_SOURCE_OF_TRUTH:
+        return False
+    payload = payload or {}
+    # Reconcile every leg with the broker close price when the new EA supplies it.
+    close_map = {
+        "A": to_float(payload.get("close_a"), 0),
+        "B": to_float(payload.get("close_b"), 0),
+        "C": to_float(payload.get("close_c"), 0),
+    }
+    fallback = to_float(payload.get("close_price"), 0)
+    entry = to_float(campaign.get("entry"), 0)
+    for leg in campaign.get("legs", []) or []:
+        name = str(leg.get("name") or "")
+        px = close_map.get(name, 0) or fallback
+        if px:
+            leg["status"] = "CLOSED"
+            leg["exit_price"] = round(px, 3)
+            leg["broker_exit_price"] = round(px, 3)
+            leg["exit_reason"] = "MT4_BROKER_CLOSED"
+            leg["closed"] = now_ts()
+        elif leg.get("status") != "CLOSED":
+            # No price in legacy EA event: still close the logical leg so the server can never continue the trade.
+            leg["status"] = "CLOSED"
+            leg["exit_price"] = to_float(leg.get("exit_price"), entry)
+            leg["exit_reason"] = "MT4_BROKER_CLOSED_NO_PRICE"
+            leg["closed"] = now_ts()
+    campaign["status"] = "CLOSED"
+    campaign["closed"] = now_ts()
+    campaign["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    broker_reason = str(payload.get("reason") or "CLOSED")
+    campaign["close_reason"] = f"MT4_BROKER_{broker_reason}"
+    campaign["result_source"] = "MT4_BROKER"
+    campaign["mt4_status"] = "CLOSED"
+    campaign["mt4_pnl"] = round(to_float(payload.get("pnl"), 0), 2)
+    campaign["mt4_close_reason"] = broker_reason
+    campaign["mt4_close_price"] = round(fallback, 3) if fallback else None
+    campaign["mt4_closed"] = now_ts()
+    campaign["result_points_total"] = _forecast_campaign_result_points(campaign)
+    save_runtime_state(force=True)
+    return True
+
+
+def _live_director_broker_close_message(campaign):
+    direction = str((campaign or {}).get("direction") or "").upper()
+    pnl = to_float((campaign or {}).get("mt4_pnl"), 0)
+    reason = str((campaign or {}).get("mt4_close_reason") or "CLOSED")
+    emoji = "✅" if pnl > 0.01 else ("❌" if pnl < -0.01 else "➖")
+    prices = []
+    for leg in (campaign or {}).get("legs", []) or []:
+        px = to_float(leg.get("broker_exit_price"), 0)
+        if px:
+            prices.append(f"{leg.get('name')} {round(px,3)}")
+    price_line = (" | ".join(prices)) if prices else "prezzo broker non inviato dal vecchio EA"
+    return f"""{emoji} GOLD MASTER LIVE — TRADE {direction} CHIUSO DAL BROKER MT4
+
+Motivo broker: {reason}
+PnL broker: {pnl:+.2f}
+Chiusure: {price_line}
+
+🔒 SERVER SINCRONIZZATO: la Campaign e' chiusa.
+Non verranno piu calcolati +PIPS/TP su questo trade.
+
+⏸ ADESSO ASPETTIAMO nuova struttura valida."""
+
+
 def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_session=None, thesis_ctx=None, m1_ctx=None):
     messages = []
     symbol = str(symbol or "XAUUSD").upper()
@@ -12831,6 +12909,13 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
 
     for c in _forecast_campaigns(symbol):
         if c.get("status") not in ["OPEN", "OPENED", "PENDING"]:
+            continue
+        # v47.15.3 secondary safeguard: a CLOSED broker state always wins over the TradingView simulator.
+        if MT4_FORECAST_BROKER_SOURCE_OF_TRUTH and str(c.get("mt4_status") or "").upper() == "CLOSED":
+            _sync_forecast_campaign_from_mt4_close(c, {
+                "pnl": c.get("mt4_pnl"), "reason": c.get("mt4_close_reason"),
+                "close_price": c.get("mt4_close_price"),
+            })
             continue
         direction = str(c.get("direction") or "").upper()
 
@@ -13020,6 +13105,8 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
     ref = _forecast_reference_range(forecast, sessions.get(session))
     sl_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
     entry = round(price, 3)
+    is_pre = bool(pre_ctx and pre_ctx.get("qualifies"))
+    is_reentry = bool(reentry_ctx and reentry_ctx.get("is_reentry")) and not is_pre
     if bias == "BUY":
         sl = round(entry - sl_dist, 3)
         tp1 = round(entry + FORECAST_CAMPAIGN_TP1_POINTS, 3)
@@ -13028,9 +13115,8 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
         sl = round(entry + sl_dist, 3)
         tp1 = round(entry - FORECAST_CAMPAIGN_TP1_POINTS, 3)
         tp2 = round(entry - FORECAST_CAMPAIGN_TP2_POINTS, 3)
-
-    is_pre = bool(pre_ctx and pre_ctx.get("qualifies"))
-    is_reentry = bool(reentry_ctx and reentry_ctx.get("is_reentry")) and not is_pre
+    if is_reentry and isinstance((reentry_ctx or {}).get("sl_plan"), dict):
+        sl = round(to_float(reentry_ctx.get("sl_plan", {}).get("sl"), sl), 3)
     pre_base_key = _forecast_pre_revision_key(session, forecast, bias) if is_pre else None
     pre_attempt = int((pre_ctx or {}).get("attempt", 1)) if is_pre else 0
     standard_base_key = _forecast_campaign_key(session, forecast, bias)
@@ -13067,6 +13153,10 @@ def _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ct
         "reentry_reason": (reentry_ctx or {}).get("reason") if is_reentry else None,
         "reentry_pullback_points": (reentry_ctx or {}).get("pullback_points") if is_reentry else None,
         "reentry_break_level": (reentry_ctx or {}).get("break_level") if is_reentry else None,
+        "reentry_retest_low": (reentry_ctx or {}).get("retest_low") if is_reentry else None,
+        "reentry_retest_high": (reentry_ctx or {}).get("retest_high") if is_reentry else None,
+        "reentry_sl_source": ((reentry_ctx or {}).get("sl_plan") or {}).get("source") if is_reentry else None,
+        "reentry_sl_distance": ((reentry_ctx or {}).get("sl_plan") or {}).get("distance") if is_reentry else None,
         "legs": [
             {"name": "A", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP1", "status": "OPEN"},
             {"name": "B", "lot": FORECAST_CAMPAIGN_LEG_LOT, "role": "TP2", "status": "OPEN"},
@@ -13613,12 +13703,25 @@ def _price_history_since(symbol, since_ts, lookback_seconds=None):
     return rows
 
 
-def _live_director_reentry_structure(symbol, direction, last_campaign, m1, price):
-    """Dynamic retest zone: requires a completed pullback/rebound in recent history plus a fresh M1 BOS."""
+def _live_director_reentry_structure(symbol, direction, last_campaign, m1, price, attempt=2):
+    """Dynamic retest zone: requires a completed pullback/rebound in recent history plus a fresh M1 BOS.
+
+    v47.15.3 also records the actual retest extreme. That extreme is later used to build a structural SL.
+    """
     direction = str(direction or "").upper()
+    attempt = max(2, int(attempt or 2))
     closed_ts = to_float((last_campaign or {}).get("closed"), to_float((last_campaign or {}).get("created"), 0))
     rows = _price_history_since(symbol, closed_ts)
-    out = {"ok": False, "reason": "history insufficiente", "pullback_points": 0.0, "break_level": to_float((m1 or {}).get("break_level"), 0)}
+    min_pullback_required = (
+        LIVE_DIRECTOR_REENTRY_THIRD_MIN_PULLBACK_POINTS
+        if attempt >= 3 else LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS
+    )
+    out = {
+        "ok": False, "reason": "history insufficiente", "pullback_points": 0.0,
+        "break_level": to_float((m1 or {}).get("break_level"), 0),
+        "retest_low": 0.0, "retest_high": 0.0, "retest_anchor": 0.0,
+        "min_pullback_required": round(min_pullback_required, 3),
+    }
     if len(rows) < 5:
         return out
     # The latest update is the breakout candidate itself; measure the completed retest before it.
@@ -13628,26 +13731,42 @@ def _live_director_reentry_structure(symbol, direction, last_campaign, m1, price
     if direction == "BUY":
         running_high = highs[0]
         pullback = 0.0
+        retest_low = lows[0]
+        retest_anchor = highs[0]
         for hi, lo in zip(highs, lows):
             running_high = max(running_high, hi)
-            pullback = max(pullback, running_high - lo)
+            current_pullback = max(0.0, running_high - lo)
+            if current_pullback >= pullback:
+                pullback = current_pullback
+                retest_low = lo
+                retest_anchor = running_high
         break_level = to_float((m1 or {}).get("break_level"), max(highs))
         overshoot = max(0.0, to_float(price, 0) - break_level)
+        out["retest_low"] = round(retest_low, 3)
+        out["retest_anchor"] = round(retest_anchor, 3)
     else:
         running_low = lows[0]
         pullback = 0.0
+        retest_high = highs[0]
+        retest_anchor = lows[0]
         for hi, lo in zip(highs, lows):
             running_low = min(running_low, lo)
-            pullback = max(pullback, hi - running_low)
+            current_pullback = max(0.0, hi - running_low)
+            if current_pullback >= pullback:
+                pullback = current_pullback
+                retest_high = hi
+                retest_anchor = running_low
         break_level = to_float((m1 or {}).get("break_level"), min(lows))
         overshoot = max(0.0, break_level - to_float(price, 0))
+        out["retest_high"] = round(retest_high, 3)
+        out["retest_anchor"] = round(retest_anchor, 3)
     out.update({
         "pullback_points": round(max(0.0, pullback), 3),
         "break_level": round(break_level, 3),
         "break_overshoot": round(overshoot, 3),
     })
-    if pullback < LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS:
-        out["reason"] = f"pullback {round(pullback,2)} < {LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS:g} pt"
+    if pullback < min_pullback_required:
+        out["reason"] = f"pullback {round(pullback,2)} < {min_pullback_required:g} pt"
         return out
     if LIVE_DIRECTOR_REENTRY_REQUIRE_BOS and not (m1 or {}).get("bos"):
         out["reason"] = "serve nuovo micro-BOS"
@@ -13659,6 +13778,56 @@ def _live_director_reentry_structure(symbol, direction, last_campaign, m1, price
     out["reason"] = f"nuovo retest {round(pullback,2)} pt + nuovo BOS"
     return out
 
+
+def _live_director_reentry_sl_plan(forecast, session_ctx, direction, entry, reentry_ctx):
+    """Build a broker-friendly SL for a re-entry.
+
+    It starts from the legacy dynamic SL and only widens it when the real retest extreme requires more room.
+    If the structure would require more than the configured maximum risk, reject the re-entry instead of hiding
+    the structure inside a too-tight stop.
+    """
+    direction = str(direction or "").upper()
+    entry = to_float(entry, 0)
+    ref = _forecast_reference_range(forecast, session_ctx)
+    legacy_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
+    legacy_sl = entry - legacy_dist if direction == "BUY" else entry + legacy_dist
+    chosen = legacy_sl
+    structural = 0.0
+    source = "LEGACY_DYNAMIC"
+    if LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_ENABLED:
+        if direction == "BUY":
+            retest_low = to_float((reentry_ctx or {}).get("retest_low"), 0)
+            if retest_low:
+                structural = retest_low - LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_BUFFER_POINTS
+                chosen = min(legacy_sl, structural)
+                if chosen < legacy_sl - 0.001:
+                    source = "RETEST_LOW"
+        elif direction == "SELL":
+            retest_high = to_float((reentry_ctx or {}).get("retest_high"), 0)
+            if retest_high:
+                structural = retest_high + LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_BUFFER_POINTS
+                chosen = max(legacy_sl, structural)
+                if chosen > legacy_sl + 0.001:
+                    source = "RETEST_HIGH"
+    distance = abs(entry - chosen)
+    ok = bool(entry and distance <= LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS + 1e-9)
+    return {
+        "ok": ok,
+        "sl": round(chosen, 3),
+        "distance": round(distance, 3),
+        "legacy_sl": round(legacy_sl, 3),
+        "structural_candidate": round(structural, 3) if structural else None,
+        "source": source,
+        "max_distance": LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS,
+        "reason": "ok" if ok else f"SL strutturale richiede {round(distance,2)} pt > massimo {LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS:g} pt",
+    }
+
+
+def _forecast_campaign_effective_result(campaign):
+    """Only the sign is needed for re-entry strictness; prefer real broker PnL when available."""
+    if isinstance(campaign, dict) and campaign.get("result_source") == "MT4_BROKER":
+        return to_float(campaign.get("mt4_pnl"), 0)
+    return to_float((campaign or {}).get("result_points_total"), 0)
 
 def _forecast_campaign_entry_preflight(forecast, bias, price, data, session_ctx=None):
     """Freshness guard. Reject only when the webhook explicitly tells us the signal is stale."""
@@ -13771,7 +13940,11 @@ def _live_director_entry_message(campaign):
         forecast_line = (
             f"Forecast LIVE: {campaign.get('forecast_bias')} | forza {campaign.get('forecast_strength')}\n"
             f"M1: {direction} score {campaign.get('m1_score')}" +
-            (f"\nRe-entry: tentativo #{campaign.get('entry_attempt')} | pullback {campaign.get('reentry_pullback_points')} pt" if reentry else "")
+            (
+                f"\nRe-entry: tentativo #{campaign.get('entry_attempt')} | pullback {campaign.get('reentry_pullback_points')} pt"
+                f" | SL {campaign.get('reentry_sl_source') or 'DYNAMIC'} {campaign.get('reentry_sl_distance')} pt"
+                if reentry else ""
+            )
         )
         headline = f"🚀 GOLD MASTER LIVE — {direction} ATTIVO"
     return f"""{headline}
@@ -13796,6 +13969,8 @@ Runner: APERTO
 
 
 def _live_director_close_message(c):
+    if (c or {}).get("result_source") == "MT4_BROKER":
+        return _live_director_broker_close_message(c)
     direction = str(c.get("direction") or "").upper()
     result = to_float(c.get("result_points_total"), 0)
     mfe = to_float(c.get("director_mfe"), 0)
@@ -14207,22 +14382,30 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
             result["reason"] = "tentativo precedente ancora attivo"
             return result
         last_closed = to_float(last.get("closed"), to_float(last.get("created"), 0))
-        last_result = to_float(last.get("result_points_total"), 0)
+        last_result = _forecast_campaign_effective_result(last)
         wait_required = LIVE_DIRECTOR_REENTRY_AFTER_LOSS_WAIT_SECONDS if last_result < 0 else LIVE_DIRECTOR_REENTRY_WAIT_SECONDS
         elapsed = now_ts() - last_closed if last_closed else 999999
         if elapsed < wait_required:
             result["reason"] = f"re-entry cooldown {int(wait_required-elapsed)}s"
             return result
         min_score = LIVE_DIRECTOR_REENTRY_AFTER_LOSS_MIN_M1_SCORE if last_result < 0 else LIVE_DIRECTOR_REENTRY_MIN_M1_SCORE
+        if attempt >= 3:
+            min_score = max(min_score, LIVE_DIRECTOR_REENTRY_THIRD_MIN_M1_SCORE)
         if int(m1.get("score",0)) < min_score:
-            result["reason"] = f"re-entry richiede M1 {bias} >= {min_score}"
+            result["reason"] = f"re-entry #{attempt} richiede M1 {bias} >= {min_score}"
             return result
-        structure = _live_director_reentry_structure(symbol, bias, last, m1, price)
+        structure = _live_director_reentry_structure(symbol, bias, last, m1, price, attempt=attempt)
         result["reentry_structure"] = structure
         if not structure.get("ok"):
             result["reason"] = "re-entry: " + str(structure.get("reason"))
             return result
         reentry_ctx = {"is_reentry": True, "attempt": attempt, **structure}
+        sl_plan = _live_director_reentry_sl_plan(forecast, sessions.get(session), bias, price, reentry_ctx)
+        result["reentry_sl_plan"] = sl_plan
+        if not sl_plan.get("ok"):
+            result["reason"] = "re-entry: " + str(sl_plan.get("reason"))
+            return result
+        reentry_ctx["sl_plan"] = sl_plan
 
     # Still never chase beyond the whole Forecast map extension.
     if _forecast_campaign_map_exhausted(forecast, bias, price):
@@ -14259,6 +14442,12 @@ def forecast_campaign_status():
         "live_director_reentry_enabled": LIVE_DIRECTOR_REENTRY_ENABLED,
         "live_director_max_entries_per_revision": LIVE_DIRECTOR_MAX_ENTRIES_PER_REVISION,
         "live_director_reentry_min_pullback_points": LIVE_DIRECTOR_REENTRY_MIN_PULLBACK_POINTS,
+        "live_director_reentry_third_min_m1_score": LIVE_DIRECTOR_REENTRY_THIRD_MIN_M1_SCORE,
+        "live_director_reentry_third_min_pullback_points": LIVE_DIRECTOR_REENTRY_THIRD_MIN_PULLBACK_POINTS,
+        "live_director_reentry_structural_sl_enabled": LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_ENABLED,
+        "live_director_reentry_structural_sl_buffer_points": LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_BUFFER_POINTS,
+        "live_director_reentry_structural_sl_max_points": LIVE_DIRECTOR_REENTRY_STRUCTURAL_SL_MAX_POINTS,
+        "mt4_forecast_broker_source_of_truth": MT4_FORECAST_BROKER_SOURCE_OF_TRUTH,
         "pre_event_awareness_enabled": PRE_EVENT_AWARENESS_ENABLED,
         "event_shock_enabled": EVENT_SHOCK_DIRECTOR_ENABLED,
         "event_shock_sessions": sorted(EVENT_SHOCK_SESSIONS),
@@ -21184,6 +21373,10 @@ def _mt4_record_event(payload):
         "ticket_b": str(payload.get("ticket_b") or ""),
         "ticket_c": str(payload.get("ticket_c") or ""),
         "reason": str(payload.get("reason") or ""),
+        "close_price": round(to_float(payload.get("close_price"), 0), 5),
+        "close_a": round(to_float(payload.get("close_a"), 0), 5),
+        "close_b": round(to_float(payload.get("close_b"), 0), 5),
+        "close_c": round(to_float(payload.get("close_c"), 0), 5),
         "ts": now_ts(),
         "local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -21216,11 +21409,24 @@ def _mt4_record_event(payload):
                 if not isinstance(st, dict):
                     continue
                 for c in st.get("forecast_campaigns", []) or []:
-                    if str(c.get("id")) == trade_id:
-                        c["mt4_status"] = "CLOSED"
-                        c["mt4_pnl"] = round(to_float(payload.get("pnl"), 0), 2)
-                        c["mt4_close_reason"] = str(payload.get("reason") or "")
-                        c["mt4_closed"] = now_ts()
+                    if str(c.get("id")) != trade_id:
+                        continue
+                    c["mt4_status"] = "CLOSED"
+                    c["mt4_pnl"] = round(to_float(payload.get("pnl"), 0), 2)
+                    c["mt4_close_reason"] = str(payload.get("reason") or "")
+                    c["mt4_close_price"] = round(to_float(payload.get("close_price"), 0), 5) or None
+                    c["mt4_closed"] = now_ts()
+                    was_active = c.get("status") in ["OPEN", "OPENED", "PENDING"]
+                    if MT4_FORECAST_BROKER_SOURCE_OF_TRUTH:
+                        _sync_forecast_campaign_from_mt4_close(c, payload)
+                    # Close alert is generated immediately from the broker event, not on a later TradingView tick.
+                    if (was_active and LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_ALERT_ENABLED
+                            and MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED and not c.get("director_close_notified")):
+                        c["director_close_notified"] = True
+                        if c.get("director_entry_notified"):
+                            send_telegram(_live_director_broker_close_message(c))
+                        else:
+                            c["director_ghost_suppressed"] = True
         pnl = to_float(payload.get("pnl"), 0)
         d = _mt4_daily()
         if pnl > 0.01:
@@ -21333,16 +21539,20 @@ def mt4_event():
                     f"{row.get('engine')} trade {row.get('trade_id')}\n"
                     f"Ticket A/B/C: {row.get('ticket_a')} / {row.get('ticket_b')} / {row.get('ticket_c')}\n"
                     f"Account demo: {row.get('account')}\n"
-                    f"⚠️ Bridge v47.14 DEMO — FORECAST FIRST"
+                    f"⚠️ Bridge v47.15.3 DEMO — BROKER SYNC"
                 )
             elif row.get("event") == "CLOSED":
-                send_telegram(
-                    f"🤖 MT4 DEMO — CHIUSO\n\n"
-                    f"{row.get('engine')} trade {row.get('trade_id')}\n"
-                    f"PnL broker: {to_float(row.get('pnl')):+.2f}\n"
-                    f"Motivo: {row.get('reason') or 'N/D'}\n"
-                    f"⚠️ Bridge v47.14 DEMO — FORECAST FIRST"
-                )
+                # Forecast + Live Director already sends the broker-source-of-truth close message immediately.
+                # Avoid a second Telegram message with the same closure.
+                if not (str(row.get("engine") or "").upper() == "FORECAST" and LIVE_DIRECTOR_ENABLED
+                        and MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED):
+                    send_telegram(
+                        f"🤖 MT4 DEMO — CHIUSO\n\n"
+                        f"{row.get('engine')} trade {row.get('trade_id')}\n"
+                        f"PnL broker: {to_float(row.get('pnl')):+.2f}\n"
+                        f"Motivo: {row.get('reason') or 'N/D'}\n"
+                        f"⚠️ Bridge v47.15.3 DEMO — BROKER SYNC"
+                    )
         except Exception as e:
             print(f"[v47.6] MT4 Telegram event error: {type(e).__name__}: {e}", flush=True)
     return "OK", 200, {"Content-Type": "text/plain; charset=utf-8"}
@@ -21996,7 +22206,7 @@ def webhook():
         try:
             pre_event_ctx = process_pre_event_awareness(data)
         except Exception as e:
-            print(f"[v47.15.2] PRE-EVENT error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.3] PRE-EVENT error: {type(e).__name__}: {e}", flush=True)
             pre_event_ctx = {"active": False, "reason": str(e)}
         updates = handle_price_update(data)
 
@@ -22095,12 +22305,12 @@ def webhook():
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
 
-        # v47.15.2: EVENT SHOCK/PRE-EVENT puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
+        # v47.15.3: EVENT SHOCK/PRE-EVENT puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
         # Richiede break strutturale reale + Thesis/M1 + no-chase; non bypassa la gestione LIVE.
         try:
             event_shock_result = process_event_shock_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.15.2] EVENT SHOCK error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.3] EVENT SHOCK error: {type(e).__name__}: {e}", flush=True)
             event_shock_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
         # v47.14.2: FORECAST CAMPAIGN + PRE-REVISION bidirezionale (3 x 0.01).
@@ -22108,16 +22318,16 @@ def webhook():
         try:
             forecast_campaign_result = process_forecast_campaign(data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx)
         except Exception as e:
-            print(f"[v47.15.2] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.3] Forecast Campaign error: {type(e).__name__}: {e}", flush=True)
             forecast_campaign_result = {"triggered": False, "trade_id": None, "reason": str(e)}
 
-        # v47.15.2: unico strato Telegram/gestione live sopra Forecast + Thesis + M1 + EVENT SHOCK + RE-ENTRY.
+        # v47.15.3: unico strato Telegram/gestione live sopra Forecast + Thesis + M1 + EVENT SHOCK + RE-ENTRY.
         try:
             live_director_result = process_live_director(
                 data, thesis_ctx=daily_thesis_ctx, m1_ctx=m1_ctx, campaign_result=forecast_campaign_result
             )
         except Exception as e:
-            print(f"[v47.15.2] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
+            print(f"[v47.15.3] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
             live_director_result = {"messages": [], "active_trade_id": None, "action": "ERROR", "reason": str(e)}
 
         # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
