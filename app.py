@@ -12816,7 +12816,11 @@ def _close_forecast_campaign_sim(campaign, price, reason):
     campaign["close_reason"] = reason
     campaign["result_points_total"] = _forecast_campaign_result_points(campaign)
     save_runtime_state(force=True)
-    return f"🔄 {label} CHIUSA | {campaign.get('direction')} | {reason} | uscita {round(to_float(price),3)} | totale simulato {campaign.get('result_points_total'):+.2f} pt"
+    return (f"📊 SOLO SIMULATORE — {label} {campaign.get('direction')} TERMINATA | "
+            f"{reason} | uscita teorica {round(to_float(price),3)} | "
+            f"risultato SOLO simulato {campaign.get('result_points_total'):+.2f} pt. "
+            "⚠️ Non conferma la chiusura delle posizioni MT4. "
+            "Il risultato definitivo arriva soltanto dal broker.")
 
 
 def _sync_forecast_campaign_from_mt4_close(campaign, payload):
@@ -13010,7 +13014,11 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
             c["closed_local"] = local_datetime().strftime("%Y-%m-%d %H:%M:%S")
             c["close_reason"] = "SL/TRAIL"
             c["result_points_total"] = _forecast_campaign_result_points(c)
-            messages.append(f"🛡 {label} CHIUSA | {direction} | SL/TRAIL {round(sl,3)} | totale simulato {c.get('result_points_total'):+.2f} pt")
+            messages.append(
+                f"📊 SOLO SIMULATORE — {label} {direction} SL/TRAIL a {round(sl,3)} | "
+                f"risultato teorico {c.get('result_points_total'):+.2f} pt. "
+                "⚠️ MT4 NON ha ancora confermato la chiusura: possono esserci posizioni aperte."
+            )
             continue
 
         tp1 = to_float(c.get("tp1"), 0)
@@ -13949,6 +13957,9 @@ def _live_director_entry_message(campaign):
         headline = f"🚀 GOLD MASTER LIVE — {direction} ATTIVO"
     return f"""{headline}
 
+📡 Segnale operativo del server: l'apertura sul broker NON e' ancora confermata.
+Attendi il messaggio 🤖 MT4 DEMO — APERTO per la conferma dell'esecuzione.
+
 {campaign.get('symbol')} | {campaign.get('session')} | Modalita': {mode}
 Entry: {campaign.get('entry')}
 SL: {campaign.get('sl')}
@@ -13969,22 +13980,26 @@ Runner: APERTO
 
 
 def _live_director_close_message(c):
+    """Do not call a simulated close a broker close; broker CLOSED is authoritative."""
     if (c or {}).get("result_source") == "MT4_BROKER":
         return _live_director_broker_close_message(c)
     direction = str(c.get("direction") or "").upper()
     result = to_float(c.get("result_points_total"), 0)
     mfe = to_float(c.get("director_mfe"), 0)
-    reason = str(c.get("close_reason") or "CHIUSURA")
-    emoji = "✅" if result > 0 else ("❌" if result < 0 else "➖")
-    return f"""{emoji} GOLD MASTER LIVE — TRADE {direction} CHIUSO
+    reason = str(c.get("close_reason") or "CHIUSURA_SIMULATORE")
+    trade_id = str(c.get("id") or "N/D")
+    return f"""⚠️ GOLD MASTER — SIMULATORE {direction} TERMINATO (NON CHIUSURA MT4)
 
-Motivo: {reason}
-Risultato simulatore 3 gambe: {result:+.2f} pt
-Massima escursione favorevole: +{mfe:.2f} pt / +{_live_director_pips(mfe)} pips formato Max
+FORECAST trade {trade_id}
+Motivo simulatore: {reason}
+Risultato SOLO simulato: {result:+.2f} pt (NON e' profitto broker)
+Massima escursione simulata: +{mfe:.2f} pt / +{_live_director_pips(mfe)} pips formato Max
 
-⏸ ADESSO ASPETTIAMO.
-Nessuna nuova entrata finche' Forecast + Thesis + M1 non costruiscono un nuovo setup valido."""
+🔎 Il broker MT4 NON ha ancora confermato la chiusura dell'intera campagna.
+Le posizioni A/B/C possono essere ancora aperte: controlla MT4 e i relativi SL.
+Solo il messaggio 'CHIUSO DAL BROKER MT4' conferma la chiusura e il PnL effettivi.
 
+⏸ Nessun risultato broker definitivo finche' non arriva il relativo evento MT4."""
 
 def _live_director_forecast_pressure(forecast, opposite_direction):
     if not isinstance(forecast, dict):
@@ -14073,17 +14088,25 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
             protection = to_float(c.get("runner_sl"), to_float(c.get("sl"), 0))
             state = "mantengo"
             if c.get("tp2_hit"):
-                state = f"runner protetto | SL {round(protection,3)}"
+                state = f"runner SL TEORICO {round(protection,3)} | broker MT4 da verificare"
             elif c.get("tp1_hit"):
-                state = f"B+C protette | SL {round(protection,3)}"
+                state = f"B+C SL TEORICO {round(protection,3)} | broker MT4 da verificare"
             messages.append(f"📈 {direction} +{_live_director_pips(x)} PIPS | max +{x:g} pt dal trade | {state.upper()}")
 
         if c.get("tp1_hit") and not c.get("director_tp1_notified"):
             c["director_tp1_notified"] = True
-            messages.append(f"✅ TP1 {direction} — +{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} PIPS | A chiusa | B+C -> BREAK EVEN {round(entry,3)} | mantengo")
+            messages.append(
+                f"📊 TP1 {direction} RILEVATO DAL SIMULATORE — +{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} PIPS | "
+                f"A teoricamente a TP1; B+C BE teorico {round(entry,3)}. "
+                "⚠️ Esecuzione TP1 e protezione B/C sul BROKER da verificare in MT4."
+            )
         if c.get("tp2_hit") and not c.get("director_tp2_notified"):
             c["director_tp2_notified"] = True
-            messages.append(f"✅ TP2 {direction} — +{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} PIPS | B chiusa | RUNNER C protetto a {round(to_float(c.get('runner_sl'), entry),3)}")
+            messages.append(
+                f"📊 TP2 {direction} RILEVATO DAL SIMULATORE — +{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} PIPS | "
+                f"B teoricamente a TP2; C runner SL teorico {round(to_float(c.get('runner_sl'), entry),3)}. "
+                "⚠️ Verifica chiusura B e SL effettivo della C direttamente sul broker MT4."
+            )
 
         fast_state = _thesis_fast_state(symbol)
         stable_pref = str(fast_state.get("stable_preferred") or "").upper()
@@ -14127,19 +14150,25 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
             if desired is not None:
                 changed, new_sl = _live_director_set_protection(c, desired, price, reason)
                 if changed:
-                    messages.append(f"🛡 PROTEZIONE {direction}: SL -> {new_sl} | profitto protetto per pressione {opposite} M1/Thesis")
+                    messages.append(
+                        f"🛡 PROTEZIONE {direction}: nuovo SL TEORICO {new_sl} per pressione {opposite} M1/Thesis. "
+                        "⚠️ L'applicazione dello SL sul broker MT4 non e' ancora confermata."
+                    )
 
         # Early intelligent exit only to protect an already-positive trade; no automatic instant reversal.
         severe_reversal = bool(opposite_m1_strong and opposite_thesis and forecast_pressure)
         if (LIVE_DIRECTOR_EARLY_EXIT_ENABLED and severe_reversal and current_move >= LIVE_DIRECTOR_EARLY_EXIT_MIN_CURRENT_PROFIT
                 and c.get("status") in ["OPEN", "OPENED", "PENDING"]):
-            _forecast_campaign_request_mt4_close(c, reason="LIVE_DIRECTOR_REVERSAL_PROFIT_PROTECT")
+            close_cmd = _forecast_campaign_request_mt4_close(c, reason="LIVE_DIRECTOR_REVERSAL_PROFIT_PROTECT")
             msg = _close_forecast_campaign_sim(c, price, "LIVE_DIRECTOR_REVERSAL_PROFIT_PROTECT")
             if msg:
                 c["director_close_notified"] = True
+                cmd_info = ("richiesta di CLOSE accodata al bridge, NON ancora eseguita dal broker" if close_cmd
+                            else "ATTENZIONE: richiesta di CLOSE non accodata al bridge")
                 messages.append(
-                    f"🛑 CHIUDO IL RESTO {direction} A {round(price,3)} — profitto protetto. "
-                    f"Motivo: M1 {opposite} {int(m1.get('score',0))} + Thesis {opposite} stabile + Forecast in deterioramento.\n\n⏸ ASPETTIAMO nuova struttura."
+                    f"⚠️ CHIUSURA SIMULATA {direction} A {round(price,3)} — {cmd_info}. "
+                    f"Motivo: M1 {opposite} {int(m1.get('score',0))} + Thesis {opposite} + Forecast. "
+                    "Controlla MT4, attendi CHIUSO DAL BROKER MT4 prima di considerare concluse le posizioni."
                 )
             result["action"] = "CLOSE_AND_WAIT"
 
@@ -21392,6 +21421,18 @@ def _mt4_record_event(payload):
             cmd["status"] = "ACKED"
             cmd["acked_at"] = now_ts()
             cmd["account"] = account
+        if engine == "FORECAST":
+            for st in SESSION_THESIS_STATE.values():
+                if not isinstance(st, dict):
+                    continue
+                for c in st.get("forecast_campaigns", []) or []:
+                    if str(c.get("id")) == trade_id:
+                        c["mt4_status"] = "OPENED"
+                        c["mt4_opened"] = now_ts()
+                        c["mt4_account"] = account
+                        c["mt4_tickets"] = [row["ticket_a"], row["ticket_b"], row["ticket_c"]]
+                        save_runtime_state(force=True)
+                        break
         d = _mt4_daily()
         d["trade_count"] = int(d.get("trade_count", 0)) + 1
         es = _mt4_engine_day_stats(d, engine)
@@ -21416,17 +21457,19 @@ def _mt4_record_event(payload):
                     c["mt4_close_reason"] = str(payload.get("reason") or "")
                     c["mt4_close_price"] = round(to_float(payload.get("close_price"), 0), 5) or None
                     c["mt4_closed"] = now_ts()
-                    was_active = c.get("status") in ["OPEN", "OPENED", "PENDING"]
                     if MT4_FORECAST_BROKER_SOURCE_OF_TRUTH:
                         _sync_forecast_campaign_from_mt4_close(c, payload)
-                    # Close alert is generated immediately from the broker event, not on a later TradingView tick.
-                    if (was_active and LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_ALERT_ENABLED
-                            and MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED and not c.get("director_close_notified")):
-                        c["director_close_notified"] = True
-                        if c.get("director_entry_notified"):
-                            send_telegram(_live_director_broker_close_message(c))
-                        else:
-                            c["director_ghost_suppressed"] = True
+                    # Simulated-close notifications NEVER suppress a later, genuine MT4 CLOSED event.
+                    # This is an independent acknowledgement (and the only definitive PnL message).
+                    if (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_ALERT_ENABLED
+                            and MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED
+                            and not c.get("director_broker_close_notified")):
+                        notified = send_telegram(_live_director_broker_close_message(c))
+                        if notified:
+                            c["director_broker_close_notified"] = True
+                            c["director_close_notified"] = True
+                            row["forecast_broker_close_alert_sent"] = True
+                            save_runtime_state(force=True)
         pnl = to_float(payload.get("pnl"), 0)
         d = _mt4_daily()
         if pnl > 0.01:
@@ -21544,8 +21587,7 @@ def mt4_event():
             elif row.get("event") == "CLOSED":
                 # Forecast + Live Director already sends the broker-source-of-truth close message immediately.
                 # Avoid a second Telegram message with the same closure.
-                if not (str(row.get("engine") or "").upper() == "FORECAST" and LIVE_DIRECTOR_ENABLED
-                        and MT4_FORECAST_BROKER_CLOSE_ALERT_ENABLED):
+                if not row.get("forecast_broker_close_alert_sent", False):
                     send_telegram(
                         f"🤖 MT4 DEMO — CHIUSO\n\n"
                         f"{row.get('engine')} trade {row.get('trade_id')}\n"
