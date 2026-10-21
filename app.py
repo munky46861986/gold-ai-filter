@@ -20941,12 +20941,19 @@ MT4_TARGET_CURRENCY = str(os.getenv("MT4_TARGET_CURRENCY", "EUR")).upper().strip
 MT4_TELEGRAM_EVENTS = os.getenv("MT4_TELEGRAM_EVENTS", "TRUE").upper() == "TRUE"
 MT4_ADMIN_TOKEN = os.getenv("MT4_ADMIN_TOKEN", SHADOW_ADMIN_TOKEN)
 
+# v47.15.3 + RECOVERY EVENT TELEMETRY (ISOLATA; DEFAULT SPENTO).
+# Non modifica /mt4/poll, /mt4/event, Forecast, A/B/C o DAILY_MAX_LOSS.
+MT4_RECOVERY_EVENTS_ENABLED = os.getenv("MT4_RECOVERY_EVENTS_ENABLED", "FALSE").upper() == "TRUE"
+MT4_RECOVERY_TELEGRAM_ENABLED = os.getenv("MT4_RECOVERY_TELEGRAM_ENABLED", "FALSE").upper() == "TRUE"
+
+
 MT4_STATE = {
     "version": "v47.14-mt4-demo-forecast-3leg-1",
     "commands": [],
     "daily": {},
     "accounts": {},
     "events": [],
+    "recovery_events": [],
     "last_save": 0,
 }
 
@@ -20989,6 +20996,7 @@ def load_mt4_bridge_state():
             MT4_STATE.setdefault("daily", {})
             MT4_STATE.setdefault("accounts", {})
             MT4_STATE.setdefault("events", [])
+            MT4_STATE.setdefault("recovery_events", [])
     except Exception as e:
         print(f"[v47.6] MT4 bridge load error: {type(e).__name__}: {e}", flush=True)
 
@@ -21600,6 +21608,143 @@ def mt4_event():
     return "OK", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
+
+# ============================================================
+# RECOVERY TP1 — EVENTI TELEGRAM SEPARATI (OPT-IN)
+# Questa route NON altera le campagne A/B/C, il Director o il daily lock.
+# Il broker (ordini con Magic Recovery) resta la sorgente della verita'.
+# ============================================================
+def _mt4_rec_validate_number(payload, field, minimum=0.0, maximum=1_000_000.0):
+    try:
+        number = float(payload.get(field, 0))
+        if not math.isfinite(number) or number < minimum or number > maximum:
+            return None
+        return number
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _mt4_recovery_summary(account, day):
+    real = [e for e in MT4_STATE.get("recovery_events", [])
+            if e.get("account") == account and e.get("opened_day") == day
+            and e.get("mode") == "BROKER" and e.get("event") == "CLOSED"]
+    return {
+        "account": account,
+        "opened_day": day,
+        "closed_count": len(real),
+        "closed_pnl_eur": round(sum(e.get("pnl_eur", 0.0) for e in real), 2),
+        "wins": sum(1 for e in real if e.get("pnl_eur", 0.0) > 0.005),
+        "losses": sum(1 for e in real if e.get("pnl_eur", 0.0) < -0.005),
+    }
+
+
+@app.route("/mt4/recovery/event", methods=["POST"])
+def mt4_recovery_event():
+    if not MT4_RECOVERY_EVENTS_ENABLED:
+        return "DENY;reason=RECOVERY_TELEMETRY_DISABLED", 403
+    authorized, why = _mt4_authorized(request)
+    if not authorized:
+        return f"DENY;reason={why}", 403
+    payload = request.form.to_dict() or (request.get_json(silent=True) or {})
+    passed, why = _mt4_account_gate(payload)
+    if not passed:
+        return f"DENY;reason={why}", 403
+    # This integration is always demo-only, even if someone changes MT4_DEMO_ONLY.
+    if not _mt4_bool(payload.get("demo")):
+        return "DENY;reason=RECOVERY_DEMO_ONLY", 403
+    if str(payload.get("currency") or "").upper() != "EUR":
+        return "DENY;reason=RECOVERY_CURRENCY_MUST_BE_EUR", 400
+
+    account = str(payload.get("account") or "").strip()
+    mode = str(payload.get("mode") or "").upper().strip()
+    event = str(payload.get("event") or "").upper().strip()
+    raw_trade_id = str(payload.get("trade_id") or "").strip()
+    trade_id = raw_trade_id if (1 <= len(raw_trade_id) <= 40 and
+                                all(ch.isalnum() or ch in "_-" for ch in raw_trade_id)) else ""
+    if not trade_id or (mode, event) not in {("DRY", "PLAN"), ("BROKER", "OPENED"), ("BROKER", "CLOSED")}:
+        return "DENY;reason=BAD_RECOVERY_EVENT", 400
+    try:
+        ticket = int(payload.get("ticket", 0))
+    except (ValueError, TypeError):
+        return "DENY;reason=BAD_TICKET", 400
+    if mode == "BROKER" and ticket <= 0:
+        return "DENY;reason=REQUIRES_BROKER_TICKET", 400
+    if mode == "DRY" and ticket != 0:
+        return "DENY;reason=DRY_MUST_HAVE_NO_TICKET", 400
+
+    lot = _mt4_rec_validate_number(payload, "lot", 0.01, 0.10)
+    if lot is None:
+        return "DENY;reason=BAD_LOT", 400
+    pnl = _mt4_rec_validate_number(payload, "pnl_eur", -1000000.0, 1000000.0)
+    if pnl is None:
+        return "DENY;reason=BAD_PNL", 400
+    side = str(payload.get("side") or "").upper().strip()
+    if side not in ("BUY", "SELL"):
+        return "DENY;reason=BAD_SIDE", 400
+    opened_day = str(payload.get("opened_day") or "")
+    if len(opened_day) != 8 or not opened_day.isdigit():
+        return "DENY;reason=BAD_DAY", 400
+    try:
+        datetime.strptime(opened_day, "%Y%m%d")
+    except ValueError:
+        return "DENY;reason=BAD_DAY", 400
+    event_id = f"{account}:{mode}:{event}:{ticket if mode == 'BROKER' else trade_id}"
+    if any(x.get("event_id") == event_id for x in MT4_STATE.get("recovery_events", [])):
+        return "DUPLICATE", 200
+
+    row = {
+        "event_id": event_id, "mode": mode, "event": event, "account": account,
+        "trade_id": trade_id, "ticket": ticket, "side": side,
+        "lot": round(lot, 3), "pnl_eur": round(pnl, 2),
+        "opened_day": opened_day, "ts": now_ts(),
+    }
+    rows = MT4_STATE.setdefault("recovery_events", [])
+    rows.append(row)
+    if len(rows) > 4000:
+        del rows[:-4000]
+    save_mt4_bridge_state(force=True)
+    # Telegram notifications never affect queue acknowledgement or broker execution.
+    if MT4_RECOVERY_TELEGRAM_ENABLED:
+        try:
+            if mode == "DRY":
+                message = (f"🧪 GOLD RECOVERY — SOLO SIMULAZIONE\n"
+                           f"{side} | lotto teorico {lot:.2f} | segnale {trade_id}\n"
+                           f"Nessun ordine Recovery aperto sul broker.")
+            elif event == "OPENED":
+                message = (f"🤖 GOLD RECOVERY — APERTO DEMO\n"
+                           f"{side} {lot:.2f} lotti | ticket {ticket}\n"
+                           f"Campagna {trade_id} | giorno {opened_day}")
+            else:
+                stats = _mt4_recovery_summary(account, opened_day)
+                message = (f"🤖 GOLD RECOVERY — CHIUSO DEMO\n"
+                           f"Ticket {ticket} | {side} {lot:.2f} lotti\n"
+                           f"PnL broker {pnl:+.2f} EUR\n"
+                           f"Recovery giorno {opened_day}: {stats['closed_pnl_eur']:+.2f} EUR"
+                           f" ({stats['closed_count']} trade chiusi)\n"
+                           f"Obiettivo +10 EUR; soglia rischio -30 EUR (non garantita).")
+            send_telegram(message)
+        except Exception as exc:
+            print(f"[GOLD RECOVERY] Telegram error: {type(exc).__name__}", flush=True)
+    return "OK", 200
+
+
+@app.route("/mt4/recovery/status", methods=["POST"])
+def mt4_recovery_status():
+    if not MT4_RECOVERY_EVENTS_ENABLED:
+        return jsonify({"error": "disabled"}), 403
+    authorized, why = _mt4_authorized(request)
+    if not authorized:
+        return jsonify({"error": why}), 403
+    payload = request.form.to_dict() or (request.get_json(silent=True) or {})
+    passed, why = _mt4_account_gate(payload)
+    if not passed:
+        return jsonify({"error": why}), 403
+    day = str(payload.get("opened_day") or local_datetime().strftime("%Y%m%d"))
+    if len(day) != 8 or not day.isdigit():
+        return jsonify({"error": "bad_day"}), 400
+    return jsonify(_mt4_recovery_summary(str(payload.get("account")), day))
+
+
 @app.route("/mt4/reset", methods=["POST"])
 def mt4_reset():
     token = request.headers.get("X-MT4-Admin-Token", "")
@@ -21608,7 +21753,7 @@ def mt4_reset():
     MT4_STATE.clear()
     MT4_STATE.update({
         "version": "v47.14-mt4-demo-forecast-3leg-1",
-        "commands": [], "daily": {}, "accounts": {}, "events": [], "last_save": 0,
+        "commands": [], "daily": {}, "accounts": {}, "events": [], "recovery_events": [], "last_save": 0,
     })
     save_mt4_bridge_state(force=True)
     mt4_bridge_reconcile_shadow()
