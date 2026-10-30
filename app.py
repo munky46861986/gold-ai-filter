@@ -21112,6 +21112,8 @@ def mt4_v48_risk_decision(payload):
     if MT4_DAILY_MAX_LOSS_EUR <= 0 or MT4_TARGET_CURRENCY != "EUR":
         return {"allowed":False, "reason":"V48_CONFIG_INVALID"}
     d = _mt4_daily()
+    if not d.get("broker_day_reconciled"):
+        return {"allowed": False, "reason": "BROKER_DAY_HISTORY_UNVERIFIED"}
     if d.get("start_balance") is None or str(d.get("currency") or "") != "EUR":
         return {"allowed":False, "reason":"NO_VALID_EUR_DAILY_HEARTBEAT"}
     if now_ts() - to_float(d.get("last_heartbeat"), 0) > MT4_V48_MAX_HEARTBEAT_AGE_SECONDS:
@@ -21273,19 +21275,41 @@ def _mt4_record_heartbeat(payload):
     currency = str(payload.get("currency") or "").upper().strip()
     now = now_ts()
 
-    if d.get("start_balance") is None and balance:
-        d["start_balance"] = round(balance, 2)
-    if balance:
+    # v48.1: AccountBalance on the FIRST heartbeat AFTER A DEPLOY is NOT
+    # the beginning-of-day balance. Read net closed trade PnL from the MT4
+    # broker history instead. Missing/invalid history must fail closed.
+    broker_day = str(payload.get("broker_day") or "").strip()
+    valid_flag = _mt4_bool(payload.get("broker_day_pnl_valid"))
+    broker_pnl_raw = payload.get("broker_day_closed_pnl_eur")
+    try:
+        broker_pnl = float(broker_pnl_raw)
+        pnl_numeric = math.isfinite(broker_pnl)
+    except (TypeError, ValueError, OverflowError):
+        broker_pnl, pnl_numeric = 0.0, False
+    broker_confirmed = bool(
+        valid_flag and broker_day == day_key.replace("-", "")
+        and pnl_numeric and currency == "EUR" and balance > 0
+        and _mt4_bool(payload.get("broker_history_confirmed"))
+    )
+    if balance > 0:
         d["balance"] = round(balance, 2)
-    if equity:
+    if equity > 0:
         d["equity"] = round(equity, 2)
     if currency:
         d["currency"] = currency
-    if d.get("start_balance") is not None and d.get("balance") is not None:
-        d["closed_pnl"] = round(to_float(d.get("balance")) - to_float(d.get("start_balance")), 2)
-    if d.get("start_balance") is not None and d.get("equity") is not None:
-        d["equity_pnl"] = round(to_float(d.get("equity")) - to_float(d.get("start_balance")), 2)
+    d["broker_day_reconciled"] = broker_confirmed
+    d["broker_day_reported"] = broker_day or None
+    d["broker_day_history_count"] = int(to_float(payload.get("broker_day_history_count"), 0))
     d["last_heartbeat"] = now
+    if broker_confirmed:
+        d["closed_pnl"] = round(broker_pnl, 2)
+        d["start_balance"] = round(balance - broker_pnl, 2)
+        d["equity_pnl"] = round(equity - d["start_balance"], 2)
+        d["pnl_source"] = "MT4_BROKER_CLOSED_HISTORY"
+    else:
+        # Do not overwrite historical data with a fictitious 0.00 PnL.
+        # Risk checks below refuse any new order until a valid broker report.
+        d["pnl_source"] = "UNVERIFIED_HISTORY_FAIL_CLOSED"
 
     MT4_STATE.setdefault("accounts", {})[account] = {
         "account": account,
@@ -21304,6 +21328,16 @@ def _mt4_record_heartbeat(payload):
 
 
 def _mt4_refresh_lock(d):
+    # v48.1: the broker must provide today's verified CLOSED PnL; after any
+    # server restart or lost VPS history, stop openings instead of resetting
+    # the daily budget. Never release a genuine DAILY_MAX_LOSS lock.
+    if MT4_V48_RISK_GUARD_ENABLED and not d.get("broker_day_reconciled"):
+        d["locked"] = True
+        d["lock_reason"] = "BROKER_DAY_HISTORY_UNVERIFIED"
+        return
+    if d.get("lock_reason") == "BROKER_DAY_HISTORY_UNVERIFIED":
+        d["locked"] = False
+        d["lock_reason"] = None
     pnl = to_float(d.get("closed_pnl"), 0)
     currency = str(d.get("currency") or "").upper()
     currency_ok = (not MT4_TARGET_CURRENCY) or (currency == MT4_TARGET_CURRENCY)
@@ -21768,6 +21802,8 @@ def mt4_status_payload():
         "allowed_account_configured": bool(MT4_ALLOWED_ACCOUNT),
         "daily_lock_enforced": MT4_ENFORCE_DAILY_LOCK,
         "v48_risk_guard_enabled": MT4_V48_RISK_GUARD_ENABLED,
+        "v481_broker_day_reconciled": bool(day.get("broker_day_reconciled")),
+        "v481_broker_day_pnl_source": day.get("pnl_source", "UNVERIFIED"),
         "v48_broker_gated_sim": MT4_V48_BROKER_GATED_SIM,
         "v48_last_decision": MT4_STATE.get("v48_last_decision"),
         "daily_target": MT4_DAILY_TARGET_EUR,
