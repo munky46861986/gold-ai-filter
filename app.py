@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v48.0 SAFE SHADOW | Forecast core v47.15.3"
+VERSION = "v48.1 BROKER RECONCILE SAFE SHADOW | Forecast core v47.15.3"
 # v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
