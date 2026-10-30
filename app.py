@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v47.15.3 Forecast First + LIVE DIRECTOR + BROKER SYNC + STRUCTURAL REENTRY"
+VERSION = "v48.0 SAFE SHADOW | Forecast core v47.15.3"
 # v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
@@ -13001,6 +13001,11 @@ def _manage_forecast_campaigns(symbol, data, active_forecast=None, active_sessio
                     messages.append(msg)
                 continue
 
+        # v48: Broker campaigns are NOT allowed to claim TP/SL from a price snapshot.
+        # M1 high/low may precede the actual broker fill inside the same candle.
+        if (MT4_V48_BROKER_GATED_SIM and MT4_BRIDGE_ENABLED and MT4_ALLOW_FORECAST):
+            continue
+
         # Session ownership: Europe campaign may continue to be managed, but no new Europe logic is generated in NY.
         sl = to_float(c.get("runner_sl"), to_float(c.get("sl"), 0))
         sl_hit = (direction == "BUY" and low <= sl) or (direction == "SELL" and high >= sl)
@@ -13943,7 +13948,7 @@ def _live_director_entry_message(campaign):
             f"{campaign.get('event_reference_level')} | break {campaign.get('event_break_points')} pt\n"
             f"Move sessione: {campaign.get('event_session_move')} pt | M1: {direction} score {campaign.get('m1_score')}"
         )
-        headline = f"🚨🚀 GOLD MASTER LIVE — EVENT SHOCK {direction} ATTIVO"
+        headline = f"🚨📡 GOLD MASTER — EVENT SHOCK {direction} ACCODATO (NON APERTO)"
     else:
         forecast_line = (
             f"Forecast LIVE: {campaign.get('forecast_bias')} | forza {campaign.get('forecast_strength')}\n"
@@ -13954,7 +13959,7 @@ def _live_director_entry_message(campaign):
                 if reentry else ""
             )
         )
-        headline = f"🚀 GOLD MASTER LIVE — {direction} ATTIVO"
+        headline = f"📡 GOLD MASTER — {direction} ACCODATO (NON APERTO)"
     return f"""{headline}
 
 📡 Segnale operativo del server: l'apertura sul broker NON e' ancora confermata.
@@ -13965,11 +13970,11 @@ Entry: {campaign.get('entry')}
 SL: {campaign.get('sl')}
 TP1: {campaign.get('tp1')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} pips formato Max)
 TP2: {campaign.get('tp2')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} pips formato Max)
-Runner: APERTO
+Runner: previsto dopo apertura broker
 
 {forecast_line}
 
-🧭 DA ORA TI SEGUO IO:
+🧭 SOLO DOPO CONFERMA MT4:
 - ti avviso sui progressi +20 / +50 / +80 / +100 pips
 - TP1 -> porto la protezione a BE
 - TP2 -> proteggo il runner in profitto
@@ -14065,10 +14070,36 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
         if not c.get("director_entry_notified"):
             c["director_entry_notified"] = True
             c["director_started_at"] = now
-            messages.append(_live_director_entry_message(c))
             if c.get("mt4_queue_pending") and not c.get("mt4_cmd_id"):
                 c["mt4_queue_pending"] = False
-                _queue_forecast_campaign_mt4(c)
+                queued = _queue_forecast_campaign_mt4(c)
+                if queued is None:
+                    reason = str((MT4_STATE.get("v48_last_decision") or {}).get("reason") or "QUEUE_NOT_ACCEPTED")
+                    c["status"] = "BLOCKED"
+                    c["mt4_status"] = "REJECTED"
+                    c["mt4_queue_reject_reason"] = reason
+                    c["director_close_notified"] = True
+                    c["closed"] = now
+                    messages.append(f"⛔ SEGNALE {direction} NON ESEGUITO | {reason} | MT4: nessun ordine aperto")
+                    save_runtime_state(force=True)
+                    result["action"] = "BLOCKED_NO_BROKER_ORDER"
+                    result["messages"] = messages
+                    if LIVE_DIRECTOR_ALERT_ENABLED:
+                        for msg in messages:
+                            send_telegram(msg)
+                    return result
+                c["mt4_status"] = "QUEUED"
+            messages.append(_live_director_entry_message(c))
+
+        if (MT4_V48_BROKER_GATED_SIM and MT4_BRIDGE_ENABLED and MT4_ALLOW_FORECAST
+                and str(c.get("mt4_status") or "").upper() != "OPENED"):
+            result["action"] = "WAIT_BROKER_FILL"
+            save_runtime_state(force=False)
+            result["messages"] = messages
+            if LIVE_DIRECTOR_ALERT_ENABLED:
+                for msg in messages:
+                    send_telegram(msg)
+            return result
 
         if c.get("pre_revision_confirmed") and not c.get("director_promotion_notified"):
             c["director_promotion_notified"] = True
@@ -14178,6 +14209,19 @@ def process_live_director(data, thesis_ctx=None, m1_ctx=None, campaign_result=No
         m1_dir = str(m1.get("direction") or "").upper()
         m1_score = int(m1.get("score", 0))
         if m1.get("confirmed") and m1_score >= FORECAST_CAMPAIGN_MIN_M1_SCORE:
+            if (campaign_result or {}).get("risk_blocked"):
+                result["action"] = "DAILY_RISK_LOCK"
+                day_key = _thesis_day_key()
+                if MT4_STATE.get("v48_last_lock_alert_day") != day_key:
+                    MT4_STATE["v48_last_lock_alert_day"] = day_key
+                    save_mt4_bridge_state(force=True)
+                    messages.append("⛔ GOLD MASTER v48 — BLOCCO GIORNALIERO MT4 ATTIVO. "
+                                    "Segnali osservati ma NESSUNA nuova apertura fino al reset giornaliero.")
+                if LIVE_DIRECTOR_ALERT_ENABLED:
+                    for msg in messages:
+                        send_telegram(msg)
+                result["messages"] = messages
+                return result
             op_desc = str((forecast or {}).get("operational_live_status") or "FORECAST").upper()
             map_bias = _forecast_live_bias(forecast) if forecast else "RANGE"
             if campaign_result and campaign_result.get("entry_quality_blocked"):
@@ -14260,6 +14304,15 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     for msg in messages:
         if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
             send_telegram(msg)
+
+    # v48: do not create a broker-designated campaign when the account day is locked.
+    # Existing broker campaigns are still managed above.
+    if MT4_BRIDGE_ENABLED and MT4_ALLOW_FORECAST and MT4_ENFORCE_DAILY_LOCK:
+        locked, lock_reason = mt4_is_locked()
+        if locked:
+            result["risk_blocked"] = True
+            result["reason"] = "v48 daily broker lock: " + str(lock_reason)
+            return result
 
     if session not in FORECAST_CAMPAIGN_SESSIONS:
         result["reason"] = f"session {session} non abilitata"
@@ -20941,6 +20994,162 @@ MT4_TARGET_CURRENCY = str(os.getenv("MT4_TARGET_CURRENCY", "EUR")).upper().strip
 MT4_TELEGRAM_EVENTS = os.getenv("MT4_TELEGRAM_EVENTS", "TRUE").upper() == "TRUE"
 MT4_ADMIN_TOKEN = os.getenv("MT4_ADMIN_TOKEN", SHADOW_ADMIN_TOKEN)
 
+# ============================================================
+# v48 DEMO: pre-trade risk reserve + independent shadow scouts.
+# Defense in depth: a server quote is NEVER an authoritative broker fill.
+# The matching v48 EA separately checks account-wide broker risk.
+# ============================================================
+MT4_V48_RISK_GUARD_ENABLED = os.getenv("MT4_V48_RISK_GUARD_ENABLED", "TRUE").upper() == "TRUE"
+MT4_V48_BROKER_GATED_SIM = os.getenv("MT4_V48_BROKER_GATED_SIM", "TRUE").upper() == "TRUE"
+MT4_V48_EUR_PER_PRICE_POINT_PER_LOT = float(os.getenv("MT4_V48_EUR_PER_PRICE_POINT_PER_LOT", "95.0"))
+MT4_V48_RECOVERY_RESERVE_LOT = float(os.getenv("MT4_V48_RECOVERY_RESERVE_LOT", "0.01"))
+MT4_V48_RISK_BUFFER_EUR = float(os.getenv("MT4_V48_RISK_BUFFER_EUR", "1.00"))
+MT4_V48_MAX_HEARTBEAT_AGE_SECONDS = int(os.getenv("MT4_V48_MAX_HEARTBEAT_AGE_SECONDS", "90"))
+V48_SHADOW_ENABLED = os.getenv("V48_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
+V48_SHADOW_FILE = os.getenv("V48_SHADOW_FILE", "v48_shadow_state.json")
+V48_SHADOW_MAX_PER_DAY = max(1, int(os.getenv("V48_SHADOW_MAX_PER_DAY", "4")))
+V48_SHADOW_COOLDOWN_SECONDS = max(300, int(os.getenv("V48_SHADOW_COOLDOWN_SECONDS", "1200")))
+V48_SHADOW_STATE = {"version":"48.0-shadow-only", "signals":[], "last":{}}
+try:
+    if os.path.isfile(V48_SHADOW_FILE):
+        with open(V48_SHADOW_FILE, "r", encoding="utf-8") as _v48_f:
+            _v48_saved = json.load(_v48_f)
+        if isinstance(_v48_saved, dict):
+            V48_SHADOW_STATE.update({k:_v48_saved[k] for k in ("signals", "last") if k in _v48_saved})
+except (OSError, ValueError, TypeError):
+    pass
+
+
+def v48_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
+    """Non-operational, non-predictive rule candidates; PRICE_HISTORY is webhook snapshots, not broker M1."""
+    if not V48_SHADOW_ENABLED or not isinstance(data, dict):
+        return None
+    symbol = str(data.get("symbol") or "XAUUSD").upper()
+    rows = PRICE_HISTORY.get(symbol) or []
+    if len(rows) < 21:
+        return None
+    now = now_ts()
+    day = _thesis_day_key()
+    sigs = V48_SHADOW_STATE.setdefault("signals", [])
+    if sum(1 for x in sigs if x.get("day") == day and x.get("symbol") == symbol) >= V48_SHADOW_MAX_PER_DAY:
+        return None
+    last = V48_SHADOW_STATE.setdefault("last", {}).get(symbol, 0)
+    if now - to_float(last, 0) < V48_SHADOW_COOLDOWN_SECONDS:
+        return None
+    prices = [to_float(x.get("close"), 0) for x in rows[-21:]]
+    if not all(p > 0 for p in prices):
+        return None
+    recent = rows[-1]
+    high, low = to_float(recent.get("high"), prices[-1]), to_float(recent.get("low"), prices[-1])
+    candle_range = max(high-low, .001)
+    slope = prices[-1] - prices[-11]
+    high20 = max(to_float(x.get("high"), x.get("close")) for x in rows[-21:-1])
+    low20 = min(to_float(x.get("low"), x.get("close")) for x in rows[-21:-1])
+    score = int((m1_ctx or {}).get("score") or 0)
+    mdir = str((m1_ctx or {}).get("direction") or "").upper()
+    confirmed = bool((m1_ctx or {}).get("confirmed"))
+    signal = None
+    # Reversal candidates require an impulse AND a rejection in the last price snapshot.
+    if prices[-11]-prices[-2] >= 8 and recent.get("lower_wick_strong") and prices[-1] > (low + .65*candle_range):
+        signal = ("REVERSAL_SCOUT", "BUY", "calo >=8 punti in 10 update e rifiuto del minimo")
+    elif prices[-2]-prices[-11] >= 8 and recent.get("upper_wick_strong") and prices[-1] < (high - .65*candle_range):
+        signal = ("REVERSAL_SCOUT", "SELL", "rialzo >=8 punti in 10 update e rifiuto del massimo")
+    elif confirmed and score >= 7 and mdir == "SELL" and slope <= -7 and 1.5 <= prices[-1]-low20 <= 6:
+        signal = ("TREND_CONTINUATION", "SELL", "trend -7 e ritorno 1.5-6 punti dal minimo 20 update")
+    elif confirmed and score >= 7 and mdir == "BUY" and slope >= 7 and 1.5 <= high20-prices[-1] <= 6:
+        signal = ("TREND_CONTINUATION", "BUY", "trend +7 e ritorno 1.5-6 punti dal massimo 20 update")
+    elif recent.get("upper_wick_strong") and prices[-1] >= high20-2 and slope < 0:
+        signal = ("STRUCTURAL_RETEST", "SELL", "rifiuto in prossimita' del massimo 20 update")
+    if signal is None:
+        return None
+    mode, direction, reason = signal
+    entry = prices[-1]
+    sl = high + 1.0 if direction == "SELL" else low - 1.0
+    risk_points = abs(entry-sl)
+    if risk_points < 1 or risk_points > 14:
+        return None
+    item = {"time":round(now,3), "day":day, "symbol":symbol, "mode":mode,
+            "direction":direction, "entry":round(entry,3), "sl":round(sl,3),
+            "tp1":round(entry+3 if direction=="BUY" else entry-3,3),
+            "score":score, "m1_confirmed":confirmed, "reason":reason,
+            "source":"TradingView snapshots, NOT MT4 fills", "execution":"SHADOW_ONLY"}
+    sigs.append(item)
+    V48_SHADOW_STATE["signals"] = sigs[-500:]
+    V48_SHADOW_STATE["last"][symbol] = now
+    try:
+        with open(V48_SHADOW_FILE+".tmp", "w", encoding="utf-8") as f:
+            json.dump(V48_SHADOW_STATE, f, ensure_ascii=False)
+        os.replace(V48_SHADOW_FILE+".tmp", V48_SHADOW_FILE)
+    except OSError:
+        pass
+    return item
+
+
+@app.route("/v48/shadow")
+def v48_shadow_status():
+    return jsonify({"enabled":V48_SHADOW_ENABLED, "execution":"SHADOW_ONLY",
+                    "count":len(V48_SHADOW_STATE.get("signals",[])),
+                    "signals":V48_SHADOW_STATE.get("signals",[])[-60:]})
+
+
+def _mt4_v48_estimate_risk(payload):
+    if not isinstance(payload, dict):
+        return None
+    entry, sl = to_float(payload.get("entry"),0), to_float(payload.get("sl"),0)
+    lot, legs = to_float(payload.get("lot"),0), int(payload.get("legs") or 0)
+    if entry <= 0 or sl <= 0 or lot <= 0 or legs <= 0 or abs(entry-sl) < .1:
+        return None
+    val = MT4_V48_EUR_PER_PRICE_POINT_PER_LOT
+    if not math.isfinite(val) or val <= 0:
+        return None
+    return abs(entry-sl) * lot * legs * val
+
+
+def mt4_v48_risk_decision(payload):
+    """Server-side conservative estimate; matching EA uses broker open orders/history."""
+    if not MT4_V48_RISK_GUARD_ENABLED:
+        return {"allowed":True, "reason":"RISK_GUARD_DISABLED"}
+    if MT4_DAILY_MAX_LOSS_EUR <= 0 or MT4_TARGET_CURRENCY != "EUR":
+        return {"allowed":False, "reason":"V48_CONFIG_INVALID"}
+    d = _mt4_daily()
+    if d.get("start_balance") is None or str(d.get("currency") or "") != "EUR":
+        return {"allowed":False, "reason":"NO_VALID_EUR_DAILY_HEARTBEAT"}
+    if now_ts() - to_float(d.get("last_heartbeat"), 0) > MT4_V48_MAX_HEARTBEAT_AGE_SECONDS:
+        return {"allowed":False, "reason":"MT4_HEARTBEAT_STALE"}
+    risk = _mt4_v48_estimate_risk(payload)
+    if risk is None:
+        return {"allowed":False, "reason":"BAD_RISK_INPUT"}
+    if str(payload.get("engine") or "").upper() == "FORECAST":
+        risk += abs(to_float(payload.get("entry"),0)-to_float(payload.get("sl"),0)) * max(0,MT4_V48_RECOVERY_RESERVE_LOT) * MT4_V48_EUR_PER_PRICE_POINT_PER_LOT
+    reserved = 0.0
+    for cmd in MT4_STATE.get("commands", []):
+        if cmd.get("type") != "OPEN" or cmd.get("status") not in ("QUEUED","DELIVERED","ACKED"):
+            continue
+        p = cmd.get("payload") or {}
+        existing_risk = _mt4_v48_estimate_risk(p)
+        if existing_risk is None:
+            return {"allowed":False, "reason":"UNKNOWN_ACTIVE_ORDER_RISK"}
+        reserved += existing_risk
+        if str(p.get("engine") or "").upper() == "FORECAST":
+            reserved += abs(to_float(p.get("entry"),0)-to_float(p.get("sl"),0)) * max(0,MT4_V48_RECOVERY_RESERVE_LOT) * MT4_V48_EUR_PER_PRICE_POINT_PER_LOT
+    pnl = to_float(d.get("closed_pnl"), 0)
+    remaining = MT4_DAILY_MAX_LOSS_EUR + pnl - reserved - MT4_V48_RISK_BUFFER_EUR
+    allowed = risk <= remaining + 1e-6
+    return {"allowed":allowed, "reason":"OK" if allowed else "DAILY_RISK_BUDGET_EXCEEDED",
+            "closed_pnl_eur":round(pnl,2), "remaining_eur":round(remaining,2),
+            "reserved_eur":round(reserved,2), "new_risk_eur":round(risk,2),
+            "daily_cap_eur":MT4_DAILY_MAX_LOSS_EUR}
+
+
+@app.route("/v48/risk")
+def v48_risk_status():
+    return jsonify({"enabled":MT4_V48_RISK_GUARD_ENABLED,
+                    "eur_per_price_point_per_lot":MT4_V48_EUR_PER_PRICE_POINT_PER_LOT,
+                    "recovery_reserve_lot":MT4_V48_RECOVERY_RESERVE_LOT,
+                    "broker_confirm_required":MT4_V48_BROKER_GATED_SIM,
+                    "last_decision":MT4_STATE.get("v48_last_decision"),
+                    "note":"Estimated server risk, EA independent broker check is mandatory"})
+
 # v47.15.3 + RECOVERY EVENT TELEMETRY (ISOLATA; DEFAULT SPENTO).
 # Non modifica /mt4/poll, /mt4/event, Forecast, A/B/C o DAILY_MAX_LOSS.
 MT4_RECOVERY_EVENTS_ENABLED = os.getenv("MT4_RECOVERY_EVENTS_ENABLED", "FALSE").upper() == "TRUE"
@@ -21153,16 +21362,26 @@ def _mt4_engine_allowed(engine):
 def mt4_bridge_queue_trade(shadow_trade):
     """Queue one deterministic OPEN plan. v47.9 executes allowed engines independently."""
     if not MT4_BRIDGE_ENABLED or not MT4_BRIDGE_TOKEN or not shadow_trade:
+        MT4_STATE["v48_last_decision"] = {"allowed":False,"reason":"BRIDGE_DISABLED_OR_TOKEN_MISSING"}
         return None
     engine = str(shadow_trade.get("engine") or "").upper().strip()
     if not _mt4_engine_allowed(engine):
+        MT4_STATE["v48_last_decision"] = {"allowed":False,"reason":"ENGINE_DISABLED"}
         return None
     cmd_id = _mt4_command_id(shadow_trade)
     existing = _mt4_find_command(cmd_id)
     if existing:
-        return existing
+        old_status = str(existing.get("status") or "").upper()
+        if old_status in ("QUEUED", "DELIVERED", "ACKED"):
+            return existing
+        MT4_STATE["v48_last_decision"] = {"allowed":False,
+                                            "reason":"PREVIOUS_COMMAND_" + old_status}
+        save_mt4_bridge_state(force=True)
+        return None
     locked, reason = mt4_is_locked(shadow_trade.get("day_key"))
     if locked:
+        MT4_STATE["v48_last_decision"] = {"allowed":False,"reason":str(reason or "DAILY_LOCK")}
+        save_mt4_bridge_state(force=True)
         return None
 
     entry = to_float(shadow_trade.get("entry"), 0)
@@ -21201,6 +21420,14 @@ def mt4_bridge_queue_trade(shadow_trade):
         "legs": int(shadow_trade.get("mt4_legs") or MT4_LEGS),
         "day_key": shadow_trade.get("day_key") or shadow_trading_day_key(),
     }
+    risk_decision = mt4_v48_risk_decision(payload)
+    MT4_STATE["v48_last_decision"] = dict(risk_decision, trade_id=payload["trade_id"],
+                                           timestamp=now_ts())
+    if not risk_decision.get("allowed"):
+        print(f"[v48] MT4 OPEN REFUSED: {risk_decision}", flush=True)
+        save_mt4_bridge_state(force=True)
+        return None
+
     cmd = {
         "cmd_id": cmd_id,
         "type": "OPEN",
@@ -21289,11 +21516,13 @@ def _mt4_expire_commands():
         save_mt4_bridge_state(force=True)
 
 
-def _mt4_next_command(account):
+def _mt4_next_command(account, protective_only=False):
     _mt4_expire_commands()
     now = now_ts()
     for c in MT4_STATE.get("commands", []):
         if c.get("status") not in ["QUEUED", "DELIVERED"]:
+            continue
+        if protective_only and str(c.get("type") or "").upper() not in ("CLOSE", "MODIFY_SL"):
             continue
         payload = c.get("payload") or {}
         if not _mt4_engine_allowed(payload.get("engine")):
@@ -21538,6 +21767,9 @@ def mt4_status_payload():
         "demo_only": MT4_DEMO_ONLY,
         "allowed_account_configured": bool(MT4_ALLOWED_ACCOUNT),
         "daily_lock_enforced": MT4_ENFORCE_DAILY_LOCK,
+        "v48_risk_guard_enabled": MT4_V48_RISK_GUARD_ENABLED,
+        "v48_broker_gated_sim": MT4_V48_BROKER_GATED_SIM,
+        "v48_last_decision": MT4_STATE.get("v48_last_decision"),
         "daily_target": MT4_DAILY_TARGET_EUR,
         "daily_max_loss": MT4_DAILY_MAX_LOSS_EUR,
         "leg_lot": MT4_LEG_LOT,
@@ -21567,6 +21799,10 @@ def mt4_poll():
     d = _mt4_record_heartbeat(payload)
     locked, lock_reason = mt4_is_locked()
     if locked:
+        # A daily lock MUST block new OPENs, never protective CLOSE/MODIFY requests.
+        protective = _mt4_next_command(str(payload.get("account") or ""), protective_only=True)
+        if protective:
+            return _mt4_wire_command(protective), 200, {"Content-Type": "text/plain; charset=utf-8"}
         return f"LOCK;reason={_mt4_clean(lock_reason)};closed_pnl={to_float(d.get('closed_pnl')):.2f}", 200, {"Content-Type": "text/plain; charset=utf-8"}
     cmd = _mt4_next_command(str(payload.get("account") or ""))
     return _mt4_wire_command(cmd), 200, {"Content-Type": "text/plain; charset=utf-8"}
@@ -22491,6 +22727,12 @@ def webhook():
         except Exception as e:
             print(f"[v47.13] M1 timing error: {type(e).__name__}: {e}", flush=True)
             m1_ctx = {"confirmed": False, "watch": False, "reason": str(e)}
+
+        # v48 experimental scouts: observation only, no broker queue or Telegram trade command.
+        try:
+            v48_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
+        except Exception as v48_exc:
+            print(f"[v48] shadow observe error: {type(v48_exc).__name__}: {v48_exc}", flush=True)
 
         # v47.15.3: EVENT SHOCK/PRE-EVENT puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
         # Richiede break strutturale reale + Thesis/M1 + no-chase; non bypassa la gestione LIVE.
