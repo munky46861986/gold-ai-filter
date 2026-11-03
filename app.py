@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -15,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v48.2 SHADOW RESEARCH | BROKER RECONCILE v48.1 | Forecast core v47.15.3"
+VERSION = "v48.3 RISK & DIRECTOR FIX DEMO | SHADOW v48.2 | BROKER RECONCILE v48.1"
 # v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
@@ -12528,6 +12527,9 @@ def _forecast_pre_revision_key(session, forecast, bias):
 def _forecast_pre_revision_attempt_rows(campaigns, base_key):
     rows = []
     for c in campaigns or []:
+        # v48.3: a broker order that never existed MUST NOT consume an entry slot.
+        if str(c.get("status") or "").upper() == "BLOCKED" or str(c.get("mt4_status") or "").upper() == "REJECTED":
+            continue
         if not c.get("pre_revision") and not c.get("pre_revision_confirmed"):
             continue
         key = str(c.get("pre_revision_map_key") or c.get("campaign_key") or "")
@@ -13094,7 +13096,8 @@ def _forecast_campaign_mt4_source(campaign):
         "tp_levels": [to_float(campaign.get("tp1"), 0), to_float(campaign.get("tp2"), 0)],
         "setup": f"{setup_prefix}_{campaign.get('session')}_R{campaign.get('forecast_revision',0)}",
         "day_key": campaign.get("day_key") or _thesis_day_key(),
-        "mt4_legs": 3,
+        # 3 = legacy A/B/C. 1/2 only from explicit opt-in, never via SHADOW.
+        "mt4_legs": int(campaign.get("mt4_requested_legs") or 3),
         "requested_lot": FORECAST_CAMPAIGN_LEG_LOT,
         "plan_expiry_seconds": FORECAST_CAMPAIGN_PLAN_EXPIRY_SECONDS,
     }
@@ -13219,7 +13222,7 @@ Perché scatta PRIMA della vera Forecast Revision:
 - live-score dinamico conferma {c.get('direction')}
 - invalidazione formale della vecchia mappa NON ancora rotta: {c.get('pre_revision_invalidation')}
 
-3 posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
+{int(c.get("mt4_requested_legs") or 3)} posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
 A -> TP1 {c.get('tp1')}
 B -> TP2 {c.get('tp2')}
 C -> RUNNER dinamico (nessun TP fisso)
@@ -13243,7 +13246,7 @@ La vecchia mappa Forecast resta formalmente valida finche' non rompe la sua inva
 Forecast revision: #{c.get('forecast_revision')} | Forecast LIVE: {c.get('forecast_bias')}
 M1 trigger score: {c.get('m1_score')}
 
-3 posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
+{int(c.get("mt4_requested_legs") or 3)} posizioni x {FORECAST_CAMPAIGN_LEG_LOT:.2f}:
 A -> TP1 {c.get('tp1')}
 B -> TP2 {c.get('tp2')}
 C -> RUNNER dinamico (nessun TP fisso)
@@ -13697,6 +13700,9 @@ def _live_director_entry_quality(forecast, bias, price, session_ctx=None):
 def _forecast_standard_attempt_rows(campaigns, base_key):
     rows = []
     for c in campaigns or []:
+        # v48.3: rejected non-executed campaigns are diagnostic rows, not entries.
+        if str(c.get("status") or "").upper() == "BLOCKED" or str(c.get("mt4_status") or "").upper() == "REJECTED":
+            continue
         if c.get("pre_revision") or c.get("event_shock"):
             continue
         key = str(c.get("standard_map_key") or c.get("campaign_key") or "")
@@ -13961,6 +13967,11 @@ def _live_director_entry_message(campaign):
             )
         )
         headline = f"📡 GOLD MASTER — {direction} ACCODATO (NON APERTO)"
+    plan_legs = int(campaign.get("mt4_requested_legs") or 3)
+    plan_note = (f"\n⚠️ DEMO PIANO RIDOTTO: {plan_legs} gamba/e soltanto, "
+                 "A a TP1" + (" + B a TP2" if plan_legs >= 2 else "") +
+                 "; nessun runner C. Non e' il normale piano A/B/C.\n"
+                 if plan_legs < 3 else "")
     return f"""{headline}
 
 📡 Segnale operativo del server: l'apertura sul broker NON e' ancora confermata.
@@ -13971,8 +13982,8 @@ Entry: {campaign.get('entry')}
 SL: {campaign.get('sl')}
 TP1: {campaign.get('tp1')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP1_POINTS)} pips formato Max)
 TP2: {campaign.get('tp2')}  (+{_live_director_pips(FORECAST_CAMPAIGN_TP2_POINTS)} pips formato Max)
-Runner: previsto dopo apertura broker
-
+Runner: {'previsto dopo apertura broker' if plan_legs == 3 else 'NON previsto: modalita ridotta'}
+{plan_note}
 {forecast_line}
 
 🧭 SOLO DOPO CONFERMA MT4:
@@ -14285,6 +14296,116 @@ def live_director_status():
     })
 
 
+# ============================================================
+# v48.3 DEMO: broker-risk preflight BEFORE campaign creation.
+# This keeps non-executed attempts from exhausting the re-entry count.
+# Post-queue server check AND independent EA broker check remain mandatory.
+# ============================================================
+def _v483_recent_rejection(map_key, now=None):
+    now = now_ts() if now is None else now
+    rows = MT4_STATE.get("v483_risk_rejections", [])
+    for row in reversed(rows):
+        if row.get("map_key") == map_key and now - to_float(row.get("timestamp"), 0) < V483_REJECT_COOLDOWN_SECONDS:
+            return row
+    return None
+
+
+def _v483_preflight_forecast(forecast, session, bias, price, map_key, reentry_ctx=None):
+    """Risk-aware request, never weakens a server or MT4 broker safety gate."""
+    if not (V483_PRETRADE_RISK_PREFLIGHT and MT4_V48_RISK_GUARD_ENABLED
+            and MT4_BRIDGE_ENABLED and MT4_ALLOW_FORECAST):
+        return {"allowed": True, "selected_legs": 3, "reason": "PREFLIGHT_NOT_ACTIVE"}
+    if not map_key or bias not in ("BUY", "SELL") or to_float(price, 0) <= 0:
+        return {"allowed": False, "reason": "V483_INVALID_ENTRY_INPUT", "notify": False}
+
+    last = _v483_recent_rejection(map_key)
+    if last:
+        remain = V483_REJECT_COOLDOWN_SECONDS - (now_ts() - to_float(last.get("timestamp"), 0))
+        return {"allowed": False, "reason": "V483_RISK_RETRY_COOLDOWN",
+                "cooldown_remaining_seconds": max(0, int(remain)), "notify": False,
+                "last_rejection": last}
+
+    entry = round(to_float(price, 0), 3)
+    sessions = get_session_thesis_state(str(forecast.get("symbol") or "XAUUSD").upper()).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    sl_dist = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
+    sl = round(entry + sl_dist if bias == "SELL" else entry - sl_dist, 3)
+    if reentry_ctx and isinstance(reentry_ctx.get("sl_plan"), dict):
+        sl = round(to_float(reentry_ctx["sl_plan"].get("sl"), sl), 3)
+    if (bias == "BUY" and sl >= entry) or (bias == "SELL" and sl <= entry):
+        return {"allowed": False, "reason": "V483_INVALID_STOP_SIDE", "notify": False}
+
+    candidates = (3, 2, 1) if V483_ADAPTIVE_LEGS_ENABLED and LIVE_DIRECTOR_ENABLED else (3,)
+    last_decision = None
+    for legs in candidates:
+        payload = {
+            "engine": "FORECAST", "side": bias, "entry": entry, "sl": sl,
+            "lot": FORECAST_CAMPAIGN_LEG_LOT, "legs": legs,
+            "day_key": _thesis_day_key(),
+        }
+        decision = mt4_v48_risk_decision(payload)
+        last_decision = decision
+        if decision.get("allowed"):
+            return {"allowed": True, "selected_legs": legs, "reason": "OK",
+                    "entry": entry, "sl": sl, "decision": decision,
+                    "adapted": legs != 3}
+
+    last_decision = last_decision or {"reason": "UNKNOWN_RISK_RESULT"}
+    rejection = {
+        "map_key": map_key, "timestamp": now_ts(), "local": local_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        "day": _thesis_day_key(), "session": session, "side": bias,
+        "entry": entry, "sl": sl, "requested_legs": 3,
+        "reason": str(last_decision.get("reason") or "RISK_PRECHECK_REFUSED"),
+        "estimated_risk_eur": last_decision.get("new_risk_eur"),
+        "remaining_eur": last_decision.get("remaining_eur"),
+        "closed_pnl_eur": last_decision.get("closed_pnl_eur"),
+        "reserved_eur": last_decision.get("reserved_eur"),
+        "no_broker_order": True,
+    }
+    MT4_STATE.setdefault("v483_risk_rejections", []).append(rejection)
+    MT4_STATE["v483_risk_rejections"] = MT4_STATE["v483_risk_rejections"][-150:]
+    MT4_STATE["v48_last_decision"] = dict(last_decision, timestamp=now_ts(),
+                                         entry=entry, sl=sl, blocked_before_campaign=True)
+    save_mt4_bridge_state(force=True)
+    return {"allowed": False, "reason": rejection["reason"], "notify": True,
+            "rejection": rejection, "selected_legs": 0}
+
+
+def _v483_rejected_entry_result(result, bias, preflight):
+    result["risk_blocked"] = True
+    result["v483_preflight"] = preflight
+    result["reason"] = "v48.3 pretrade: " + str(preflight.get("reason"))
+    if preflight.get("notify"):
+        rej = preflight.get("rejection") or {}
+        risk = rej.get("estimated_risk_eur")
+        remain = rej.get("remaining_eur")
+        details = (f" | rischio previsto {risk} EUR, disponibile {remain} EUR"
+                   if risk is not None and remain is not None else "")
+        msg = (f"⛔ SEGNALE {bias} NON ESEGUITO | {preflight.get('reason')}{details}"
+               " | nessun ordine MT4; non consuma il limite 3/3; verifica diagnostica /v483/diagnostics")
+        result.setdefault("messages", []).append(msg)
+        if LIVE_DIRECTOR_ALERT_ENABLED:
+            send_telegram(msg)
+    return result
+
+
+@app.route("/v483/diagnostics")
+def v483_diagnostics():
+    """Read-only. No broker token/account credentials; no effect on trading."""
+    rows = MT4_STATE.get("v483_risk_rejections", [])
+    day = _thesis_day_key()
+    return jsonify({
+        "version": VERSION, "risk_guard_enabled": MT4_V48_RISK_GUARD_ENABLED,
+        "pretrade_risk_preflight": V483_PRETRADE_RISK_PREFLIGHT,
+        "adaptive_legs_enabled": V483_ADAPTIVE_LEGS_ENABLED,
+        "rejection_cooldown_seconds": V483_REJECT_COOLDOWN_SECONDS,
+        "today_rejections": sum(1 for r in rows if r.get("day") == day),
+        "latest_rejections": rows[-20:],
+        "last_decision": MT4_STATE.get("v48_last_decision"),
+        "note": "Server estimate only; MT4 broker independent guard is authoritative. No automatic cap increase."
+    })
+
+
 def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     symbol = str((data or {}).get("symbol", "XAUUSD")).upper()
     result = {"triggered": False, "trade_id": None, "reason": "", "messages": []}
@@ -14404,7 +14525,15 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
 
         pre["attempt"] = attempt
         pre["rearm"] = attempt > 1
+        risk_preflight = _v483_preflight_forecast(
+            forecast, session, counter, price, pre_key, reentry_ctx=None)
+        if not risk_preflight.get("allowed"):
+            return _v483_rejected_entry_result(result, counter, risk_preflight)
         c = _create_forecast_campaign(symbol, session, forecast, counter, price, m1, pre_ctx=pre)
+        c["mt4_requested_legs"] = int(risk_preflight.get("selected_legs") or 3)
+        if c["mt4_requested_legs"] < 3:
+            c["legs"] = c["legs"][:c["mt4_requested_legs"]]
+            c["risk_plan_adapted"] = True
         result.update({
             "triggered": True,
             "trade_id": c.get("id"),
@@ -14503,11 +14632,23 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
         return result
 
     # Legacy one-per-revision applies only to the first campaign; re-entry is controlled above.
-    if FORECAST_CAMPAIGN_ONE_PER_REVISION and attempt == 1 and any(c.get("campaign_key") == base_key for c in campaigns):
+    if FORECAST_CAMPAIGN_ONE_PER_REVISION and attempt == 1 and any(
+            c.get("campaign_key") == base_key
+            and str(c.get("status") or "").upper() != "BLOCKED"
+            and str(c.get("mt4_status") or "").upper() != "REJECTED"
+            for c in campaigns):
         result["reason"] = "campaign gia' usata per questa mappa/revision"
         return result
 
+    risk_preflight = _v483_preflight_forecast(
+        forecast, session, bias, price, base_key, reentry_ctx=reentry_ctx)
+    if not risk_preflight.get("allowed"):
+        return _v483_rejected_entry_result(result, bias, risk_preflight)
     c = _create_forecast_campaign(symbol, session, forecast, bias, price, m1, pre_ctx=None, reentry_ctx=reentry_ctx)
+    c["mt4_requested_legs"] = int(risk_preflight.get("selected_legs") or 3)
+    if c["mt4_requested_legs"] < 3:
+        c["legs"] = c["legs"][:c["mt4_requested_legs"]]
+        c["risk_plan_adapted"] = True
     result.update({"triggered": True, "trade_id": c.get("id"), "reason": (f"Forecast+Thesis+M1 RE-ENTRY #{attempt}" if reentry_ctx else "Forecast+Thesis+M1 ufficiali")})
     if FORECAST_CAMPAIGN_ALERT_ENABLED and not (LIVE_DIRECTOR_ENABLED and LIVE_DIRECTOR_CLEAN_TELEGRAM):
         send_telegram(forecast_campaign_message(c))
@@ -21011,6 +21152,13 @@ MT4_V48_MAX_HEARTBEAT_AGE_SECONDS = int(os.getenv("MT4_V48_MAX_HEARTBEAT_AGE_SEC
 # Uses TradingView PRICE_UPDATE snapshots, not broker tick history.
 # Outcome = first FUTURE reported CLOSE beyond TP1/SL, NOT a fill.
 # ============================================================
+# v48.3: rejected proposals never count as executed campaigns.
+# Optional reduced-leg fallback CHANGES the A/B/C plan and MUST be explicitly opted in
+# only after a separate MT4 DEMO validation. Default keeps 3 full A/B/C legs.
+V483_PRETRADE_RISK_PREFLIGHT = os.getenv("V483_PRETRADE_RISK_PREFLIGHT", "TRUE").upper() == "TRUE"
+V483_REJECT_COOLDOWN_SECONDS = max(60, int(os.getenv("V483_REJECT_COOLDOWN_SECONDS", "300")))
+V483_ADAPTIVE_LEGS_ENABLED = os.getenv("V483_ADAPTIVE_LEGS_ENABLED", "FALSE").upper() == "TRUE"
+V483_RANGE_SHADOW_ENABLED = os.getenv("V483_RANGE_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
 V48_SHADOW_ENABLED = os.getenv("V48_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
 V48_SHADOW_FILE = os.getenv("V48_SHADOW_FILE", "v48_shadow_state.json")
 # The previous 4/day hard cap censored the New York trend in the 2026-11-02 test.
@@ -21018,7 +21166,7 @@ V48_SHADOW_MAX_PER_DAY = max(12, min(120, int(os.getenv("V48_SHADOW_MAX_PER_DAY"
 V48_SHADOW_COOLDOWN_SECONDS = max(300, int(os.getenv("V48_SHADOW_COOLDOWN_SECONDS", "900")))
 V48_SHADOW_MAX_HOLD_SECONDS = max(300, int(os.getenv("V48_SHADOW_MAX_HOLD_SECONDS", "7200")))
 V48_SHADOW_MAX_STORED = max(500, int(os.getenv("V48_SHADOW_MAX_STORED", "1500")))
-V48_SHADOW_STATE = {"version":"48.2-shadow-research-only", "signals":[], "last":{}}
+V48_SHADOW_STATE = {"version":"48.3-shadow-research-only", "signals":[], "last":{}}
 try:
     if os.path.isfile(V48_SHADOW_FILE):
         with open(V48_SHADOW_FILE, "r", encoding="utf-8") as _v48_f:
@@ -21109,7 +21257,7 @@ def v48_shadow_stats(day=None):
                 "open": sum(s.get("status") == "OPEN" for s in rows),
                 "expired": sum(s.get("status") == "EXPIRED" for s in rows),
                 "legacy_unverified": sum(s.get("status") == "LEGACY_UNVERIFIED" for s in rows)}
-    methods = ("TREND_CONTINUATION", "STRUCTURAL_RETEST", "REVERSAL_SCOUT")
+    methods = ("TREND_CONTINUATION", "STRUCTURAL_RETEST", "REVERSAL_SCOUT", "RANGE_M1_SCOUT")
     return {"all": summarize(selected), "by_mode": {
         mode: {"all": summarize([s for s in selected if s.get("mode") == mode]),
                "BUY": summarize([s for s in selected if s.get("mode") == mode and s.get("direction") == "BUY"]),
@@ -21197,6 +21345,65 @@ def v48_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
     sigs.append(item)
     V48_SHADOW_STATE["signals"] = sigs[-V48_SHADOW_MAX_STORED:]
     V48_SHADOW_STATE["last"][key] = now
+    v48_shadow_save()
+    return item
+
+
+def v483_range_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
+    """RANGE/M1 hypothesis, recorded for future-price research ONLY; no MT4 queue."""
+    if not V48_SHADOW_ENABLED or not V483_RANGE_SHADOW_ENABLED or not isinstance(data, dict):
+        return None
+    symbol = str(data.get("symbol") or "XAUUSD").upper()
+    thesis = thesis_ctx or {}
+    session = str(thesis.get("session") or "").upper()
+    if session not in ("EUROPE", "NEWYORK"):
+        return None
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    if not isinstance(forecast, dict) or str(_forecast_live_bias(forecast)).upper() != "RANGE":
+        return None
+    ctx = m1_ctx or {}
+    direction = str(ctx.get("direction") or "").upper()
+    score = int(to_float(ctx.get("score"), 0))
+    if not ctx.get("confirmed") or score < 7 or direction not in ("BUY", "SELL"):
+        return None
+    fast = _thesis_fast_state(symbol)
+    if str(fast.get("stable_preferred") or "").upper() != direction or str(fast.get("stable_session") or "").upper() != session or int(fast.get("candidate_count") or 0) < THESIS_FAST_THESIS_CONFIRM_BARS:
+        return None
+    entry = round(to_float(data.get("close"), get_price_from_data(data)), 3)
+    low, high = to_float(forecast.get("working_low"), 0), to_float(forecast.get("working_high"), 0)
+    if entry <= 0 or not(low > 0 and high > low and low <= entry <= high):
+        return None
+    rows = PRICE_HISTORY.get(symbol) or []
+    if len(rows) < 8:
+        return None
+    prior = to_float(rows[-7].get("close"), entry)
+    drift = entry - prior
+    if (direction == "BUY" and drift < 1.5) or (direction == "SELL" and drift > -1.5):
+        return None
+    t = now_ts()
+    day = _thesis_day_key()
+    sigs = V48_SHADOW_STATE.setdefault("signals", [])
+    if sum(1 for row in sigs if isinstance(row, dict) and row.get("day") == day and row.get("mode") == "RANGE_M1_SCOUT" and row.get("symbol") == symbol) >= 6:
+        return None
+    if sum(1 for row in sigs if isinstance(row,dict) and row.get("day") == day and row.get("symbol") == symbol) >= V48_SHADOW_MAX_PER_DAY:
+        return None
+    key = f"{symbol}:RANGE_M1_SCOUT:{direction}"
+    if t - to_float(V48_SHADOW_STATE.setdefault("last", {}).get(key), 0) < 1200:
+        return None
+    sl = round(entry - 6.0 if direction == "BUY" else entry + 6.0, 3)
+    tp = round(entry + 3.0 if direction == "BUY" else entry - 3.0, 3)
+    item = {
+        "time": round(t,3), "day":day, "symbol":symbol,
+        "version":"48.3", "mode":"RANGE_M1_SCOUT", "direction":direction,
+        "session":session, "entry":entry, "sl":sl, "tp1":tp,
+        "score":score, "m1_confirmed":True, "reason":"Forecast RANGE + Thesis stabile + M1 confermato >=7 e drift coerente",
+        "source":"TradingView webhook snapshots, NOT MT4 fills", "execution":"SHADOW_ONLY",
+        "status":"OPEN", "observations":0, "outcome_method":"NEXT_WEBHOOK_CLOSE",
+        "max_favorable_close_points":0.0, "max_adverse_close_points":0.0,
+    }
+    sigs.append(item)
+    V48_SHADOW_STATE["signals"] = sigs[-V48_SHADOW_MAX_STORED:]
+    V48_SHADOW_STATE["last"][key] = t
     v48_shadow_save()
     return item
 
@@ -22897,6 +23104,7 @@ def webhook():
         # v48 experimental scouts: observation only, no broker queue or Telegram trade command.
         try:
             v48_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
+            v483_range_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
         except Exception as v48_exc:
             print(f"[v48] shadow observe error: {type(v48_exc).__name__}: {v48_exc}", flush=True)
 
