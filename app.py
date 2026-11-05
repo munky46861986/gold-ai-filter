@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v48.3 RISK & DIRECTOR FIX DEMO | SHADOW v48.2 | BROKER RECONCILE v48.1"
+VERSION = "v48.4 TRIPLE SHADOW RISK DEMO | BROKER RECONCILE v48.1"
 # v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
@@ -21146,6 +21146,8 @@ MT4_V48_BROKER_GATED_SIM = os.getenv("MT4_V48_BROKER_GATED_SIM", "TRUE").upper()
 MT4_V48_EUR_PER_PRICE_POINT_PER_LOT = float(os.getenv("MT4_V48_EUR_PER_PRICE_POINT_PER_LOT", "95.0"))
 MT4_V48_RECOVERY_RESERVE_LOT = float(os.getenv("MT4_V48_RECOVERY_RESERVE_LOT", "0.01"))
 MT4_V48_RISK_BUFFER_EUR = float(os.getenv("MT4_V48_RISK_BUFFER_EUR", "1.00"))
+# Independent cap. Never increases MT4_DAILY_MAX_LOSS_EUR.
+MT4_V484_MAX_CAMPAIGN_RISK_EUR = min(12.0, max(0.01, float(os.getenv("MT4_V484_MAX_CAMPAIGN_RISK_EUR", "12.0"))))
 MT4_V48_MAX_HEARTBEAT_AGE_SECONDS = int(os.getenv("MT4_V48_MAX_HEARTBEAT_AGE_SECONDS", "90"))
 # ============================================================
 # v48.2 SHADOW RESEARCH ONLY. NO BROKER QUEUE, NO ORDERS.
@@ -21408,6 +21410,89 @@ def v483_range_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
     return item
 
 
+
+# v48.4: Forecast zone A/B research. No MT4 queue. Existing V48 shadow
+# outcome engine evaluates future webhook CLOSE, NOT broker fills.
+V484_TRIPLE_SHADOW_ENABLED = os.getenv("V484_TRIPLE_SHADOW_ENABLED", "TRUE").upper() == "TRUE"
+
+
+def v484_triple_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
+    if not V484_TRIPLE_SHADOW_ENABLED or not V48_SHADOW_ENABLED:
+        return
+    symbol = str(data.get("symbol") or "XAUUSD").upper()
+    session = str((thesis_ctx or {}).get("session") or "").upper()
+    if session not in ("EUROPE", "NEWYORK"):
+        return
+    forecast, _, _ = _forecast_for_active_session(symbol, session)
+    if not isinstance(forecast, dict):
+        return
+    if str(forecast.get("live_status") or "VALID").upper() in ("ARCHIVED", "INVALIDATED", "REASSESSING"):
+        return
+    direction = str(_forecast_live_bias(forecast)).upper()
+    if direction not in ("BUY", "SELL"):
+        return
+    price = to_float(data.get("close"), 0)
+    low = to_float(forecast.get("live_preferred_zone_low"), to_float(forecast.get("preferred_zone_low"), 0))
+    high = to_float(forecast.get("live_preferred_zone_high"), to_float(forecast.get("preferred_zone_high"), 0))
+    if not (0 < low <= price <= high):
+        return
+    day = _thesis_day_key()
+    rev = int(to_float(forecast.get("revision_count"), 0))
+    ctx = m1_ctx or {}
+    m1_ok = bool(ctx.get("confirmed")) and int(to_float(ctx.get("score"), 0)) >= 6 and str(ctx.get("direction") or "").upper() == direction
+    sessions = get_session_thesis_state(symbol).get("sessions", {}) or {}
+    ref = _forecast_reference_range(forecast, sessions.get(session))
+    stop = min(FORECAST_CAMPAIGN_MAX_SL_POINTS, max(FORECAST_CAMPAIGN_MIN_SL_POINTS, ref * 0.22))
+    if not math.isfinite(stop) or stop <= 0:
+        return
+    sign = 1 if direction == "BUY" else -1
+    sigs = V48_SHADOW_STATE.setdefault("signals", [])
+    now = now_ts()
+    changed = False
+    for mode in ("A_FORECAST_ANTICIPATORY", "B_FORECAST_M1"):
+        if mode == "B_FORECAST_M1" and not m1_ok:
+            continue
+        key = f"{day}:{symbol}:{session}:{rev}:{direction}:{mode}"
+        if any(s.get("v484_key") == key for s in sigs):
+            continue
+        sigs.append({
+            "v484_key":key, "time":round(now,3), "day":day, "symbol":symbol,
+            "session":session, "version":"48.4", "mode":mode, "direction":direction,
+            "entry":round(price,3), "sl":round(price-sign*stop,3),
+            "tp1":round(price+sign*3,3), "tp2_reference":round(price+sign*6,3),
+            "score":int(to_float(ctx.get("score"),0)), "m1_confirmed":m1_ok,
+            "execution":"SHADOW_ONLY", "status":"OPEN", "observations":0,
+            "outcome_method":"NEXT_WEBHOOK_CLOSE", "source":"TradingView, not MT4",
+            "reason":"Forecast preferred zone"+(" + M1 confirmed" if mode == "B_FORECAST_M1" else ""),
+            "max_favorable_close_points":0.0, "max_adverse_close_points":0.0
+        })
+        changed = True
+    if changed:
+        # Preserve per-day visibility: do not let research A/B evict active legacy signals.
+        V48_SHADOW_STATE["signals"] = sigs[-max(V48_SHADOW_MAX_STORED,2000):]
+        v48_shadow_save()
+
+
+@app.route("/v484/triple-strategy")
+def v484_triple_strategy_status():
+    day = request.args.get("day", "").strip() or _thesis_day_key()
+    rows = [s for s in V48_SHADOW_STATE["signals"] if s.get("day") == day and
+            s.get("mode") in ("A_FORECAST_ANTICIPATORY", "B_FORECAST_M1")]
+    def stats(mode):
+        x = [r for r in rows if r.get("mode") == mode]
+        return {"signals":len(x), "tp1":sum(r.get("status")=="CLOSE_TP1" for r in x),
+                "sl":sum(r.get("status")=="CLOSE_SL" for r in x),
+                "open":sum(r.get("status")=="OPEN" for r in x),
+                "expired":sum(r.get("status")=="EXPIRED" for r in x)}
+    return jsonify({
+        "version":VERSION, "day":day, "A":stats("A_FORECAST_ANTICIPATORY"),
+        "B":stats("B_FORECAST_M1"),
+        "C":"See /live_director and /v483/diagnostics for operational/rejected campaigns.",
+        "signals":rows[-100:],
+        "warning":"TP1 outcomes by subsequent TradingView CLOSE; TP2 is a reference only. No broker fill, intrabar ordering, costs, or reliable PnL."
+    })
+
+
 @app.route("/v48/shadow")
 def v48_shadow_status():
     """Backward-compatible endpoint, with research stats and explicit limitations."""
@@ -21460,6 +21545,10 @@ def mt4_v48_risk_decision(payload):
         return {"allowed":False, "reason":"BAD_RISK_INPUT"}
     if str(payload.get("engine") or "").upper() == "FORECAST":
         risk += abs(to_float(payload.get("entry"),0)-to_float(payload.get("sl"),0)) * max(0,MT4_V48_RECOVERY_RESERVE_LOT) * MT4_V48_EUR_PER_PRICE_POINT_PER_LOT
+    if risk > MT4_V484_MAX_CAMPAIGN_RISK_EUR + 1e-6:
+        return {"allowed":False, "reason":"V484_CAMPAIGN_RISK_LIMIT",
+                "new_risk_eur":round(risk,2), "max_campaign_risk_eur":MT4_V484_MAX_CAMPAIGN_RISK_EUR,
+                "daily_cap_eur":MT4_DAILY_MAX_LOSS_EUR}
     reserved = 0.0
     for cmd in MT4_STATE.get("commands", []):
         if cmd.get("type") != "OPEN" or cmd.get("status") not in ("QUEUED","DELIVERED","ACKED"):
@@ -23105,6 +23194,7 @@ def webhook():
         try:
             v48_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
             v483_range_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
+            v484_triple_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
         except Exception as v48_exc:
             print(f"[v48] shadow observe error: {type(v48_exc).__name__}: {v48_exc}", flush=True)
 
