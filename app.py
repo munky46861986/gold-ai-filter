@@ -6,6 +6,7 @@ import html
 import requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from telegram_archive import archive_message
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -2031,6 +2032,7 @@ def send_telegram(text: str, parse_mode: str = None):
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
+        archive_message("gold-master", text)
         LAST_TELEGRAM_TS = now_ts()
         LAST_TELEGRAM_ERROR = ""
         return True
