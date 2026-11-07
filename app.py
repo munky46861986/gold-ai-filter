@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CONFIG
 # =========================
 
-VERSION = "v48.5 PROFITABILITY RESEARCH DEMO | SINGLE LEG | BROKER RECONCILE"
+VERSION = "v48.6 PROFITABILITY RESEARCH DEMO | SHADOW D/E/F | SINGLE LEG | BROKER RECONCILE"
 # v47.15.3: aggiunge BROKER SOURCE OF TRUTH, SL strutturale sui re-entry e terzo re-entry piu selettivo.
 # La matematica Forecast Europe/New York/Dynamic e M1 resta invariata.
 # v47.15: mantiene intatta la matematica Forecast v47.13/v47.14.3 e aggiunge
@@ -21264,7 +21264,7 @@ def v48_shadow_stats(day=None):
                 "open": sum(s.get("status") == "OPEN" for s in rows),
                 "expired": sum(s.get("status") == "EXPIRED" for s in rows),
                 "legacy_unverified": sum(s.get("status") == "LEGACY_UNVERIFIED" for s in rows)}
-    methods = ("TREND_CONTINUATION", "STRUCTURAL_RETEST", "REVERSAL_SCOUT", "RANGE_M1_SCOUT")
+    methods = ("TREND_CONTINUATION", "STRUCTURAL_RETEST", "REVERSAL_SCOUT", "RANGE_M1_SCOUT", "D_EARLY_REVERSAL")
     return {"all": summarize(selected), "by_mode": {
         mode: {"all": summarize([s for s in selected if s.get("mode") == mode]),
                "BUY": summarize([s for s in selected if s.get("mode") == mode and s.get("direction") == "BUY"]),
@@ -21466,6 +21466,7 @@ def v484_triple_shadow_observe(data, m1_ctx=None, thesis_ctx=None):
             "entry":round(price,3), "sl":round(price-sign*stop,3),
             "tp1":round(price+sign*3,3), "tp2_reference":round(price+sign*6,3),
             "score":int(to_float(ctx.get("score"),0)), "m1_confirmed":m1_ok,
+            "v486_volatility_at_entry":_v486_volatility(symbol) if mode == "B_FORECAST_M1" and V486_RESEARCH_ENABLED else None,
             "execution":"SHADOW_ONLY", "status":"OPEN", "observations":0,
             "outcome_method":"NEXT_WEBHOOK_CLOSE", "source":"TradingView, not MT4",
             "reason":"Forecast preferred zone"+(" + M1 confirmed" if mode == "B_FORECAST_M1" else ""),
@@ -21517,6 +21518,122 @@ def v48_shadow_stats_status():
     return jsonify({"enabled":V48_SHADOW_ENABLED, "version":V48_SHADOW_STATE["version"],
                     "day":day, "outcome_method":"NEXT_WEBHOOK_CLOSE_NOT_BROKER_TOUCH",
                     "stats":v48_shadow_stats(day)})
+
+
+
+# v48.6: Three SHADOW-only research tests. No broker orders or changes to EA/risk.
+V486_RESEARCH_ENABLED = os.getenv("V486_RESEARCH_ENABLED", "TRUE").upper() == "TRUE"
+V486_STRONG_M1_SCORE = max(7, min(9, int(os.getenv("V486_STRONG_M1_SCORE", "7"))))
+V486_SPIKE_BAR_POINTS = max(1.0, float(os.getenv("V486_SPIKE_BAR_POINTS", "8.0")))
+V486_SPIKE_JUMP_POINTS = max(1.0, float(os.getenv("V486_SPIKE_JUMP_POINTS", "6.0")))
+V486_SPIKE_LOOKBACK = max(3, min(30, int(os.getenv("V486_SPIKE_LOOKBACK", "12"))))
+V486_D_COOLDOWN = max(300, int(os.getenv("V486_D_COOLDOWN", "1800")))
+
+
+def _v486_volatility(symbol):
+    """Snapshot using only recent webhook price-history; not broker ticks."""
+    rows = (PRICE_HISTORY.get(symbol) or [])[-V486_SPIKE_LOOKBACK:]
+    bars, closes = [], []
+    for r in rows:
+        hi, lo, c = (to_float(r.get(k), 0) for k in ("high", "low", "close"))
+        if math.isfinite(hi) and math.isfinite(lo) and hi >= lo > 0:
+            bars.append(hi-lo)
+        if math.isfinite(c) and c > 0:
+            closes.append(c)
+    max_bar = max(bars, default=0.0)
+    max_jump = max((abs(b-a) for a,b in zip(closes,closes[1:])), default=0.0)
+    reasons = []
+    if len(rows) < 3: reasons.append("INSUFFICIENT_HISTORY")
+    if max_bar >= V486_SPIKE_BAR_POINTS: reasons.append("BAR_SPIKE")
+    if max_jump >= V486_SPIKE_JUMP_POINTS: reasons.append("CLOSE_JUMP")
+    return {"guarded": bool(reasons), "reasons": reasons,
+            "max_bar_points": round(max_bar,3), "max_jump_points":round(max_jump,3),
+            "snapshots":len(rows)}
+
+
+def v486_early_reversal_observe(data, m1_ctx=None, thesis_ctx=None):
+    """D: counter-Forecast virtual reversal, never sent to MT4."""
+    if not V486_RESEARCH_ENABLED or not isinstance(data, dict): return
+    symbol = str(data.get("symbol") or "XAUUSD").upper()
+    session = str((thesis_ctx or {}).get("session") or "").upper()
+    if session not in ("EUROPE", "NEWYORK"): return
+    m1 = m1_ctx or {}
+    direction = str(m1.get("direction") or "").upper()
+    score = int(to_float(m1.get("score"),0))
+    if direction not in ("BUY", "SELL") or not m1.get("confirmed") or score < 6: return
+    forecast,_,_ = _forecast_for_active_session(symbol,session)
+    bias = str(_forecast_live_bias(forecast)).upper()
+    if bias not in ("BUY", "SELL") or bias == direction: return
+    rows = PRICE_HISTORY.get(symbol) or []
+    if len(rows) < 11: return
+    closes = [to_float(r.get("close"), 0) for r in rows[-11:]]
+    if any(not math.isfinite(p) or p <= 0 for p in closes): return
+    sign = 1 if direction == "BUY" else -1
+    prior = sign*(closes[5]-closes[0])
+    reversal = sign*(closes[-1]-closes[5])
+    latest = sign*(closes[-1]-closes[-2])
+    if not (prior <= -3.0 and reversal >= 2.0 and latest >= 0.25): return
+    hi_lo = [(to_float(r.get("high",0),0),to_float(r.get("low",0),0)) for r in rows[-10:]]
+    if any(hi < lo or lo <= 0 for hi,lo in hi_lo): return
+    price = closes[-1]
+    sl = min(lo for _,lo in hi_lo)-0.8 if sign == 1 else max(hi for hi,_ in hi_lo)+0.8
+    if not (3.0 <= abs(price-sl) <= 12.0): return
+    day,t = _thesis_day_key(),now_ts()
+    sigs = V48_SHADOW_STATE.setdefault("signals",[])
+    if any(s.get("mode")=="D_EARLY_REVERSAL" and s.get("day")==day and s.get("symbol")==symbol
+           and s.get("direction")==direction and t-to_float(s.get("time"),0)<V486_D_COOLDOWN
+           for s in sigs if isinstance(s,dict)): return
+    if sum(s.get("mode")=="D_EARLY_REVERSAL" and s.get("day")==day for s in sigs if isinstance(s,dict)) >= 30: return
+    sigs.append({"day":day,"time":round(t,3),"symbol":symbol,"session":session,
+        "mode":"D_EARLY_REVERSAL","version":"48.6","direction":direction,
+        "entry":round(price,3),"sl":round(sl,3),"tp1":round(price+sign*3,3),
+        "score":score,"forecast_bias_at_entry":bias,
+        "volatility_at_entry":_v486_volatility(symbol),
+        "reason":f"COUNTER_MAP_{bias};PRIOR={prior:.2f};REVERSAL={reversal:.2f}",
+        "execution":"SHADOW_ONLY","source":"TradingView webhook snapshots, NOT MT4",
+        "status":"OPEN","observations":0,"max_favorable_close_points":0.0,
+        "max_adverse_close_points":0.0,"outcome_method":"NEXT_WEBHOOK_CLOSE"})
+    V48_SHADOW_STATE["signals"] = sigs[-max(V48_SHADOW_MAX_STORED,2000):]
+    v48_shadow_save()
+
+
+def _v486_summarize(rows):
+    win = sum(r.get("status")=="CLOSE_TP1" for r in rows)
+    loss = sum(r.get("status")=="CLOSE_SL" for r in rows)
+    net = sum((3.0 if r.get("status")=="CLOSE_TP1" else
+               -abs(to_float(r.get("entry"),0)-to_float(r.get("sl"),0)))
+              for r in rows if r.get("status") in ("CLOSE_TP1","CLOSE_SL"))
+    return {"signals":len(rows),"tp1":win,"sl":loss,
+            "open":sum(r.get("status")=="OPEN" for r in rows),
+            "expired":sum(r.get("status")=="EXPIRED" for r in rows),
+            "hit_rate_pct":round(100*win/(win+loss),2) if win+loss else None,
+            "nominal_net_points_ex_costs":round(net,3)}
+
+
+@app.route("/v486/research")
+def v486_research_status():
+    day = request.args.get("day","").strip() or _thesis_day_key()
+    all_rows = [r for r in V48_SHADOW_STATE.get("signals",[])
+                if isinstance(r,dict) and r.get("day")==day]
+    b = [r for r in all_rows if r.get("mode")=="B_FORECAST_M1"]
+    d = [r for r in all_rows if r.get("mode")=="D_EARLY_REVERSAL"]
+    e_take = [r for r in b if int(to_float(r.get("score"),0)) >= V486_STRONG_M1_SCORE]
+    e_skip = [r for r in b if r not in e_take]
+    f_known = [r for r in b if isinstance(r.get("v486_volatility_at_entry"),dict)]
+    f_take = [r for r in f_known if not r["v486_volatility_at_entry"].get("guarded")]
+    f_skip = [r for r in f_known if r["v486_volatility_at_entry"].get("guarded")]
+    return jsonify({"version":VERSION,"research_version":"48.6","day":day,
+        "enabled":V486_RESEARCH_ENABLED,"execution":"SHADOW_ONLY_NO_MT4_ORDERS",
+        "baseline_B":_v486_summarize(b),
+        "D_early_reversal":_v486_summarize(d),
+        "E_strong_M1":{"taken":_v486_summarize(e_take),"skipped":_v486_summarize(e_skip)},
+        "F_volatility_guard":{"taken":_v486_summarize(f_take),"skipped":_v486_summarize(f_skip),
+            "unclassified_legacy_count":len(b)-len(f_known)},
+        "settings":{"strong_M1_min_score":V486_STRONG_M1_SCORE,
+            "spike_bar_points":V486_SPIKE_BAR_POINTS,"spike_jump_points":V486_SPIKE_JUMP_POINTS,
+            "spike_lookback_snapshots":V486_SPIKE_LOOKBACK},
+        "D_signals":d[-50:],"B_evaluation_rows":b[-50:],
+        "warning":"Hypothetical CLOSE outcomes only; no intrabar first touches, real fills, spread, commissions or executable PnL. E/F are subsets of B, not independent new trades. State is ephemeral on Render without persistent disk."})
 
 
 def _mt4_v48_estimate_risk(payload):
@@ -23214,6 +23331,7 @@ def webhook():
             v48_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
             v483_range_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
             v484_triple_shadow_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
+            v486_early_reversal_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
         except Exception as v48_exc:
             print(f"[v48] shadow observe error: {type(v48_exc).__name__}: {v48_exc}", flush=True)
 
