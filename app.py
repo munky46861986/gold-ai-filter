@@ -23200,6 +23200,46 @@ def maybe_send_fast_from_main_webhook(data, signal, main_trade=None, main_setup_
     return result
 
 
+# v48.7 LAB: deliberately separate from FORECAST and the broker bridge.
+# This module never queues MT4 orders or changes campaign risk settings.
+V487_LAB_ENABLED = os.getenv("V487_LAB_ENABLED", "TRUE").upper() == "TRUE"
+V487_LAB = None
+if V487_LAB_ENABLED:
+    try:
+        from shadow_lab_v487 import ShadowLabV487
+        V487_LAB = ShadowLabV487(
+            path=os.getenv("V487_LAB_STATE_FILE", "v487_lab_state.json"),
+            flush_every=10
+        )
+    except Exception as v487_import_exc:
+        print(f"[v48.7] LAB disabled after import error: {type(v487_import_exc).__name__}: {v487_import_exc}", flush=True)
+
+
+@app.route("/v487/lab")
+def v487_lab_report():
+    day = str(request.args.get("day") or _thesis_day_key()).strip()
+    if V487_LAB is None:
+        return jsonify({"version": "48.7-LAB-ONLY", "enabled": False,
+                        "reason": "V487_LAB_DISABLED_OR_IMPORT_FAILED"})
+    result = V487_LAB.report(day, include_trades=True)
+    result["enabled"] = True
+    return jsonify(result)
+
+
+@app.route("/v487/diagnostics")
+def v487_lab_diagnostics():
+    day = str(request.args.get("day") or _thesis_day_key()).strip()
+    if V487_LAB is None:
+        return jsonify({"version": "48.7-LAB-ONLY", "enabled": False,
+                        "reason": "V487_LAB_DISABLED_OR_IMPORT_FAILED"})
+    result = V487_LAB.report(day, include_trades=False)
+    return jsonify({"version": result["version"], "day": day, "enabled": True,
+                    "execution": result["execution"],
+                    "diagnostics": result["diagnostics"],
+                    "risk_slices": result["risk_slices"],
+                    "warning": result["warning"]})
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global LAST_WEBHOOK_TS, LAST_WEBHOOK_KIND
@@ -23255,6 +23295,19 @@ def webhook():
         wait_active, wait_ctx = max_wait_active(data.get("symbol", "XAUUSD"))
         if wait_active and MAX_WAIT_PRICE_UPDATE_MANAGEMENT_ONLY:
             daily_thesis_ctx = update_session_intelligence(data)
+            # Continue existing virtual exit experiments even during MAX WAIT.
+            # No new M1/Forecast diagnostics are inferred while management-only.
+            if V487_LAB is not None:
+                try:
+                    _v487_symbol = str(data.get("symbol") or "XAUUSD").upper()
+                    V487_LAB.observe(
+                        data=data, day=_thesis_day_key(), stamp=now_ts(),
+                        signals=V48_SHADOW_STATE.get("signals", []),
+                        history=PRICE_HISTORY.get(_v487_symbol, []) or [],
+                        diagnostics=False
+                    )
+                except Exception as v487_exc:
+                    print(f"[v48.7] LAB MAX_WAIT observe error: {type(v487_exc).__name__}: {v487_exc}", flush=True)
             asia_memory_alert = maybe_asia_memory_alert(data.get("symbol", "XAUUSD"), thesis_ctx=daily_thesis_ctx)
             if asia_memory_alert:
                 send_telegram(asia_memory_alert)
@@ -23334,6 +23387,30 @@ def webhook():
             v486_early_reversal_observe(data, m1_ctx=m1_ctx, thesis_ctx=daily_thesis_ctx)
         except Exception as v48_exc:
             print(f"[v48] shadow observe error: {type(v48_exc).__name__}: {v48_exc}", flush=True)
+
+        # v48.7 LAB is an independent, fail-safe research observer.
+        # It neither calls process_forecast_campaign nor any broker/MT4 API.
+        if V487_LAB is not None:
+            try:
+                _v487_symbol = str(data.get("symbol") or "XAUUSD").upper()
+                _v487_session = str((daily_thesis_ctx or {}).get("session") or "").upper()
+                _v487_forecast = None
+                _v487_bias = ""
+                if _v487_session in ("EUROPE", "NEWYORK"):
+                    _v487_forecast, _, _ = _forecast_for_active_session(
+                        _v487_symbol, _v487_session
+                    )
+                    if isinstance(_v487_forecast, dict):
+                        _v487_bias = str(_forecast_live_bias(_v487_forecast) or "").upper()
+                V487_LAB.observe(
+                    data=data, day=_thesis_day_key(), stamp=now_ts(),
+                    signals=V48_SHADOW_STATE.get("signals", []),
+                    session=_v487_session, forecast=_v487_forecast,
+                    bias=_v487_bias, m1=m1_ctx,
+                    history=PRICE_HISTORY.get(_v487_symbol, []) or []
+                )
+            except Exception as v487_exc:
+                print(f"[v48.7] LAB observe error: {type(v487_exc).__name__}: {v487_exc}", flush=True)
 
         # v47.15.3: EVENT SHOCK/PRE-EVENT puo' anticipare il Forecast NY durante CPI/NFP/FOMC/shock equivalente.
         # Richiede break strutturale reale + Thesis/M1 + no-chase; non bypassa la gestione LIVE.

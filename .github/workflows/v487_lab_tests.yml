@@ -1,0 +1,37 @@
+name: v48.7 LAB isolated checks
+on:
+  push:
+    branches:
+      - gold-master-v48-7-lab-shadow-20261111
+  pull_request:
+    paths:
+      - 'shadow_lab_v487.py'
+      - 'test_shadow_lab_v487.py'
+      - 'test_v487_app_smoke.py'
+      - 'app.py'
+      - '.github/workflows/v487_lab_tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lab-tests:
+    name: Python syntax + virtual exit scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Flask server dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python source
+        run: python -m py_compile app.py shadow_lab_v487.py test_shadow_lab_v487.py test_v487_app_smoke.py
+      - name: Run isolated SHADOW + Flask smoke tests
+        env:
+          MT4_BRIDGE_TOKEN: ""
+          TELEGRAM_TOKEN: ""
+          CHAT_ID: ""
+          V487_LAB_ENABLED: "TRUE"
+        run: python -m unittest -v test_shadow_lab_v487 test_v487_app_smoke
