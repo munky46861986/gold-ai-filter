@@ -70,6 +70,7 @@ class ShadowGUnitTests(unittest.TestCase):
         self.assertEqual(cand['tracks']['TP3']['status'], 'AMBIGUOUS')
         self.assertIsNone(cand['tracks']['TP3']['points'])
         self.assertEqual(e.report()['scenarios']['TP3']['ambiguous_not_counted'], 1)
+        self.assertAlmostEqual(e.report()['scenarios']['TP3']['stress_nominal_if_ambiguous_sl'], -6.25)
 
     def test_break_even_only_after_tp2(self):
         e = seed_engine()
