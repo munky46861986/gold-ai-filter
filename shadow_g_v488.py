@@ -277,13 +277,22 @@ class ShadowG:
         scenario = {}
         for target in TARGETS:
             name = f"TP{int(target)}"
-            tracks = [t["tracks"][name] for t in rows if name in t["tracks"]]
-            statuses = Counter(t["status"] for t in tracks)
-            done = [t["points"] for t in tracks if t["status"] in ("TP", "SL", "BE")]
+            paired = [(t, t["tracks"][name]) for t in rows if name in t["tracks"]]
+            statuses = Counter(track["status"] for _, track in paired)
+            done = [track["points"] for _, track in paired
+                    if track["status"] in ("TP", "SL", "BE")]
+            # The nominal baseline excludes intrabar first-touch uncertainty.
+            # Stress it by treating each AMBIGUOUS outcome as a full initial SL.
+            # DATA_GAP remains unknown and must be evaluated separately.
+            ambiguous_sl_penalty = sum(float(t.get("risk_points") or 0.0)
+                                       for t, track in paired
+                                       if track["status"] == "AMBIGUOUS")
             scenario[name] = {"statuses": dict(statuses),
                               "resolved_unambiguous": len(done),
                               "sum_nominal_points_ex_commission": round(sum(done), 3),
-                              "ambiguous_not_counted": statuses["AMBIGUOUS"]}
+                              "ambiguous_not_counted": statuses["AMBIGUOUS"],
+                              "stress_nominal_if_ambiguous_sl": round(sum(done) - ambiguous_sl_penalty, 3),
+                              "unknown_data_gap_count": statuses["DATA_GAP"]}
         result = {"version": "48.8-RESEARCH-ONLY", "execution": "SHADOW_ONLY_NO_BROKER",
                   "day": day, "signal_count": len(rows),
                   "modes": dict(Counter(t["mode"] for t in rows)),
