@@ -26,10 +26,16 @@ class V4818LiveTest(unittest.TestCase):
         x=ShadowV4818Live(enabled=False,dsn='some-dsn')
         self.assertFalse(x.capture_director(**self.base))
         self.assertEqual(x.status()['enabled'],False)
-    def test_no_db_no_capture(self):
+    def test_no_db_logs_temporarily_without_credentials(self):
         x=ShadowV4818Live(enabled=True,dsn='')
-        self.assertFalse(x.capture_director(**self.base))
+        from unittest.mock import patch
+        with patch('builtins.print') as mocked:
+            self.assertTrue(x.capture_director(**self.base))
+        raw=mocked.call_args.args[0]
+        self.assertTrue(raw.startswith('SHADOW_V4818_RECORD '))
+        self.assertNotIn('token',raw.lower())
         self.assertEqual(x.status()['database_configured'],False)
+        self.assertEqual(x.status()['metrics_since_process_start']['logged'],1)
     def test_capture_nontrigger_and_causal_gate(self):
         self.assertTrue(self.x.capture_director(**self.base))
         e=self.events[0]
