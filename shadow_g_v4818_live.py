@@ -1,8 +1,9 @@
-"""Read-only, best-effort SHADOW G v48.18 live telemetry to optional Postgres.
+"""Read-only, best-effort SHADOW G v48.18 live telemetry to Render logs or optional Postgres.
 
 Does not import broker queue or call MetaTrader APIs. Fail-open on ALL errors.
-Runtime starts disabled unless BOTH explicitly enabled and DATABASE_URL configured.
-PostgreSQL writes are asynchronous in one daemon thread to avoid delaying trades.
+Defaults to logs-only mode, no extra Render env vars required.
+Optional PostgreSQL writes require SHADOW_V4818_DATABASE_URL; SHADOW_V4818_ENABLED=false disables telemetry.
+PostgreSQL writes are asynchronous; logs-only mode records allowlisted data.
 """
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ class ShadowV4818Live:
     """Bounded queue, isolated writer; no synchronous DB I/O in producer thread."""
 
     def __init__(self, *, enabled=None, dsn=None, queue_max=4000, write_timeout=5):
-        self.enabled = env_enabled(os.getenv('SHADOW_V4818_ENABLED', 'false')) if enabled is None else bool(enabled)
+        self.enabled = env_enabled(os.getenv('SHADOW_V4818_ENABLED', 'true')) if enabled is None else bool(enabled)
         self._dsn = (os.getenv('SHADOW_V4818_DATABASE_URL', '') if dsn is None else dsn) or ''
         self._queue = Queue(maxsize=queue_max)
         self._write_timeout = int(write_timeout)
@@ -67,7 +68,7 @@ class ShadowV4818Live:
             'writer_alive': bool(self._thread and self._thread.is_alive()),
             'queue_pending': self._queue.qsize(),
             'metrics_since_process_start': metrics,
-            'persistence': 'POSTGRES' if self._dsn else 'TEMPORARY_RENDER_LOGS',
+            'persistence': 'POSTGRES' if self._dsn else 'RENDER_LOGS_LIMITED_RETENTION',
             'live_trading_changed': False,
             'warning': ('No durable archive until Postgres URL is configured; Render logs expire.' if not self._dsn else 'Counters reset on process restart; use PostgreSQL for historical totals.')
         }
