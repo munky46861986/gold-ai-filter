@@ -7,7 +7,6 @@ PostgreSQL writes are asynchronous in one daemon thread to avoid delaying trades
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from hashlib import sha256
 import json
 import os
 from queue import Queue, Full, Empty
@@ -51,12 +50,12 @@ class ShadowV4818Live:
         self._lock = threading.Lock()
         self._samples = {}
         self._metrics = {'accepted': 0, 'saved': 0, 'duplicates': 0,
-                         'dropped': 0, 'errors': 0, 'last_saved_utc': None,
+                         'dropped': 0, 'errors': 0, 'logged': 0, 'last_saved_utc': None,
                          'last_queued_utc': None, 'last_error_type': None}
 
     @property
     def ready(self):
-        return self.enabled and bool(self._dsn)
+        return self.enabled
 
     def status(self):
         with self._lock:
@@ -68,9 +67,9 @@ class ShadowV4818Live:
             'writer_alive': bool(self._thread and self._thread.is_alive()),
             'queue_pending': self._queue.qsize(),
             'metrics_since_process_start': metrics,
-            'persistence': 'POSTGRES' if self._dsn else 'NOT_CONFIGURED',
+            'persistence': 'POSTGRES' if self._dsn else 'TEMPORARY_RENDER_LOGS',
             'live_trading_changed': False,
-            'warning': 'Counters reset on process restart; use PostgreSQL for full historical totals.'
+            'warning': ('No durable archive until Postgres URL is configured; Render logs expire.' if not self._dsn else 'Counters reset on process restart; use PostgreSQL for historical totals.')
         }
 
     def _start(self):
@@ -93,6 +92,13 @@ class ShadowV4818Live:
             return False
         try:
             event = normalize(raw)
+            if not self._dsn:
+                # Temporary diagnostic fallback; no tokens, accounts or unknown fields.
+                print('SHADOW_V4818_RECORD '+json.dumps(event,sort_keys=True,separators=(',',':')), flush=True)
+                self._metric('accepted')
+                self._metric('logged')
+                self._metric('last_queued_utc',event['timestamp'])
+                return True
             self._queue.put_nowait(event)
             self._metric('accepted')
             self._metric('last_queued_utc', event['timestamp'])
