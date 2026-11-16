@@ -1,0 +1,21 @@
+name: SHADOW G v48.18 safety tests
+on:
+  pull_request:
+    paths:
+      - "app.py"
+      - "requirements.txt"
+      - "shadow_g_v4818_live.py"
+      - "test_shadow_v4818_live.py"
+      - "research/shadow_g_v4818/**"
+      - ".github/workflows/shadow-v4818-tests.yml"
+  workflow_dispatch:
+jobs:
+  isolated-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m py_compile app.py shadow_g_v4818_live.py
+      - run: python -m unittest -q test_shadow_v4818_live research.shadow_g_v4818.test_shadow_g_v4818

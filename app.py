@@ -14655,6 +14655,17 @@ def process_forecast_campaign(data, thesis_ctx=None, m1_ctx=None):
     return result
 
 
+@app.route("/shadow/v4818/status", methods=["GET"])
+def shadow_v4818_observer_status():
+    """Public non-sensitive counters only; never returns broker keys or trade levels."""
+    try:
+        from shadow_g_v4818_live import observer as _shadow_v4818_observer
+        return jsonify(_shadow_v4818_observer.status())
+    except Exception as _s48_exc:
+        return jsonify({"version":"48.18-live","enabled":False,
+                        "status":"UNAVAILABLE","error_type":type(_s48_exc).__name__}), 503
+
+
 @app.route("/forecast_campaign", methods=["GET"])
 def forecast_campaign_status():
     symbol = str(request.args.get("symbol", "XAUUSD")).upper()
@@ -22333,6 +22344,13 @@ def _mt4_record_event(payload):
             cmd["error_reason"] = str(payload.get("reason") or "ERROR")
 
     save_mt4_bridge_state(force=True)
+    # SHADOW G v48.18: optional broker-event copy, independent of order processing.
+    try:
+        from shadow_g_v4818_live import observer as _shadow_v4818_observer
+        if _shadow_v4818_observer.ready:
+            _shadow_v4818_observer.capture_broker_event(row)
+    except Exception as _s48_exc:
+        print(f"[SHADOW v48.18] broker telemetry skipped: {type(_s48_exc).__name__}", flush=True)
     return row
 
 
@@ -23436,6 +23454,30 @@ def webhook():
         except Exception as e:
             print(f"[v47.15.3] LIVE DIRECTOR error: {type(e).__name__}: {e}", flush=True)
             live_director_result = {"messages": [], "active_trade_id": None, "action": "ERROR", "reason": str(e)}
+
+        # SHADOW G v48.18: passive snapshot AFTER the real Director; never alters its decision.
+        # By default OFF. Database writes occur only on an asynchronous research worker.
+        try:
+            from shadow_g_v4818_live import observer as _shadow_v4818_observer
+            if _shadow_v4818_observer.ready:
+                _s48_symbol = str(data.get("symbol") or "XAUUSD").upper()
+                _s48_session = str((daily_thesis_ctx or {}).get("session") or "UNKNOWN").upper()
+                _s48_forecast = {}
+                if _s48_session in ("EUROPE", "NEWYORK"):
+                    _s48_forecast, _, _ = _forecast_for_active_session(_s48_symbol, _s48_session)
+                _s48_id = str((forecast_campaign_result or {}).get("trade_id") or "")
+                _s48_trade = next(
+                    (c for c in _forecast_campaigns(_s48_symbol) if str(c.get("id")) == _s48_id),
+                    {},
+                ) if _s48_id else {}
+                _shadow_v4818_observer.capture_director(
+                    symbol=_s48_symbol, session=_s48_session, price=get_price_from_data(data),
+                    forecast=_s48_forecast, fast_thesis=_thesis_fast_state(_s48_symbol),
+                    m1=m1_ctx, campaign_result=forecast_campaign_result,
+                    director_result=live_director_result, trade=_s48_trade,
+                )
+        except Exception as _s48_exc:
+            print(f"[SHADOW v48.18] decision telemetry skipped: {type(_s48_exc).__name__}", flush=True)
 
         # Legacy v47.13 Forecast Trend Shadow: resta disponibile ma default OFF per non duplicare le entry.
         try:
