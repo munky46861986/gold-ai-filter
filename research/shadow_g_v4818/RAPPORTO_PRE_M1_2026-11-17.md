@@ -3,32 +3,47 @@
 ## Stato e fonti
 
 - Fonte: log originali Render `SHADOW_V4818_RECORD`, archiviati integralmente nei due CSV qui nella stessa cartella. Data locale: Europe/Rome (UTC+1).
-- Finestra rilevata: dalle 07:00 alle 22:59 circa, con periodi privi di osservazioni (non confondere assenza di log con assenza di segnali).
-- Registrazioni di decisione raccolte: **759**. Il registratore memorizza snapshot di decisione, non candele complete e non ordini.
-- Candidati M1: `confirmed=true`, `score>=6`: **0** osservazioni, raggruppate in **0** gruppi con regola ex ante: stesso lato, sessione e categoria, distanza <=30 minuti.
-- Allineamento Forecast+Thesis+M1: **0** eventi; `BEFORE_FORECAST`: **0**; contrari a Forecast ma con Thesis/M1 concordi: **0**.
-- Il giorno risulta bloccato con `BROKER_DAY_HISTORY_UNVERIFIED`: zero `campaign_triggered` tra questi snapshot. Nessun PnL o numero di trade broker viene inferito.
+- Finestra raccolta: 07:00-22:59 (ora italiana), con periodi privi di osservazioni: mancanza di log non prova assenza di segnali.
+- Snapshot di decisione recuperati: **759**. Non sono candele complete né ordini.
+- Segnali M1 `confirmed=true`, `score >=6`: **16**; raggruppati in **5** gruppi osservativi. Regola congelata: stesso lato, sessione, categoria e gap <=30 minuti.
+- Allineati Forecast+Thesis+M1: **12**; precedente alla mappa: **1**; contro Forecast, ma a favore della Thesis: **3**.
+- Broker storico non verificato `BROKER_DAY_HISTORY_UNVERIFIED`; **nessuno dei 16 casi** ha un ingresso eseguito o una entry/sl/tp nel log. Quindi gli esiti futuri saranno solo simulazioni.
 
-## Candidati (non trade)
+## Tutti i candidati (NON trade eseguiti)
 
-| Ora IT | Gruppo | Sessione | M1 | Score | Prezzo osservato | Categoria |
+| Ora IT | Gruppo | Sessione | M1 | Score | Prezzo | Categoria |
 |---|---|---|---|---:|---:|---|
+| 08:02 | G1 | EUROPE | BUY | 7 | 3877.755 | BEFORE_FORECAST |
+| 08:06 | G2 | EUROPE | BUY | 6 | 3877.86 | FORECAST_THESIS_M1_ALIGNED |
+| 08:14 | G2 | EUROPE | BUY | 6 | 3878.065 | FORECAST_THESIS_M1_ALIGNED |
+| 08:27 | G2 | EUROPE | BUY | 6 | 3877.605 | FORECAST_THESIS_M1_ALIGNED |
+| 08:51 | G2 | EUROPE | BUY | 6 | 3873.215 | FORECAST_THESIS_M1_ALIGNED |
+| 09:45 | G3 | EUROPE | BUY | 8 | 3870.07 | FORECAST_THESIS_M1_ALIGNED |
+| 09:47 | G3 | EUROPE | BUY | 6 | 3870.83 | FORECAST_THESIS_M1_ALIGNED |
+| 09:48 | G3 | EUROPE | BUY | 6 | 3871.615 | FORECAST_THESIS_M1_ALIGNED |
+| 09:53 | G3 | EUROPE | BUY | 8 | 3873.855 | FORECAST_THESIS_M1_ALIGNED |
+| 14:38 | G4 | NEWYORK | SELL | 8 | 3846.86 | FORECAST_THESIS_M1_ALIGNED |
+| 14:39 | G4 | NEWYORK | SELL | 8 | 3840.735 | FORECAST_THESIS_M1_ALIGNED |
+| 14:40 | G4 | NEWYORK | SELL | 6 | 3839.085 | FORECAST_THESIS_M1_ALIGNED |
+| 14:47 | G4 | NEWYORK | SELL | 6 | 3845.445 | FORECAST_THESIS_M1_ALIGNED |
+| 15:04 | G5 | NEWYORK | BUY | 6 | 3858.2 | COUNTER_FORECAST_THESIS_M1 |
+| 15:16 | G5 | NEWYORK | BUY | 6 | 3860.9 | COUNTER_FORECAST_THESIS_M1 |
+| 15:22 | G5 | NEWYORK | BUY | 6 | 3862.53 | COUNTER_FORECAST_THESIS_M1 |
 
+## Cosa indica, senza look-ahead
 
-## Lettura operativa da testare, non da applicare
+- **G2** BUY Europa iniziale: più conferme nella stessa direzione, evitare conteggi multipli.
+- **G3** BUY Europa con Forecast WEAKENING: necessario confrontare versione B (pausa) con baseline.
+- **G4** SELL NY: M1 fino a 8, ma il target 2 della mappa iniziale è stato annunciato raggiunto alle 14:39; verificare il NO CHASE.
+- **G5** BUY NY: M1+Thesis BUY alle 15:04/15:16/15:22, prima della revisione BUY ufficiale alle 15:34; studiare PRE-REVISION, non dare per scontato che sarebbe stata aperta.
 
-- **G2 BUY Europa (08:06-08:51)**: più conferme M1 nella direzione Forecast/Thesis; una sola ipotesi di famiglia, non ogni snapshot come trade.
-- **G3 BUY Europa (09:45-09:53)**: segnali allineati ma mappa `WEAKENING`. Verificare se la pausa durante WEAKENING salva stop o elimina opportunità; non concludere senza M1.
-- **G4 SELL NY (14:38-14:47)**: score elevati ma movimento già esteso; il primo target della mappa SELL iniziale era già stato raggiunto prima di parte degli eventi. Verificare il filtro anti-inseguimento.
-- **G5 BUY NY (15:04-15:22)**: Thesis/M1 BUY già concordi mentre Forecast SELL era `WEAKENING`. Revisione BUY ufficiale alle 15:34; scenario per studio PRE-REVISION, non trade qualificato.
+## Protocollo da usare domani sulle candele M1
 
-## Protocollo fisso per il replay dopo ricezione delle M1
+1. Allineare timestamp dello storico MT4 ai log UTC+1, verificando un prezzo comune; **non assumere offset senza controllo**.
+2. Conservare tutti i 16 snapshot. Per i risultati principali, **solo il primo segnale per gruppo**, nessun doppio conteggio.
+3. Calcolare MFE/MAE e primo tocco virtuale entro H10/H30, con scenari spread/slippage dichiarati; classificare ambiguo se SL e TP sono toccati nella stessa M1.
+4. Gli attributi `entry/sl/tp1/tp2` sono null a causa del blocco broker. Eventuali stop e target di prova sono *ipotesi*, mai ordini GOLD MASTER.
+5. Confrontare A/B/C senza selezione retrospettiva del candidato migliore; distinguere ogni evento osservativo dal trade formalmente qualificato.
+6. Questa è la **telemetria v48.18**. I report indipendenti LAB v48.7 richiedono l'estrazione dei loro stati; non vanno inventati.
 
-1. Usare timestamp Telegram/Render locali e allineare esplicitamente l'orologio MT4; non assumere offset fisso senza verifica.
-2. Conservare tutti i 16 timestamp. Per la statistica principale usare **un solo primo candidato per gruppo**, così non si duplicano 5 segnali dello stesso movimento.
-3. Per ciascuno: MFE, MAE e primo tocco teorico entro H10 e H30, con dati bid/ask e spread indicato; se la stessa candela tocca TP e SL segnare `AMBIGUO` o applicare scenario prudenziale.
-4. Non attribuire `entry/sl/tp` al bot: sono `null` nei log a causa del blocco broker. Eventuali scenari sintetici devono essere etichettati come tali.
-5. Confronto A (attuale), B (blocco con WEAKENING), C (solo Thesis contraria) solo su candidati **non eseguibili**; non proclamare vincite reali.
-6. Per conoscere i risultati di v48.7 LAB e altri esperimenti indipendenti occorre il relativo stato/archivio; questi CSV attestano il registratore v48.18, non ne sostituiscono i risultati.
-
-**Archivi:** [decisioni 06-14 UTC](SHADOW_2026-11-17_06-14UTC.csv), [decisioni 14-22 UTC](SHADOW_2026-11-17_14-22UTC.csv), [16 candidati pre-registrati](CANDIDATI_SHADOW_2026-11-17.csv).
+[Archivi grezzi 06-14 UTC](SHADOW_2026-11-17_06-14UTC.csv) · [14-22 UTC](SHADOW_2026-11-17_14-22UTC.csv) · [Candidati congelati](CANDIDATI_SHADOW_2026-11-17.csv)
