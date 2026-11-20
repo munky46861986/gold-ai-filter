@@ -2,7 +2,8 @@
 
 Does not import broker queue or call MetaTrader APIs. Fail-open on ALL errors.
 Defaults to logs-only mode, no extra Render env vars required.
-Optional PostgreSQL writes require SHADOW_V4818_DATABASE_URL; SHADOW_V4818_ENABLED=false disables telemetry.
+Optional PostgreSQL writes use SHADOW_V4818_DATABASE_URL or the Render secret file
+/etc/secrets/shadow_v4818_db_url; SHADOW_V4818_ENABLED=false disables telemetry.
 PostgreSQL writes are asynchronous; logs-only mode records allowlisted data.
 """
 from __future__ import annotations
@@ -44,7 +45,18 @@ class ShadowV4818Live:
 
     def __init__(self, *, enabled=None, dsn=None, queue_max=4000, write_timeout=5):
         self.enabled = env_enabled(os.getenv('SHADOW_V4818_ENABLED', 'true')) if enabled is None else bool(enabled)
-        self._dsn = (os.getenv('SHADOW_V4818_DATABASE_URL', '') if dsn is None else dsn) or ''
+        # Prefer existing env configuration; a Render Secret File avoids consuming another env slot.
+        # Never log either connection string or file contents.
+        if dsn is not None:
+            self._dsn = dsn or ''
+        else:
+            self._dsn = os.getenv('SHADOW_V4818_DATABASE_URL', '').strip()
+            if not self._dsn:
+                try:
+                    with open('/etc/secrets/shadow_v4818_db_url', encoding='utf-8') as secret:
+                        self._dsn = secret.read().strip()
+                except OSError:
+                    self._dsn = ''
         self._queue = Queue(maxsize=queue_max)
         self._write_timeout = int(write_timeout)
         self._thread = None
