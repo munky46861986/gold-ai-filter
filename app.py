@@ -21220,7 +21220,10 @@ def v48_shadow_save():
     except (OSError, ValueError, TypeError) as e:
         print(f"[v48.2] shadow save unavailable: {type(e).__name__}", flush=True)
     # Also archive v48.6's shared B/D/E/F source signals to durable PostgreSQL.
-    SHADOW_RESEARCH_STORE.archive("V48", V48_SHADOW_STATE)
+    try:
+        SHADOW_RESEARCH_STORE.archive("V48", V48_SHADOW_STATE)
+    except Exception as e:
+        print(f"[v48] Postgres archive skipped: {type(e).__name__}", flush=True)
 
 
 def v48_shadow_update_outcomes(data, timestamp=None):
