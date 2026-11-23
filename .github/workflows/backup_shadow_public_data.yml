@@ -1,0 +1,34 @@
+name: Backup live SHADOW research before deploy
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/backup_shadow_public_data.yml'
+  workflow_dispatch:
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download read-only public research snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v487/lab?day=2026-11-23' -o snapshot/v487_lab.json
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v486/research?day=2026-11-23' -o snapshot/v486_research.json
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v48/shadow' -o snapshot/v48_shadow.json
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v48/shadow/stats?day=2026-11-23' -o snapshot/v48_shadow_stats.json
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/shadow/v4818/status' -o snapshot/v4818_status.json
+          python - <<'PY'
+          import json,glob
+          for f in glob.glob('snapshot/*.json'):
+              with open(f) as h: json.load(h)
+              print(f,'valid JSON')
+          PY
+      - name: Upload backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-gold-master-20261123-predeploy
+          path: snapshot/
+          retention-days: 3
