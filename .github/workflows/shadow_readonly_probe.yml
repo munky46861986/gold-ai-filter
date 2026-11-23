@@ -1,0 +1,49 @@
+name: Read-only verify GOLD MASTER SHADOW production
+on:
+  pull_request:
+    paths: ['.github/workflows/shadow_readonly_probe.yml']
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify Render is online with research and PostgreSQL configured
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time, urllib.request
+          root = "https://gold-ai-filter.onrender.com"
+          urls = {
+              "storage": "/shadow/research/storage_status",
+              "observer": "/shadow/v4818/status",
+              "lab": "/v487/lab?day=2026-11-23",
+              "research": "/v486/research?day=2026-11-23",
+          }
+          info = {}
+          for name, path in urls.items():
+              for attempt in range(6):
+                  try:
+                      with urllib.request.urlopen(root + path, timeout=20) as response:
+                          info[name] = json.load(response)
+                      break
+                  except Exception as exc:
+                      if attempt == 5:
+                          raise AssertionError(f"{name} not responding: {type(exc).__name__}")
+                      time.sleep(5)
+          status = info["storage"]
+          assert status.get("configured") is True, "Postgres not configured"
+          assert status.get("persistence") == "POSTGRES", "Missing snapshot PG backend"
+          assert info["lab"].get("enabled") is True, "v48.7 not running"
+          assert info["research"].get("enabled") is True, "v48.6 not running"
+          assert info["observer"].get("database_configured") is True, "v48.18 PG not configured"
+          print(json.dumps({
+              "storage": {k: status.get(k) for k in (
+                  "configured", "persistence", "writer_alive", "saved_batches",
+                  "errors", "last_error_type", "last_saved_utc", "restored_kinds")},
+              "v487": {"enabled": info["lab"].get("enabled"), "version": info["lab"].get("version")},
+              "v486": {"enabled": info["research"].get("enabled"), "version": info["research"].get("version")},
+              "v4818": {"enabled": info["observer"].get("enabled"),
+                        "database_configured": info["observer"].get("database_configured")},
+          }, ensure_ascii=False, sort_keys=True))
+          PY
