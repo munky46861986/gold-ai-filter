@@ -31,13 +31,24 @@ def _sign(direction):
 class ShadowLabV487:
     """Persistent where disk is durable; bounded, fail-safe research state."""
 
-    def __init__(self, path="v487_lab_state.json", max_trades=1200, flush_every=10):
+    def __init__(self, path="v487_lab_state.json", max_trades=1200, flush_every=10,
+                 restore_callback=None, archive_callback=None):
         self.path = path
         self.max_trades = max(50, int(max_trades))
         self.flush_every = max(1, int(flush_every))
         self.state = {"version": VERSION, "days": {}, "trades": {}}
         self.dirty = 0
+        self._archive_callback = archive_callback
         self._load()
+        if callable(restore_callback):
+            try:
+                restored = restore_callback("V487")
+                if (isinstance(restored, dict) and restored.get("version") == VERSION
+                        and isinstance(restored.get("days"), dict)
+                        and isinstance(restored.get("trades"), dict)):
+                    self.state = restored
+            except Exception as exc:
+                print("[v48.7] Postgres restore skipped: " + type(exc).__name__, flush=True)
 
     def _load(self):
         try:
@@ -59,6 +70,12 @@ class ShadowLabV487:
             self.dirty = 0
         except (OSError, ValueError, TypeError):
             pass
+        # The PostgreSQL snapshot is independent of local ephemeral file writes.
+        if callable(self._archive_callback):
+            try:
+                self._archive_callback("V487", self.state)
+            except Exception as exc:
+                print("[v48.7] Postgres archive skipped: " + type(exc).__name__, flush=True)
 
     def _mark(self):
         self.dirty += 1
