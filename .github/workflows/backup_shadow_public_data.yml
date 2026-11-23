@@ -19,6 +19,7 @@ jobs:
           curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v48/shadow' -o snapshot/v48_shadow.json
           curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/v48/shadow/stats?day=2026-11-23' -o snapshot/v48_shadow_stats.json
           curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/shadow/v4818/status' -o snapshot/v4818_status.json
+          curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 70 'https://gold-ai-filter.onrender.com/shadow/research/storage_status' -o snapshot/shadow_storage_status.json
           python - <<'PY'
           import json,glob
           for f in glob.glob('snapshot/*.json'):
@@ -29,6 +30,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shadow-gold-master-20261123-predeploy
+          name: shadow-gold-master-20261123-postdeploy
           path: snapshot/
           retention-days: 3
