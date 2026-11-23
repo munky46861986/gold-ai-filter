@@ -1,0 +1,24 @@
+name: Verify SHADOW release safely
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify_shadow_release.yml'
+      - 'shadow_research_pg.py'
+      - 'shadow_lab_v487.py'
+      - 'test_shadow_research_pg.py'
+      - 'research/shadow_g_v4818/**'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Pure-Python syntax validation
+        run: python -m py_compile app.py shadow_lab_v487.py shadow_research_pg.py shadow_g_v4818_live.py research/shadow_g_v4818/shadow_g_v4818_recorder.py
+      - name: Test research PostgreSQL snapshots without a database connection
+        run: python -m unittest -v test_shadow_research_pg
+      - name: Test SHADOW v48.18 normalization and regression checks
+        run: python -m unittest -v research.shadow_g_v4818.test_shadow_g_v4818
