@@ -39,6 +39,17 @@ class TestRecorder(unittest.TestCase):
         with self.assertRaises(ValueError):normalize({**BASE,'price':float('nan')})
     def test_invalid_trigger_direction(self):
         with self.assertRaises(ValueError):normalize({**BASE,'candidate_direction':'WAIT'})
+    def test_revised_forecast_is_valid_and_persistable(self):
+        # The live Forecast sets live_status=REVISED after a session flip.
+        event={**BASE,'event_id':'revised_1','forecast_status':'REVISED',
+               'forecast_live':'SELL','candidate_direction':'SELL',
+               'm1_direction':'SELL','campaign_triggered':False}
+        self.assertEqual(normalize(event)['forecast_status'],'REVISED')
+        self.assertEqual(append_event(self.db,event),'INSERTED')
+        self.assertEqual(append_event(self.db,event),'DUPLICATE')
+    def test_unrecognized_forecast_status_stays_rejected(self):
+        with self.assertRaisesRegex(ValueError,'forecast_status'):
+            normalize({**BASE,'forecast_status':'UNVERIFIED_CUSTOM_STATUS'})
     def test_b_weakening_veto(self):
         d=counterfactual(normalize(BASE));self.assertEqual(d['A'],'CAMPAIGN_CREATED')
         self.assertEqual(d['B'],'BLOCKED_WEAKENING')
