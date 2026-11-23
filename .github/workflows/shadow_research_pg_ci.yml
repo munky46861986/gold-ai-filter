@@ -1,0 +1,30 @@
+name: SHADOW research PostgreSQL persistence safety tests
+on:
+  pull_request:
+    paths:
+      - 'shadow_research_pg.py'
+      - 'shadow_lab_v487.py'
+      - 'app.py'
+      - 'test_shadow_research_pg.py'
+      - '.github/workflows/shadow_research_pg_ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'shadow_research_pg.py'
+      - 'shadow_lab_v487.py'
+      - 'app.py'
+      - 'test_shadow_research_pg.py'
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify Python syntax and SHADOW-only behavior
+        run: |
+          python -m py_compile app.py shadow_research_pg.py shadow_lab_v487.py
+          python -m unittest -v test_shadow_lab_v487 test_shadow_research_pg research.shadow_g_v4818.test_shadow_g_v4818

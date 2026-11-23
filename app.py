@@ -7,6 +7,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
+from shadow_research_pg import snapshot_store as SHADOW_RESEARCH_STORE
 
 app = Flask(__name__)
 
@@ -21195,6 +21196,13 @@ try:
                     V48_SHADOW_STATE[_v48_key] = _v48_saved[_v48_key]
 except (OSError, ValueError, TypeError):
     pass
+# Prefer the latest durable research snapshot after a Render restart.
+_v48_pg_saved = SHADOW_RESEARCH_STORE.restore("V48")
+if (isinstance(_v48_pg_saved, dict) and
+        _v48_pg_saved.get("version") == V48_SHADOW_STATE["version"] and
+        isinstance(_v48_pg_saved.get("signals"), list) and
+        isinstance(_v48_pg_saved.get("last"), dict)):
+    V48_SHADOW_STATE.update(signals=_v48_pg_saved["signals"], last=_v48_pg_saved["last"])
 # Old v48.0 signals lack observation timestamps and outcomes. Preserve them but
 # do NOT fabricate historical wins/losses from subsequent prices.
 for _v48_item in V48_SHADOW_STATE["signals"]:
@@ -21211,6 +21219,11 @@ def v48_shadow_save():
         os.replace(V48_SHADOW_FILE + ".tmp", V48_SHADOW_FILE)
     except (OSError, ValueError, TypeError) as e:
         print(f"[v48.2] shadow save unavailable: {type(e).__name__}", flush=True)
+    # Also archive v48.6's shared B/D/E/F source signals to durable PostgreSQL.
+    try:
+        SHADOW_RESEARCH_STORE.archive("V48", V48_SHADOW_STATE)
+    except Exception as e:
+        print(f"[v48] Postgres archive skipped: {type(e).__name__}", flush=True)
 
 
 def v48_shadow_update_outcomes(data, timestamp=None):
@@ -23227,10 +23240,18 @@ if V487_LAB_ENABLED:
         from shadow_lab_v487 import ShadowLabV487
         V487_LAB = ShadowLabV487(
             path=os.getenv("V487_LAB_STATE_FILE", "v487_lab_state.json"),
-            flush_every=10
+            flush_every=10,
+            restore_callback=SHADOW_RESEARCH_STORE.restore,
+            archive_callback=SHADOW_RESEARCH_STORE.archive,
         )
     except Exception as v487_import_exc:
         print(f"[v48.7] LAB disabled after import error: {type(v487_import_exc).__name__}: {v487_import_exc}", flush=True)
+
+
+@app.route("/shadow/research/storage_status")
+def shadow_research_storage_status():
+    """Read-only PostgreSQL snapshot health; no trading inputs or credentials."""
+    return jsonify(SHADOW_RESEARCH_STORE.status())
 
 
 @app.route("/v487/lab")
