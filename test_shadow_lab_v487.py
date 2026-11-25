@@ -102,5 +102,53 @@ class ShadowLabV487Tests(unittest.TestCase):
         self.assertEqual(len(reopened.report(self.day)["trades"]), 1)
 
 
+    def test_ghij_partial_be_and_old_baseline_separate(self):
+        self.tick({"close": 100}, 100, [sig()])
+        self.tick({"close": 103.5}, 160, [sig()])
+        self.tick({"close": 100}, 220, [sig()])
+        report = self.lab.report(self.day)
+        exp = report["experiments_ghij"]
+        self.assertEqual(report["scenarios"]["TP3"]["nominal_net_points_ex_costs"], 3)
+        self.assertEqual(exp["J_PARTIAL_BE"]["outcomes"], {"PARTIAL_BE": 1})
+        self.assertEqual(exp["J_PARTIAL_BE"]["nominal_net_points_ex_costs"], 1.5)
+        self.assertEqual(exp["H_RISK_FILTER"]["LE_6"]["count"], 1)
+        self.assertEqual(exp["I_ANTI_CHASE"]["UNKNOWN"]["count"], 1)
+        self.assertEqual(exp["G_PULLBACK"]["stats"]["count"], 0)
+
+    def test_j_all_targets_at_equal_exposure(self):
+        self.tick({"close": 100}, 100, [sig()])
+        self.tick({"close": 121.5}, 160, [sig()])
+        result = self.lab.report(self.day)["experiments_ghij"]["J_PARTIAL_BE"]
+        self.assertEqual(result["outcomes"], {"TP_ALL": 1})
+        self.assertEqual(result["nominal_net_points_ex_costs"], 9)
+
+    def test_g_new_pullback_and_cooldown_without_baseline_change(self):
+        prices = [100,101,102,103,104,105,104,103,102.5,103,103.2,104]
+        def observe(stamp):
+            history = [dict(time=stamp-(11-i)*60, close=p, high=p+.2, low=p-.2)
+                       for i,p in enumerate(prices)]
+            self.lab.observe(data={"symbol":"XAUUSD","close":104}, signals=[],
+                             day=self.day, stamp=stamp, session="EUROPE",
+                             forecast={"live_status":"VALID"}, bias="BUY",
+                             m1={"confirmed":True,"direction":"BUY","score":8},
+                             history=history)
+        observe(1000)
+        observe(1060)
+        result = self.lab.report(self.day)
+        g = result["experiments_ghij"]["G_PULLBACK"]
+        self.assertEqual(result["scenarios"]["TP3"]["count"], 0)
+        self.assertEqual(g["stats"]["count"], 1)
+        self.assertEqual(g["reasons"]["COOLDOWN"], 1)
+        self.assertEqual(g["trades"][0]["execution"] if "execution" in g["trades"][0] else result["execution"], "SHADOW_ONLY_NO_BROKER_ORDERS")
+        restored = ShadowLabV487(self.lab.path, flush_every=1)
+        self.assertEqual(restored.report(self.day)["experiments_ghij"]["G_PULLBACK"]["stats"]["count"], 1)
+
+    def test_anti_chase_spike_block(self):
+        history = [dict(close=100+i, high=100+i+.2, low=100+i-.2)
+                   for i in range(12)]
+        history[-1]["high"] += 9
+        self.assertEqual(self.lab._anti_chase(history,"BUY")["status"], "BLOCK")
+
+
 if __name__ == "__main__":
     unittest.main()
