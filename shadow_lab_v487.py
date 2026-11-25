@@ -14,6 +14,8 @@ from collections import Counter
 SCENARIOS = ("TP3", "TP6_BE3", "TP9_BE3")
 FINAL = {"TP", "SL", "BE", "AMBIGUOUS", "EXPIRED"}
 VERSION = "48.7-LAB-ONLY"
+G_MODE = "G_PULLBACK_LAB_ONLY"
+EXPERIMENT_VERSION = "GH_IJ_1"
 
 
 def _float(value, default=None):
@@ -245,6 +247,12 @@ class ShadowLabV487:
                 "volatility_at_observation": self._volatility(history),
                 "tracks": tracks
             }
+            trades[key]["research_ghij"] = {
+                "version": EXPERIMENT_VERSION,
+                "anti_chase": self._anti_chase(history, direction),
+                "J": {"status": "OPEN", "stage": 0, "observations": 0,
+                      "realized_points": 0.0, "exit_points": None}
+            }
             changed = True
         if changed:
             if len(trades) > self.max_trades:
@@ -252,6 +260,172 @@ class ShadowLabV487:
                 for key in sorted_keys[:len(trades)-self.max_trades]:
                     del trades[key]
             self._mark()
+
+    @staticmethod
+    def _anti_chase(history, direction):
+        # Use only snapshots already available at the observation.
+        rows = history[-12:]
+        if len(rows) < 12 or any(not isinstance(r, dict) for r in rows):
+            return {"status": "UNKNOWN"}
+        closes = [_float(r.get("close")) for r in rows]
+        if any(p is None or p <= 0 for p in closes):
+            return {"status": "UNKNOWN"}
+        sign = _sign(direction)
+        extension = max(0.0, sign * (closes[-1] - closes[-6]))
+        spike = ShadowLabV487._volatility(rows)["spike_flag"]
+        return {"status": "BLOCK" if spike or extension >= 6.0 else "PASS",
+                "extension_5_steps": round(extension, 3), "spike": spike}
+
+    def _pullback(self, *, data, day, stamp, session, forecast, bias, m1, history):
+        # Research only. Separate from the existing v48.18 G recorder.
+        row = self._day(day)
+        stats = row.setdefault("G_reasons", {})
+        def record(reason):
+            stats[reason] = stats.get(reason, 0) + 1
+        if session not in ("EUROPE", "NEWYORK"):
+            record("OUTSIDE_SESSION")
+            return
+        if (not isinstance(forecast, dict) or
+                str(forecast.get("live_status") or "UNKNOWN").upper() not in
+                ("VALID", "REVISED", "WEAKENING") or bias not in ("BUY", "SELL")):
+            record("FORECAST_UNAVAILABLE")
+            return
+        if (m1.get("confirmed") is not True or
+                str(m1.get("direction") or "").upper() != bias or
+                (_float(m1.get("score"), 0) or 0) < 6):
+            record("M1_NOT_ALIGNED")
+            return
+        rows = history[-12:]
+        close = _float(data.get("close"))
+        if len(rows) != 12 or any(not isinstance(r, dict) for r in rows) or close is None:
+            record("HISTORY_MISSING")
+            return
+        closes = [_float(r.get("close")) for r in rows]
+        times = [_float(r.get("time")) for r in rows]
+        if (any(p is None or p <= 0 for p in closes) or
+                any(t is None for t in times) or
+                any(b <= a or b-a > 180 for a, b in zip(times, times[1:])) or
+                stamp < times[-1] or stamp-times[-1] > 90 or
+                abs(closes[-1]-close) > 0.001):
+            record("HISTORY_INVALID_OR_STALE")
+            return
+        sign = _sign(bias)
+        x = [sign*p for p in closes]
+        peak = x[5]
+        retrace = min(x[6:11])
+        if peak-x[0] < 3 or peak-retrace < 1.5 or x[-1]-retrace < .75:
+            record("PULLBACK_NOT_READY")
+            return
+        if x[-1] <= x[-2] or x[-1] > peak+1:
+            record("RESUMPTION_OR_CHASE")
+            return
+        if self._volatility(rows)["spike_flag"]:
+            record("VOLATILITY_SPIKE")
+            return
+        lows = [_float(r.get("low")) for r in rows[6:]]
+        highs = [_float(r.get("high")) for r in rows[6:]]
+        if any(lo is None or hi is None or lo <= 0 or hi < lo
+               for lo, hi in zip(lows, highs)):
+            record("RANGE_INVALID")
+            return
+        sl = round(min(lows)-.8 if sign == 1 else max(highs)+.8, 3)
+        risk = (close-sl)*sign
+        if not 2 <= risk <= 6:
+            record("STOP_OUTSIDE_2_TO_6")
+            return
+        symbol = str(data.get("symbol") or "XAUUSD").upper()
+        cooldowns = row.setdefault("G_last", {})
+        slot = symbol + "|" + session + "|" + bias
+        last = _float(cooldowns.get(slot))
+        if last is not None and stamp-last < 1200:
+            record("COOLDOWN")
+            return
+        # A fresh setup is necessary for a new entry even after BE.
+        previous = [t for t in self.state["trades"].values()
+                    if t.get("day") == day and t.get("symbol") == symbol
+                    and t.get("direction") == bias and t.get("mode") == G_MODE]
+        if any(t["tracks"]["TP3"]["status"] == "OPEN" for t in previous):
+            record("VIRTUAL_POSITION_OPEN")
+            return
+        signal = {"day": day, "symbol": symbol, "mode": G_MODE,
+                  "direction": bias, "time": stamp, "entry": close, "sl": sl,
+                  "tp1": close+sign*3, "score": _float(m1.get("score")),
+                  "execution": "SHADOW_ONLY"}
+        self._discover([signal], day, stamp, history, forecast)
+        key = self._source_key(signal)
+        if key in self.state["trades"]:
+            cooldowns[slot] = stamp
+            record("GENERATED")
+        else:
+            record("NOT_IMPORTED")
+
+    @staticmethod
+    def _advance_j(trade, close):
+        # Fixed total exposure: 50% TP3, 25% TP9, 25% TP21.
+        # CLOSE_ONLY sensitivity experiment, not intrabar/broker ordering.
+        j = trade.get("research_ghij", {}).get("J")
+        if not j or j["status"] != "OPEN":
+            return False
+        j["observations"] += 1
+        if j["observations"] > 180:
+            j["status"] = "EXPIRED"
+            return True
+        sign = _sign(trade["direction"])
+        move = sign*(close-trade["entry"])
+        stage = j["stage"]
+        if stage == 0 and move <= -trade["risk_points"]:
+            j["status"] = "SL"
+            j["exit_points"] = -trade["risk_points"]
+            return True
+        if stage > 0 and move <= 0:
+            j["status"] = "PARTIAL_BE"
+            j["exit_points"] = j["realized_points"]
+            return True
+        for i, (target, weight) in enumerate(((3, .5), (9, .25), (21, .25))):
+            if j["stage"] == i and move >= target:
+                j["realized_points"] = round(j["realized_points"] + target*weight, 3)
+                j["stage"] += 1
+        if j["stage"] == 3:
+            j["status"] = "TP_ALL"
+            j["exit_points"] = j["realized_points"]
+        return True
+
+    @staticmethod
+    def _experiment_stats(rows, track="TP3"):
+        tracks = [r["tracks"][track] for r in rows]
+        known = [t["exit_points"] for t in tracks if t["exit_points"] is not None]
+        return {"count": len(rows), "outcomes": dict(Counter(t["status"] for t in tracks)),
+                "resolved_count": len(known),
+                "nominal_net_points_ex_costs": round(sum(known), 3)}
+
+    def _experiment_report(self, day, all_trades, include_trades):
+        g = [r for r in all_trades if r.get("mode") == G_MODE]
+        base = [r for r in all_trades if r.get("mode") != G_MODE]
+        fresh = [r for r in base if "research_ghij" in r]
+        j_rows = [r["research_ghij"]["J"] for r in all_trades if "research_ghij" in r]
+        known = [r["exit_points"] for r in j_rows if r["exit_points"] is not None]
+        answer = {
+            "version": EXPERIMENT_VERSION, "execution": "SHADOW_ONLY",
+            "G_PULLBACK": {"stats": self._experiment_stats(g),
+                           "reasons": self._day(day).get("G_reasons", {})},
+            "H_RISK_FILTER": {k: self._experiment_stats(
+                [r for r in base if r.get("risk_band") == k])
+                for k in ("LE_3_5", "LE_6", "GT_6")},
+            "I_ANTI_CHASE": {k: self._experiment_stats(
+                [r for r in fresh if r["research_ghij"]["anti_chase"]["status"] == k])
+                for k in ("PASS", "BLOCK", "UNKNOWN")},
+            "J_PARTIAL_BE": {"source": "CLOSE_ONLY", "weights": [0.5, 0.25, 0.25],
+                "targets": [3, 9, 21], "count": len(j_rows),
+                "outcomes": dict(Counter(r["status"] for r in j_rows)),
+                "resolved_count": len(known),
+                "nominal_net_points_ex_costs": round(sum(known), 3)},
+            "warning": "H and I are slices, J is an alternative exit simulation, not extra trades. "
+                       "J uses observed closes only; nominal level fills, no costs. "
+                       "G is separate from existing v48.18 G. No broker orders."
+        }
+        if include_trades:
+            answer["G_PULLBACK"]["trades"] = sorted(g, key=lambda r:r["time"])[-100:]
+        return answer
 
     @staticmethod
     def _finish(track, status, points=None, source=None, level=None):
@@ -275,6 +449,8 @@ class ShadowLabV487:
             if trade.get("symbol") != symbol or stamp <= (
                     _float(trade.get("time"), 0) or 0):
                 continue
+            if self._advance_j(trade, close):
+                changed = True
             sign = _sign(trade["direction"])
             entry, original_sl = trade["entry"], trade["sl"]
             favorable = (hi-entry) if sign == 1 else (entry-lo)
@@ -326,12 +502,15 @@ class ShadowLabV487:
         self._advance(data, stamp)
         self._discover(signals, day, stamp, history, forecast)
         if diagnostics:
+            self._pullback(data=data, day=day, stamp=stamp, session=session,
+                           forecast=forecast, bias=bias, m1=m1, history=history)
             self._diagnose(day=day, session=session, forecast=forecast,
                            bias=bias, m1=m1, history=history,
                            close=_float(data.get("close")), stamp=stamp)
 
     def report(self, day, include_trades=True):
-        trades = [r for r in self.state["trades"].values() if r.get("day") == day]
+        all_trades = [r for r in self.state["trades"].values() if r.get("day") == day]
+        trades = [r for r in all_trades if r.get("mode") != G_MODE]
         scenarios = {}
         for name in SCENARIOS:
             counts = Counter(r["tracks"][name]["status"] for r in trades)
@@ -373,6 +552,7 @@ class ShadowLabV487:
             "execution": "SHADOW_ONLY_NO_BROKER_ORDERS",
             "data_persistence": "LOCAL_FILE_EPHEMERAL_UNLESS_PERSISTENT_DISK",
             "diagnostics": self._day(day), "scenarios": scenarios,
+            "experiments_ghij": self._experiment_report(day, all_trades, include_trades),
             "risk_slices": slices,
             "warning": (
                 "High/low has no first-touch ordering; simultaneous stop/target "
