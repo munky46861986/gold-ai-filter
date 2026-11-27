@@ -16,6 +16,10 @@ FINAL = {"TP", "SL", "BE", "AMBIGUOUS", "EXPIRED"}
 VERSION = "48.7-LAB-ONLY"
 G_MODE = "G_PULLBACK_LAB_ONLY"
 EXPERIMENT_VERSION = "GH_IJ_1"
+K_MODE = "K_EARLY_REVERSAL_V2_LAB_ONLY"
+L_MODE = "L_RANGE_BREAKOUT_LAB_ONLY"
+KLM_MODES = (K_MODE, L_MODE)
+KLM_VERSION = "KLM_1"
 
 
 def _float(value, default=None):
@@ -247,12 +251,19 @@ class ShadowLabV487:
                 "volatility_at_observation": self._volatility(history),
                 "tracks": tracks
             }
-            trades[key]["research_ghij"] = {
-                "version": EXPERIMENT_VERSION,
-                "anti_chase": self._anti_chase(history, direction),
-                "J": {"status": "OPEN", "stage": 0, "observations": 0,
-                      "realized_points": 0.0, "exit_points": None}
-            }
+            if sig.get("mode") in KLM_MODES:
+                trades[key]["research_klm"] = {
+                    "version": KLM_VERSION,
+                    "setup": sig.get("research_setup", {}),
+                    "anti_chase": self._anti_chase(history, direction)
+                }
+            else:
+                trades[key]["research_ghij"] = {
+                    "version": EXPERIMENT_VERSION,
+                    "anti_chase": self._anti_chase(history, direction),
+                    "J": {"status": "OPEN", "stage": 0, "observations": 0,
+                          "realized_points": 0.0, "exit_points": None}
+                }
             changed = True
         if changed:
             if len(trades) > self.max_trades:
@@ -359,6 +370,156 @@ class ShadowLabV487:
         else:
             record("NOT_IMPORTED")
 
+    def _kl_observe(self, *, data, day, stamp, session, forecast, bias, m1, history):
+        """Independent virtual research entries using only available snapshots.
+        Confirmed M1 in app.py already requires stable Session Thesis.
+        K studies conflict with the directional map; L studies local RANGE breaks.
+        """
+        row = self._day(day)
+        reasons = row.setdefault("KL_reasons", {})
+        direction = str(m1.get("direction") or "").upper()
+        status = str((forecast or {}).get("live_status") or "").upper()
+        close = _float(data.get("close"))
+        symbol = str(data.get("symbol") or "XAUUSD").upper()
+        rows = history[-12:]
+
+        def evaluate(mode):
+            counts = reasons.setdefault(mode, {})
+            def record(reason):
+                counts[reason] = int(counts.get(reason, 0)) + 1
+
+            if session not in ("EUROPE", "NEWYORK"):
+                return record("OUTSIDE_SESSION")
+            if not isinstance(forecast, dict) or status not in ("VALID", "REVISED", "WEAKENING"):
+                return record("FORECAST_UNAVAILABLE")
+            if mode == K_MODE and bias not in ("BUY", "SELL"):
+                return record("NEEDS_DIRECTIONAL_MAP")
+            if mode == L_MODE and bias != "RANGE":
+                return record("NEEDS_RANGE_MAP")
+            if direction not in ("BUY", "SELL") or (mode == K_MODE and direction == bias):
+                return record("DIRECTION_NOT_ELIGIBLE")
+            score = _float(m1.get("score"), 0) or 0
+            if (m1.get("confirmed") is not True or m1.get("bos") is not True
+                    or score < (6 if mode == K_MODE else 7)):
+                return record("M1_NOT_CONFIRMED_BOS")
+            if (str(m1.get("preferred") or "").upper() != direction
+                    or str(m1.get("session") or "").upper() != session
+                    or (_float(m1.get("candidate_count"), 0) or 0) < 2):
+                return record("THESIS_NOT_STABLE")
+            if (close is None or close <= 0 or len(rows) != 12
+                    or any(not isinstance(r, dict) for r in rows)):
+                return record("HISTORY_MISSING")
+            closes = [_float(r.get("close")) for r in rows]
+            times = [_float(r.get("time")) for r in rows]
+            lows = [_float(r.get("low")) for r in rows]
+            highs = [_float(r.get("high")) for r in rows]
+            if (any(p is None or p <= 0 for p in closes)
+                    or any(t is None for t in times)
+                    or any(lo is None or hi is None or lo <= 0 or hi < lo
+                           for lo, hi in zip(lows, highs))
+                    or any(not lo <= p <= hi for lo, p, hi in zip(lows, closes, highs))
+                    or any(b <= a or b-a > 180 for a,b in zip(times,times[1:]))
+                    or stamp < times[-1] or stamp-times[-1] > 90
+                    or abs(closes[-1]-close) > .001):
+                return record("HISTORY_INVALID_OR_STALE")
+
+            sign = _sign(direction)
+            x = [sign*p for p in closes]
+            if mode == K_MODE:
+                prior_impulse = x[0]-min(x[1:7])
+                recovery = x[-1]-min(x[1:9])
+                if prior_impulse < 2.5 or recovery < 2.0:
+                    return record("REVERSAL_STRUCTURE_MISSING")
+                boundary = max(highs[-4:-1]) if sign == 1 else min(lows[-4:-1])
+                stop_window = 5
+            else:
+                prior_impulse = None
+                recovery = x[-1]-x[-7]
+                if recovery < 1.5:
+                    return record("DIRECTIONAL_DRIFT_LT_1_5")
+                boundary = max(highs[-7:-1]) if sign == 1 else min(lows[-7:-1])
+                stop_window = 4
+
+            if sign*(close-boundary) < .2 or x[-1] <= x[-2]:
+                return record("LOCAL_BREAK_NOT_CONFIRMED")
+            if self._volatility(rows)["spike_flag"]:
+                return record("VOLATILITY_SPIKE")
+            if sign*(close-boundary) > 3 or max(0, x[-1]-x[-6]) >= 6:
+                return record("ANTI_CHASE")
+            sl = round(min(lows[-stop_window:])-.5 if sign == 1
+                       else max(highs[-stop_window:])+.5, 3)
+            risk = round(sign*(close-sl), 3)
+            if not 2 <= risk <= 8:
+                return record("STRUCTURAL_STOP_OUTSIDE_2_TO_8")
+            keyslot = "|".join((mode, symbol, session, direction))
+            last = row.setdefault("KL_last", {})
+            previous = _float(last.get(keyslot))
+            if previous is not None and stamp-previous < 1200:
+                return record("COOLDOWN")
+            existing = [t for t in self.state["trades"].values()
+                        if t.get("day") == day and t.get("symbol") == symbol
+                        and t.get("mode") == mode]
+            if len(existing) >= 6:
+                return record("DAILY_RESEARCH_CAP")
+            if any(t["tracks"]["TP3"]["status"] == "OPEN" for t in existing):
+                return record("VIRTUAL_POSITION_OPEN")
+            map_level = _float(forecast.get("live_working_high" if sign == 1 else "live_working_low"),
+                               _float(forecast.get("working_high" if sign == 1 else "working_low")))
+            setup = {"session": session, "forecast_bias": bias,
+                     "local_break_level": round(boundary, 3),
+                     "map_break": (sign*(close-map_level) > 0 if map_level is not None
+                                   and map_level > 0 else None),
+                     "prior_impulse": round(prior_impulse, 3) if prior_impulse is not None else None,
+                     "recovery_or_drift": round(recovery, 3)}
+            signal = {"day": day, "symbol": symbol, "mode": mode, "direction": direction,
+                      "time": stamp, "entry": close, "sl": sl, "tp1": close+sign*3,
+                      "score": score, "execution": "SHADOW_ONLY", "research_setup": setup}
+            self._discover([signal], day, stamp, history, forecast)
+            if self._source_key(signal) in self.state["trades"]:
+                last[keyslot] = stamp
+                return record("GENERATED")
+            return record("NOT_IMPORTED")
+
+        for mode in KLM_MODES:
+            evaluate(mode)
+
+    def _klm_report(self, day, all_trades, include_trades):
+        answer = {"version": KLM_VERSION, "execution": "SHADOW_ONLY",
+                  "warning": "K/L are new virtual entries, isolated from historical baseline and G/H/I/J. "
+                             "L tests local breaks inside or outside the RANGE map. M is a selection, not an extra trade. "
+                             "Nominal points before costs; no broker fills."}
+        day_row = self._day(day)
+        for mode, label in ((K_MODE, "K_EARLY_REVERSAL_V2"), (L_MODE, "L_RANGE_BREAKOUT")):
+            rows = [r for r in all_trades if r.get("mode") == mode]
+            section = {"scenarios": {s:self._experiment_stats(rows, s) for s in SCENARIOS},
+                       "reasons": day_row.get("KL_reasons", {}).get(mode, {})}
+            if include_trades:
+                section["trades"] = sorted(rows, key=lambda r:r["time"])[-100:]
+            answer[label] = section
+        # M is intentionally a fixed, prospective intersection of three existing rules.
+        candidates = [r for r in all_trades if r.get("mode") == "RANGE_M1_SCOUT"]
+        selected, rejected, unknown = [], [], []
+        for r in candidates:
+            anti = r.get("research_ghij", {}).get("anti_chase", {}).get("status", "UNKNOWN")
+            risk = _float(r.get("risk_points"))
+            if anti not in ("PASS", "BLOCK") or risk is None:
+                unknown.append(r)
+            elif 3.5 < risk <= 6 and anti == "PASS":
+                selected.append(r)
+            else:
+                rejected.append(r)
+        answer["M_FUSION_QUALITY"] = {
+            "selection": "RANGE_M1_SCOUT + 3.5 < original risk <= 6 + I PASS",
+            "baseline": self._experiment_stats(candidates),
+            "selected": self._experiment_stats(selected),
+            "rejected": self._experiment_stats(rejected),
+            "unknown": self._experiment_stats(unknown),
+            "note": "For dates before deployment this is retrospective, not a new forward signal."
+        }
+        if include_trades:
+            answer["M_FUSION_QUALITY"]["selected_keys"] = [r["key"] for r in selected]
+        return answer
+
     @staticmethod
     def _advance_j(trade, close):
         # Fixed total exposure: 50% TP3, 25% TP9, 25% TP21.
@@ -400,7 +561,7 @@ class ShadowLabV487:
 
     def _experiment_report(self, day, all_trades, include_trades):
         g = [r for r in all_trades if r.get("mode") == G_MODE]
-        base = [r for r in all_trades if r.get("mode") != G_MODE]
+        base = [r for r in all_trades if r.get("mode") not in (G_MODE, *KLM_MODES)]
         fresh = [r for r in base if "research_ghij" in r]
         j_rows = [r["research_ghij"]["J"] for r in all_trades if "research_ghij" in r]
         known = [r["exit_points"] for r in j_rows if r["exit_points"] is not None]
@@ -504,13 +665,15 @@ class ShadowLabV487:
         if diagnostics:
             self._pullback(data=data, day=day, stamp=stamp, session=session,
                            forecast=forecast, bias=bias, m1=m1, history=history)
+            self._kl_observe(data=data, day=day, stamp=stamp, session=session,
+                             forecast=forecast, bias=bias, m1=m1, history=history)
             self._diagnose(day=day, session=session, forecast=forecast,
                            bias=bias, m1=m1, history=history,
                            close=_float(data.get("close")), stamp=stamp)
 
     def report(self, day, include_trades=True):
         all_trades = [r for r in self.state["trades"].values() if r.get("day") == day]
-        trades = [r for r in all_trades if r.get("mode") != G_MODE]
+        trades = [r for r in all_trades if r.get("mode") not in (G_MODE, *KLM_MODES)]
         scenarios = {}
         for name in SCENARIOS:
             counts = Counter(r["tracks"][name]["status"] for r in trades)
@@ -553,6 +716,7 @@ class ShadowLabV487:
             "data_persistence": "LOCAL_FILE_EPHEMERAL_UNLESS_PERSISTENT_DISK",
             "diagnostics": self._day(day), "scenarios": scenarios,
             "experiments_ghij": self._experiment_report(day, all_trades, include_trades),
+            "experiments_klm": self._klm_report(day, all_trades, include_trades),
             "risk_slices": slices,
             "warning": (
                 "High/low has no first-touch ordering; simultaneous stop/target "
