@@ -150,5 +150,65 @@ class ShadowLabV487Tests(unittest.TestCase):
         self.assertEqual(self.lab._anti_chase(history,"BUY")["status"], "BLOCK")
 
 
+    def _kl_tick(self, prices, stamp, bias, direction, **overrides):
+        history = [dict(time=stamp-(11-i)*60, close=p, high=p+.2, low=p-.2)
+                   for i,p in enumerate(prices)]
+        m1 = dict(confirmed=True, bos=True, direction=direction, preferred=direction,
+                  session="EUROPE", score=8, candidate_count=2)
+        m1.update(overrides)
+        self.lab.observe(data={"symbol":"XAUUSD","close":prices[-1]}, signals=[],
+                         day=self.day, stamp=stamp, session="EUROPE",
+                         forecast={"live_status":"VALID","working_low":90,"working_high":110},
+                         bias=bias, m1=m1, history=history)
+
+    def test_k_reversal_against_map_isolated_and_restored(self):
+        prices = [105,104,103,102,101,100,101,102,102.5,103,103.5,104.5]
+        self._kl_tick(prices, 1000, "SELL", "BUY")
+        self.tick({"close":107.6}, 1060)
+        report = self.lab.report(self.day)
+        k = report["experiments_klm"]["K_EARLY_REVERSAL_V2"]
+        self.assertEqual(k["scenarios"]["TP3"]["outcomes"], {"TP":1})
+        self.assertEqual(k["scenarios"]["TP3"]["nominal_net_points_ex_costs"], 3)
+        self.assertEqual(k["trades"][0]["research_klm"]["setup"]["forecast_bias"], "SELL")
+        self.assertEqual(report["scenarios"]["TP3"]["count"], 0)
+        self.assertEqual(report["experiments_ghij"]["J_PARTIAL_BE"]["count"], 0)
+        restored = ShadowLabV487(self.lab.path, flush_every=1)
+        self.assertEqual(restored.report(self.day)["experiments_klm"]["K_EARLY_REVERSAL_V2"]["scenarios"]["TP3"]["count"], 1)
+
+    def test_l_local_break_inside_range_and_cooldown(self):
+        prices = [106,105.8,105.5,105.4,105.3,105,104.9,104.7,104.5,104,103.7,103]
+        self._kl_tick(prices, 1000, "RANGE", "SELL")
+        self.tick({"close":99.5}, 1060)
+        self._kl_tick(prices, 1120, "RANGE", "SELL")
+        l = self.lab.report(self.day)["experiments_klm"]["L_RANGE_BREAKOUT"]
+        self.assertEqual(l["scenarios"]["TP3"]["outcomes"], {"TP":1})
+        self.assertFalse(l["trades"][0]["research_klm"]["setup"]["map_break"])
+        self.assertEqual(l["reasons"]["COOLDOWN"], 1)
+
+    def test_kl_reject_unstable_thesis_and_missing_bos(self):
+        prices = [106,105.8,105.5,105.4,105.3,105,104.9,104.7,104.5,104,103.7,103]
+        self._kl_tick(prices, 1000, "RANGE", "SELL", candidate_count=1)
+        self._kl_tick(prices, 1060, "RANGE", "SELL", bos=False)
+        l = self.lab.report(self.day)["experiments_klm"]["L_RANGE_BREAKOUT"]
+        self.assertEqual(l["scenarios"]["TP3"]["count"], 0)
+        self.assertEqual(l["reasons"]["THESIS_NOT_STABLE"], 1)
+        self.assertEqual(l["reasons"]["M1_NOT_CONFIRMED_BOS"], 1)
+
+    def test_m_filters_only_range_scout_with_fixed_rules(self):
+        history = [dict(close=100, high=100.2, low=99.8) for _ in range(12)]
+        a = dict(sig(t=100), mode="RANGE_M1_SCOUT")
+        b = dict(sig(t=100, sl=97), mode="RANGE_M1_SCOUT")
+        # distinct source keys (different timestamps) to avoid deduplication
+        b["time"] = 101
+        self.lab.observe(data={"symbol":"XAUUSD","close":100},signals=[a,b],
+                         day=self.day,stamp=101,history=history,diagnostics=False)
+        self.tick({"close":103.5}, 161)
+        m = self.lab.report(self.day)["experiments_klm"]["M_FUSION_QUALITY"]
+        self.assertEqual(m["baseline"]["count"], 2)
+        self.assertEqual(m["selected"]["count"], 1)
+        self.assertEqual(m["selected"]["nominal_net_points_ex_costs"], 3)
+        self.assertEqual(m["rejected"]["count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
